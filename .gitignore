@@ -1,0 +1,58 @@
+# ─── Особисті дані (не комітяться ніколи) ────────────────────────────
+# Політика golden-логів (design §4.4): сирі логи містять батлтеги й
+# Blizzard account id. У git їдуть лише знеособлені зрізи з
+# tests/logs/fixtures/ (див. tests/logs/make_fixtures.py).
+tests/logs/raw/
+
+# Історія ігор старого формату — містить справжні імена гравців
+# (design "Security & privacy": PII → battletags). Мігрується в
+# tavernlab.sqlite при першому запуску app.py.
+games.jsonl
+
+# Локальний стан застосунку. Design §2.9: усе живе на диску користувача,
+# нічого не надсилається назовні.
+tavernlab.sqlite
+tavernlab.sqlite-wal
+tavernlab.sqlite-shm
+tavernlab.log
+tavernlab.log.*
+advisor_cache/
+coach_log.md
+watcher.pid
+
+# ─── Артефакти збірки ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+venv/
+.venv/
+
+# ─── Вивід пайплайнів (регенерується скриптами з README) ─────────────
+# run_optimize.py → optimized.json → run_final.py → results.json
+#                                               → make_report.py
+optimized.json
+optimized2.json
+results.json
+results2.json
+report_data.json
+site_classic.json
+site_std.json
+
+# Консольні захоплення прогонів (містять локальні шляхи /home/…)
+*_log.txt
+live_out.txt
+user_burn_mage_report.txt
+
+# ─── Пісочниця для експериментальних карт (design §4.3) ──────────────
+hs2/impls_sandbox.py
+
+# ─── Редактори / IDE ─────────────────────────────────────────────────
+.idea/
+.vscode/
+.ruby-lsp/
+*.swp
+*~
+.DS_Store

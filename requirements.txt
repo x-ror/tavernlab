@@ -1,0 +1,10 @@
+# Pinned at first freeze (design A16). Exact `==` on hslog because the
+# importer depends on its Packet Tree shape and on repointing
+# `_power_handler._game_state_processor`.
+hearthstone==9.20.10          # HearthstoneJSON enums + card XML
+hslog==1.20.0                 # Power.log Packet Tree; the only maintained one
+pytest>=8
+
+# Deliberately absent:
+#   watchdog  — MVP capture is import-first; the tailer is v1 (PR 6)
+#   numpy/torch — the win-probability model is 9 weights and 319 bytes
