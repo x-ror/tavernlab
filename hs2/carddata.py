@@ -10,14 +10,67 @@ import json
 import os
 import re
 
+from . import formats
+
 from .engine import CardDef, CardInst, MINION, SPELL, WEAPON, LOCATION, HERO
 
 _HERE = os.path.dirname(__file__)
 
-RAW = json.load(open(os.path.join(_HERE, "standard_cards.json")))
+def _load_corpus(fmt):
+    """The card data for one format.
 
+    Standard is the file that has always been here. Wild adds
+    `wild_cards.json` on top, and that file is optional: a checkout
+    that never ran `build_data.py --format wild` simply has no Wild.
+
+    This is per format and not a union, because the union changes
+    Standard play: `impls.post_build` synthesises tokens only when the
+    name is absent, and Wild prints several of them; discover pools
+    would grow as well. A Standard game must see the Standard corpus.
+    """
+    with open(os.path.join(_HERE, "standard_cards.json"),
+              encoding="utf-8") as fh:
+        raw = json.load(fh)
+    if fmt == formats.WILD:
+        wild = os.path.join(_HERE, "wild_cards.json")
+        if os.path.exists(wild):
+            with open(wild, encoding="utf-8") as fh:
+                raw.update(json.load(fh))
+    # Retired formats are dropped here and not only at build time: the
+    # shipped `standard_cards.json` predates that filter and still carries
+    # the Classic printing of Arcane Missiles, which is legal nowhere and
+    # would make any deck holding it unresolvable.
+    return {cid: e for cid, e in raw.items()
+            if e.get("set") not in formats.EXCLUDED_SETS}
+
+
+_WILD_INDEX = None
+
+
+def wild_name_for(dbf):
+    """Name of a Wild-only card, without building its whole corpus.
+
+    A Standard deck full of Wild cards should say *which* cards are Wild,
+    not print a list of unresolved dbf ids. Reads the delta file directly;
+    returns None when it was never built.
+    """
+    global _WILD_INDEX
+    if _WILD_INDEX is None:
+        path = os.path.join(_HERE, "wild_cards.json")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                _WILD_INDEX = {e["dbf"]: e["name"]
+                               for e in json.load(fh).values()}
+        except (OSError, ValueError):
+            _WILD_INDEX = {}
+    return _WILD_INDEX.get(dbf)
+
+
+RAW = {}
 DEFS = {}
 BY_NAME = {}
+#: which format `DEFS` currently holds, or None before the first build
+LOADED_FORMAT = None
 
 
 def _keywords_from(e):
@@ -49,9 +102,13 @@ def _keywords_from(e):
     return kw
 
 
-def build_defs():
+def build_defs(fmt=formats.STANDARD):
+    global RAW, LOADED_FORMAT
     from . import impls
     from . import autogen
+    RAW = _load_corpus(fmt)
+    DEFS.clear()
+    BY_NAME.clear()
     for cid, e in RAW.items():
         kw = _keywords_from(e)
         beh = impls.BEHAVIORS.get(cid)
@@ -74,16 +131,52 @@ def build_defs():
     for d in DEFS.values():
         if not d.implemented:
             autogen.try_compile(d)
-    # name index: prefer collectible, then CORE set, then anything
+    # Name index: which printing a deck list resolves to when a name
+    # appears more than once. Collectible first, then the tiers below.
+    #
+    # A collectible card and a hero portrait can share a name: "Irida
+    # Sinseeker" is both a 4-mana minion and a 0-cost HERO_SKINS portrait
+    # with no text. Without this tier the portrait can win, and because
+    # behaviours are also matched by name the portrait then carries the
+    # real card's code while keeping the portrait's blank stats. Three
+    # gauntlet decks were built with such blanks.
+    #
+    # Scoped to portraits and not to the whole set: HERO_SKINS also
+    # catalogues the basic hero powers (Lesser Heal, Life Tap, Armor Up!),
+    # which the engine resolves by name and must keep.
+    def not_a_portrait(d):
+        return not (d.set == "HERO_SKINS" and d.type == "HERO")
+
+    if fmt == formats.WILD:
+        def rank(d):
+            # Prefer a legal printing, then a Standard-legal one, so a
+            # Standard deck never resolves to a Wild-only reprint.
+            return (d.coll, formats.is_legal(d, fmt),
+                    d.set in formats.STANDARD_SETS, d.set == "CORE")
+    else:
+        def rank(d):
+            return (d.coll, not_a_portrait(d), d.set == "CORE")
+
     for cid, d in DEFS.items():
         cur = BY_NAME.get(d.name)
-        if cur is None:
+        if cur is None or rank(d) > rank(DEFS[cur]):
             BY_NAME[d.name] = cid
-        else:
-            c = DEFS[cur]
-            if (d.coll, d.set == "CORE") > (c.coll, c.set == "CORE"):
-                BY_NAME[d.name] = cid
     impls.post_build(DEFS, BY_NAME)
+    LOADED_FORMAT = fmt
+
+
+def ensure_defs(fmt=formats.STANDARD):
+    """Idempotent `build_defs`, for anyone who cannot know if it ran.
+
+    Windows has no fork, so `multiprocessing` starts pool workers from a
+    fresh interpreter: the defs the parent built are not inherited, and
+    every worker has to build its own before it can look a card up.
+
+    Rebuilds if a different format is loaded, since the corpus - and
+    therefore every discover pool - differs between them.
+    """
+    if LOADED_FORMAT != fmt:
+        build_defs(fmt)
 
 
 def get_def(name_or_id):
@@ -121,7 +214,11 @@ def hero_power_for(cls):
 
 
 def standard_pool(filt=None):
-    """Implemented, collectible Standard cards (for pools/discover)."""
+    """Implemented, collectible cards of the loaded format.
+
+    Named for Standard because that is what it was; the pool now
+    follows `LOADED_FORMAT`, so a Wild game discovers Wild cards.
+    """
     out = [d for d in DEFS.values()
            if d.coll and d.implemented and d.type != HERO]
     if filt:

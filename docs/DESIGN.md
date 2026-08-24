@@ -11,13 +11,29 @@
 
 ---
 
+> **Update, 2026-08-24 — the UI shipped early and `webui.html` is gone.**
+>
+> The document below plans a vanilla `webui.html` MVP with a Tauri +
+> React/TS shell at v1. What was actually built is the React front end in
+> `web/` (React + Adobe React Spectrum, Vite), served by the same
+> `app.py` at `/` — no Tauri, no Rust host, and `webui.html` has been
+> deleted. Its 42 design-rule tests were ported to
+> `tests/test_web_ui.py` rather than dropped.
+>
+> Everything else below still holds: same Python backend, same routes,
+> same honesty gates. Read references to `webui.html` in the sections
+> that follow as **history** — they record why decisions were made, not
+> what the tree contains today. See `web/README.md`.
+
+---
+
 ## Executive summary
 
 TavernLab today is a **local deck-evaluation lab**, not a game reviewer. `hs2/` simulates Standard 2026 well enough to gauntlet a fully-implemented deck (~366 games/s/core, 12 meta decks, exact-ish lethal, logistic WP with **8 board features + bias = 9 weights**, 66.7% sim-held-out accuracy), but it cannot yet reconstruct a human game, enumerate legal actions, clone state, or score a decision. Capture is split across three incompatible prototypes (`watcher.py` hslog `EntityTreeExporter` one-shot, `live.py` regex tail, `watch_turn.py` Wine-path snapshot) that write two different `games.jsonl` schemas and never produce a turn-by-turn board.
 
 This document evolves the existing Python product into a **local-first “Chess.com Game Review + GTO Wizard for constructed Hearthstone”**: read-only log **import** (MVP) then live tail (v1), append-only SQLite event store, visible-state reconstruction, post-game review with honest confidence, and the current deck-eval/mulligan/meta tools kept as first-class tabs.
 
-**Stack lock:** Python **3.11** for engine, evaluator, hslog importer, and local HTTP API on Win11 + macOS + Linux/Wine. Capture uses PyPI **`hearthstone` (`hslog`)** — the only maintained Power.log Packet-Tree library; we do not write a custom parser. DB is stdlib **sqlite3 (WAL)**. MVP UI is `webui.html` + PyInstaller, **bilingual en+uk from day one**; v1 shell is Tauri (Rust host, OS webview) + React/TS. Rejected: Node rewrite, Rust engine, Electron, from-scratch log parser, Postgres, numpy/torch in MVP.
+**Stack lock:** Python (**current CPython**, see A7) for engine, evaluator, hslog importer, and local HTTP API on Win11 + macOS + Linux/Wine. Capture uses PyPI **`hearthstone` (`hslog`)** — the only maintained Power.log Packet-Tree library; we do not write a custom parser. DB is stdlib **sqlite3 (WAL)**. MVP UI is `webui.html` + PyInstaller, **bilingual en+uk from day one**; v1 shell is Tauri (Rust host, OS webview) + React/TS. Rejected: Node rewrite, Rust engine, Electron, from-scratch log parser, Postgres, numpy/torch in MVP.
 
 Rewriting `hs2/` in Rust/C#/TypeScript is a 12+ month sink. SabberStone and Fireplace are rejected as primary engines (stale vs 2026 Standard). **Full IS-MCTS at chess-engine quality is a multi-year research program, not MVP.** MVP evaluator = **missed lethal** (stats-only hydrate, `lethal_ok`) + **turn ledger notes** + a **hatched** logistic WP chart that is **not** used to rank plays. Sequencing, luck glyphs, 1-ply ΔWP, and Brilliant/Best stay hidden until `search_ok` exists.
 
@@ -33,11 +49,11 @@ These are taken as given so design is not blocked. Conflicts with reality go to 
 |---|---|
 | A1 | Solo developer, ~12 hours/week (**~200 h to MVP** after clone/listener and import-first cuts, ~624 h to v1, ~936–1248 h to v2). 192 h does not cover a live tailer + search-grade mapper. |
 | A2 | Budget for paid data/APIs: **none**. Anything that requires HSReplay Premium, Untapped paid, or a commercial LLM is **blocked/speculative**. |
-| A3 | Primary product is **constructed ranked** (Standard first; Wild/Twist later). Arena and Battlegrounds are extension points only. |
+| A3 | Primary product is **constructed ranked** (Standard first; Wild/Twist later). Arena and Battlegrounds are extension points only. **Update:** format is now a real axis — `hs2/formats.py` decides legality, the corpus is built per format, and the gauntlet follows the deck. Wild has 791 of 6942 cards simulatable (mostly autogen); Twist and the non-ranked modes are TODO. |
 | A4 | Capture is **read-only logs** (`Power.log`, `Zone.log`, companions). No memory reading, no packet sniffing, no input injection. |
 | A5 | User will enable Hearthstone file logging via `log.config` (same as Hearthstone Deck Tracker). |
-| A6 | Existing `hs2/` is the rules engine of record. `hearthsim/` (v1, ~206 classic cards) is frozen, not deleted. |
-| A7 | **Ship CPython 3.11** on Win11 + macOS + Linux/Wine. Repo may compile under 3.14 locally; PyInstaller onefile targets 3.11. Do not require 3.14. |
+| A6 | `hs2/` is the rules engine of record. **Revised:** `hearthsim/` (v1, ~206 classic cards) and its three drivers are **deleted**, not frozen — nothing imported them but themselves, no test covered them, and they raised ValueError on import under Windows (the ship target) without anyone noticing. |
+| A7 | **Ship the current CPython** on Win11 + macOS + Linux/Wine. Revised: the original 3.11 pin (“do not require 3.14”) is dropped — there is no version-specific code, the pinned deps are pure-Python wheels, and the full suite plus a frozen onefile run on 3.14.6. PyInstaller onefile targets whatever is newest. |
 | A8 | Local-first: games, reviews, and meta cache live on disk. Cloud sync is v2 optional. |
 | A9 | User pastes their own deckstring (already the `app.py` workflow). We do not parse the in-game deck picker. `Deck.log` / `LoadingScreen.log` are **optional** later, not required for MVP review. |
 | A10 | **Bilingual MVP (en + uk).** New screens **and** existing tabs use `locales/en.json` + `locales/uk.json`. Existing Ukrainian copy in Analyze/Mulligan/Opponent/Coach is the `uk` source; English is the `en` source for those plus Games/Review/Import/Settings. OS language picks the default; Settings toggle. |
@@ -74,7 +90,7 @@ These are taken as given so design is not blocked. Conflicts with reality go to 
 | Watcher | `watcher.py` | One-shot `hslog.LogParser` + **`EntityTreeExporter`** (end-of-game entity tree, **not** a BLOCK stream). Output: `{ts, players[{name,won}], plays[[pid,card_id]]}`. No boards, no decisions, no WP. **Do not reuse EntityTreeExporter as the product importer.** |
 | Turn snapshot | `watch_turn.py` | Wait-for-my-turn, print board/hand, copy-proc heuristic. Hardcoded Wine path and battletag. |
 | Meta | `hs2/meta_decks_2026.json`, `update_meta.py` | 12 named decks. Manual `--add "Name" "AAECA…"`. |
-| Classic engine | `hearthsim/` | ~206 Basic/Classic cards; not used by `app.py`. |
+| Classic engine | ~~`hearthsim/`~~ | **Deleted** (see A6). ~206 Basic/Classic cards; was never used by `app.py`. |
 
 ### Pain points (why this change)
 
@@ -427,7 +443,7 @@ Reads: `WHERE parse_generation = (SELECT MAX(parse_generation) FROM events e2 WH
 
 | Layer | Choice | Why | Rejected |
 |---|---|---|---|
-| Rules engine | **Keep Python 3.11 `hs2/`** | Hard asset; clone/search do not exist yet — rewriting for “speed” is false optimization. CPython 3.11 on Win11 + macOS + Linux/Wine. If identity tests pass but clone &lt;100 µs fails, **v1+ Cython on `clone` only**. | Node rewrite; Rust/C# engine; SabberStone; Fireplace; `hearthsim/` v1 as product engine. |
+| Rules engine | **Keep Python `hs2/`** | Hard asset; clone/search do not exist yet — rewriting for “speed” is false optimization. Current CPython on Win11 + macOS + Linux/Wine. If identity tests pass but clone &lt;100 µs fails, **v1+ Cython on `clone` only**. | Node rewrite; Rust/C# engine; SabberStone; Fireplace; `hearthsim/` v1 as product engine. |
 | Evaluator / solvers | **Python**, same process as engine | Lethal and WP already in `hs2`. Clone+search must call `play_card`. | Separate TS evaluator. |
 | Log parse | **PyPI `hearthstone` (`hslog`) Packet Tree** | Only maintained Power.log Packet-Tree library. HSDT is C# and not embeddable. Pin version; vendor wheel if freeze fails. | From-scratch parser in Rust/TS; EntityTreeExporter; regex-only forever. |
 | Local services | **Python `ThreadingHTTPServer`** | `app.py` already owns routes, jobs, PyInstaller. | Node rewrite; FastAPI unless forced. |
@@ -839,11 +855,11 @@ def wp_from_visible(vs, us_pid) -> float:
 
 ### 2.7 Internal APIs
 
-**Keep every current route.** `webui.html` continues to call them. Additive only.
+**Keep every current route.** The UI continues to call them. Additive only.
 
 | Method | Path | Now | After |
 |---|---|---|---|
-| GET | `/` | `webui.html` | same + new tabs |
+| GET | `/` | the built React app in `web/dist` (was `webui.html`) | same |
 | POST | `/api/resolve` | `evaluate.try_resolve` | unchanged |
 | POST | `/api/analyze` | job gauntlet | unchanged |
 | POST | `/api/optimize` | job hill-climb | unchanged |
@@ -1682,7 +1698,7 @@ User answers are **final**. Remaining rows are documented defaults, now **accept
 | # | Question | Status | Decision |
 |---|---|---|---|
 | Q1 | UI language | **Closed** | **Bilingual from day one (en + uk).** Locale files in MVP. Existing UA copy → `uk`; English → `en` for old tabs + new screens. |
-| Q2 | hslog / stack | **Closed** | **Python 3.11 + PyPI `hearthstone` (`hslog`) + stdlib sqlite3.** Pin `hearthstone` and `pytest`. Vendor hslog if freeze fails. No custom parser, Node rewrite, Rust engine, Electron, Postgres, numpy/torch in MVP. v1 UI = Tauri. Clone stays Python until measured; Cython-on-clone only if &lt;100 µs fails after identity tests. |
+| Q2 | hslog / stack | **Closed** | **Current CPython + PyPI `hearthstone` (`hslog`) + stdlib sqlite3.** Pin `hearthstone` and `pytest`. Vendor hslog if freeze fails. No custom parser, Node rewrite, Rust engine, Electron, Postgres, numpy/torch in MVP. v1 UI = Tauri. Clone stays Python until measured; Cython-on-clone only if &lt;100 µs fails after identity tests. |
 | Q3 | `log.config` write | **Closed** | **Show a snippet; user pastes (MVP).** Auto-write with backup is v1. |
 | Q4 | Player identity | **Closed** | **FRIENDLY/OPPOSING from Zone.log.** Battletag is optional override, not required. |
 | Q5 | Raw Power.log | **Closed** | **Compress last-game slice into `games.raw_power` in SQLite.** |
@@ -1691,7 +1707,7 @@ User answers are **final**. Remaining rows are documented defaults, now **accept
 | Q8 | Overlay platform | **Closed** | **Windows 11 first.** Wine overlay is a bonus. Author Wine client = import fixtures only. |
 | Q9 | Live lethal line | **Closed** | Post-game full line. Live opt-in default = **full line**. “Hint only” checkbox is v1. |
 | Q10 | Retention | **Default accepted** | Keep forever local; user deletes. |
-| Q11 | `hearthsim/` v1 | **Default accepted** | Freeze. Classic puzzles only if cheap. |
+| Q11 | `hearthsim/` v1 | **Reopened → deleted** | Freezing it meant nobody ran it; it broke on Windows unnoticed. Removed with its drivers (A6). |
 | Q12 | Discover forced picks | **Default accepted** | `forced_picks` on `apply`; every discover goes through `Game.discover`. |
 | Q13 | Import vs live tail | **Closed** | Import-first (U0 Must). U1 live tail is v1. No 2 s SLA. |
 
@@ -1701,7 +1717,7 @@ User answers are **final**. Remaining rows are documented defaults, now **accept
 
 | Decision | Rationale | Alternatives rejected |
 |---|---|---|
-| **Keep Python 3.11 `hs2` as the only rules engine** | Hard asset; 2026 coverage already paid for. Speed later = Cython on `clone` if measured. | Node rewrite; Rust engine; SabberStone; Fireplace; dual engine. |
+| **Keep Python `hs2` as the only rules engine** | Hard asset; 2026 coverage already paid for. Speed later = Cython on `clone` if measured. | Node rewrite; Rust engine; SabberStone; Fireplace; dual engine. |
 | **Don’t rewrite backend in TypeScript/Node** | Engine+eval must in-process call `play_card`. Node would duplicate rules or RPC every clone. | TS services + Python sidecar for engine only — extra process for no gain in MVP. |
 | **UI: HTML MVP → Tauri+React v1, not Electron** | Replay needs a real frontend; Tauri is lighter; HTML is enough to prove capture+review. | Electron; PySide; staying on vanilla forever. |
 | **SQLite event store, not jsonl or cloud** | Two jsonl schemas already failed; need queries for leaks. | Postgres; Firebase; append jsonl forever. |
@@ -1718,12 +1734,12 @@ User answers are **final**. Remaining rows are documented defaults, now **accept
 | **Clone copies `_by_eid` first (void/overflow too)** | Irida `Player.void` and Godfrey overflow insts are off-board (`impls.py`). | Copy only `hand`/`deck`/`board` then rebuild `_by_eid`. |
 | **SQLite single-writer queue; pending reviews first** | ThreadingHTTPServer + jobs + tailer cannot share one Connection. | Default sqlite3 from any thread; in-memory JOBS as source of truth. |
 | **Custom `clone()`, not `deepcopy`** | CardDef function pointers; listener records. | `pickle` roundtrip. |
-| **Freeze `hearthsim/` v1** | Avoid two live engines. | Port v1 cards into v2. |
+| **Delete `hearthsim/` v1** | Avoid two engines; freezing it just let it rot unnoticed. | Freeze in place; port v1 cards into v2. |
 | **Constructed-only product** | Solo budget. | Arena+BG in MVP. |
 | **PyInstaller remains the MVP ship vehicle; spec currently misses `winprob.json`** | `build_app.sh` has it; `TavernLab.spec` does not. Verify on Win11. | Assume the onefile already serves `/api/winprob`. |
 | **Bilingual MVP (en + uk)** | User decision. Old tabs + new screens. OS default + Settings toggle. | English-only new strings; defer uk rewrite. |
 | **hslog (`hearthstone`) is the importer** | Only maintained Packet-Tree lib; HSDT is C# and not embeddable. | Custom Rust/TS parser; EntityTreeExporter. |
-| **Python 3.11 stays; no engine rewrite for speed** | `hs2/` is the hard asset. Cython on `clone` only if measured. | Node rewrite; Rust engine; Electron. |
+| **Python stays; no engine rewrite for speed** | `hs2/` is the hard asset. Cython on `clone` only if measured. | Node rewrite; Rust engine; Electron. |
 | **Identity = Zone.log FRIENDLY/OPPOSING** | Battletag optional override. | Require a `Name#12345`-style battletag. |
 | **`games.raw_power` gzip of last slice** | Rotation kills path references. | Path-only. |
 | **Overlay Windows 11 first** | Author Wine client is fixtures only. | Block v1 overlay on Wine. |

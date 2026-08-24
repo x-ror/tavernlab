@@ -16,9 +16,10 @@ SH = os.path.join(ROOT, "build_app.sh")
 
 # Everything opened by path at runtime rather than imported.
 RUNTIME_DATA = [
-    "webui.html",
     "hs2/standard_cards.json",
+    "hs2/wild_cards.json",
     "hs2/meta_decks_2026.json",
+    "hs2/wild_decks.json",
     "hs2/winprob.json",
     "store/schema.sql",
     "locales/en.json",
@@ -77,7 +78,9 @@ def test_requirements_pin_hslog_exactly():
 def test_tos_grep_is_clean():
     import subprocess
     import sys
-    out = subprocess.run([sys.executable, "tools_tos_grep.py"], cwd=ROOT,
+    out = subprocess.run([sys.executable,
+                          os.path.join("scripts", "tools_tos_grep.py")],
+                         cwd=ROOT,
                          capture_output=True, text=True)
     assert out.returncode == 0, out.stdout
 

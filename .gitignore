@@ -20,6 +20,10 @@ advisor_cache/
 coach_log.md
 watcher.pid
 
+# Сирий корпус HearthstoneJSON — вхідні дані для hs2/build_data.py,
+# 9 МБ, перезавантажується через `build_data.py --fetch`.
+cards.json
+
 # ─── Артефакти збірки ────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
@@ -31,11 +35,9 @@ venv/
 .venv/
 
 # ─── Вивід пайплайнів (регенерується скриптами з README) ─────────────
-# run_optimize.py → optimized.json → run_final.py → results.json
-#                                               → make_report.py
-optimized.json
+# scripts/run2_optimize.py → optimized2.json → scripts/run2_final.py
+#     → results2.json → scripts/make_report.py
 optimized2.json
-results.json
 results2.json
 report_data.json
 site_classic.json
@@ -56,3 +58,7 @@ hs2/impls_sandbox.py
 *.swp
 *~
 .DS_Store
+
+# Кеш ілюстрацій (scripts/fetch_art.py). Арт — власність Blizzard:
+# кешуємо для особистого використання, у репозиторій не кладемо.
+art_cache/

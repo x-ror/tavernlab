@@ -340,7 +340,7 @@ def _class_of_card(card_id):
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         path = os.path.join(here, "hs2", "standard_cards.json")
         try:
-            raw = json.load(open(path))
+            raw = json.load(open(path, encoding="utf-8"))
         except OSError:
             _CARD_CLASS_CACHE["__loaded__"] = True
             return None

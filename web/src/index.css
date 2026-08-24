@@ -1,0 +1,643 @@
+/* ==========================================================================
+   TavernLab — visual system.
+
+   Dark by design, not by preference: this is a companion to a game that
+   is itself lit like a tavern, and every screen is dominated by card art
+   that was authored on a dark ground. The palette is three warm greys, a
+   brass accent, and the eleven Warcraft class colours (see classes.js).
+
+   Spectrum supplies the components and their spacing scale. This file
+   supplies the atmosphere and the four things Spectrum has no component
+   for: hero medallions, card tiles, mana gems, and the win-probability
+   chart's hatching.
+   ========================================================================== */
+
+:root {
+  /* Ground: warm, not blue-black. A neutral #111 next to Hearthstone's
+     art reads as a broken screenshot. */
+  --tl-bg: #14100e;
+  --tl-bg-2: #1b1613;
+  --tl-surface: #201a16;
+  --tl-surface-2: #291f1a;
+  --tl-line: rgba(201, 162, 39, 0.18);
+  --tl-line-soft: rgba(255, 255, 255, 0.07);
+
+  /* Brass. One accent, used for structure — headings, rules, frames. */
+  --tl-gold: #c9a227;
+  --tl-gold-lit: #e8c65a;
+  --tl-gold-deep: #8a6d14;
+
+  --tl-text: #efe6db;
+  --tl-muted: #a2968a;
+  --tl-faint: rgba(239, 230, 219, 0.45);
+
+  --tl-pos: #4cbf8a;
+  --tl-neg: #e0525a;
+  --tl-warn: #e8a33d;
+  --tl-accent: var(--tl-gold-lit);
+
+  --tl-grid: rgba(201, 162, 39, 0.16);
+  --tl-wp-line: #d8b45a;
+  --tl-wp-fill: rgba(201, 162, 39, 0.08);
+  --tl-wp-hatch: rgba(201, 162, 39, 0.34);
+
+  --tl-display: 'Palatino Linotype', 'Book Antiqua', 'Iowan Old Style',
+    Palatino, Georgia, 'Times New Roman', serif;
+
+  --tl-shadow: 0 2px 4px rgba(0, 0, 0, 0.5), 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--tl-bg);
+  color: var(--tl-text);
+}
+
+/* The room. Two pools of warm light and a vignette, so the page has a
+   centre instead of being an even field of dark grey. */
+.tl-room {
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(1100px 520px at 18% -8%, rgba(201, 162, 39, 0.11), transparent 62%),
+    radial-gradient(900px 460px at 88% 4%, rgba(120, 62, 30, 0.15), transparent 60%),
+    linear-gradient(180deg, var(--tl-bg-2) 0%, var(--tl-bg) 46%, #0e0b09 100%);
+}
+
+/* Film grain. An SVG turbulence, ~200 bytes, no image request. It keeps
+   the big flat areas from banding on cheap panels. */
+.tl-room::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.32;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+}
+
+/* ------------------------------------------------------------- typography */
+.tl-display {
+  font-family: var(--tl-display);
+  letter-spacing: 0.01em;
+}
+
+.tl-brand {
+  font-family: var(--tl-display);
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  color: var(--tl-text);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.6);
+}
+
+.tl-brand em {
+  font-style: normal;
+  color: var(--tl-gold-lit);
+}
+
+.tl-eyebrow {
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--tl-muted);
+}
+
+/* ----------------------------------------------------------------- panels */
+.tl-panel {
+  position: relative;
+  border-radius: 10px;
+  border: 1px solid var(--tl-line);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 120px),
+    var(--tl-surface);
+  box-shadow: var(--tl-shadow);
+}
+
+/* A hairline of brass along the top edge — the one ornament that repeats. */
+.tl-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  border-radius: 10px 10px 0 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(201, 162, 39, 0.55) 22%,
+    rgba(232, 198, 90, 0.7) 50%,
+    rgba(201, 162, 39, 0.55) 78%,
+    transparent
+  );
+  pointer-events: none;
+}
+
+.tl-panel-title {
+  font-family: var(--tl-display);
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--tl-text);
+  margin: 0;
+}
+
+/* Stat tile: a class-agnostic figure, big and quiet. */
+.tl-stat {
+  position: relative;
+  overflow: hidden;
+  border-radius: 10px;
+  border: 1px solid var(--tl-line-soft);
+  background: linear-gradient(160deg, var(--tl-surface-2), var(--tl-surface));
+  padding: 14px 16px;
+  box-shadow: var(--tl-shadow);
+}
+
+.tl-stat-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--tl-muted);
+}
+
+.tl-stat-value {
+  font-family: var(--tl-display);
+  font-size: 2.1rem;
+  font-weight: 700;
+  line-height: 1.1;
+  margin-top: 2px;
+}
+
+.tl-stat-hint {
+  font-size: 0.74rem;
+  color: var(--tl-faint);
+}
+
+/* -------------------------------------------------------------- medallion */
+.tl-portrait {
+  position: relative;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.7),
+    0 2px 10px rgba(0, 0, 0, 0.55);
+}
+
+.tl-portrait img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 28%;
+  display: block;
+}
+
+/* The brass ring, drawn rather than downloaded. */
+.tl-portrait-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  pointer-events: none;
+  border: 2px solid transparent;
+  background:
+    linear-gradient(160deg, var(--tl-gold-lit), var(--tl-gold-deep) 45%, var(--tl-gold-lit))
+      border-box;
+  -webkit-mask:
+    linear-gradient(#000 0 0) padding-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.75);
+}
+
+.tl-versus {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.tl-versus-mark {
+  font-family: var(--tl-display);
+  font-size: 0.78rem;
+  letter-spacing: 0.14em;
+  color: var(--tl-gold);
+  opacity: 0.85;
+}
+
+/* ------------------------------------------------------------- card tiles */
+.tl-tile {
+  position: relative;
+  overflow: hidden;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.75);
+  outline: 1px solid var(--tl-line-soft);
+  outline-offset: -2px;
+  background: linear-gradient(160deg, #2b2320, #17120f);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+  isolation: isolate;
+}
+
+.tl-tile-minion {
+  width: 146px;
+  height: 54px;
+}
+
+.tl-tile-hand {
+  width: 148px;
+  height: 38px;
+}
+
+/* A decklist. `auto-fill` + `1fr` means the row is always full: the
+   tiles grow into the space instead of leaving a ragged right edge. */
+.tl-cardgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+}
+
+.tl-cardgrid .tl-tile {
+  width: auto;
+  height: 56px;
+}
+
+.tl-cardgrid .tl-tile-name {
+  font-size: 0.78rem;
+  line-height: 1.2;
+}
+
+/* Taller tiles can show more of the art before the scrim takes over. */
+.tl-cardgrid .tl-tile-scrim {
+  background: linear-gradient(
+    90deg,
+    rgba(10, 8, 7, 0.9) 0%,
+    rgba(10, 8, 7, 0.62) 46%,
+    rgba(10, 8, 7, 0.18) 100%
+  );
+}
+
+.tl-cardgrid .tl-gem {
+  width: 22px;
+  height: 22px;
+  font-size: 0.78rem;
+}
+
+.tl-cardgrid .tl-tile-name {
+  left: 30px;
+}
+
+.tl-tile-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* Tile art is authored wide with the subject right of centre. */
+  object-position: 62% 50%;
+  z-index: -2;
+}
+
+.tl-tile-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(
+    90deg,
+    rgba(10, 8, 7, 0.92) 0%,
+    rgba(10, 8, 7, 0.72) 42%,
+    rgba(10, 8, 7, 0.34) 100%
+  );
+}
+
+.tl-tile-name {
+  position: absolute;
+  left: 26px;
+  right: 26px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.15;
+  color: #f4ece1;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.tl-tile-hand .tl-tile-name {
+  right: 6px;
+}
+
+/* A copy count sits where the name would otherwise run to, so the name
+   is given the room rather than painted over. */
+.tl-tile-hand.is-counted .tl-tile-name {
+  right: 26px;
+}
+
+.tl-count {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.5;
+  color: var(--tl-gold-lit);
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid var(--tl-gold-deep);
+}
+
+/* The minion name gets the top band to itself, clear of both discs. */
+.tl-tile-minion .tl-tile-name {
+  left: 7px;
+  right: 7px;
+  top: 5px;
+  transform: none;
+  font-size: 0.7rem;
+  line-height: 1.12;
+  max-height: 2.24em;
+}
+
+.tl-tile.is-taunt {
+  outline-color: rgba(190, 190, 200, 0.75);
+  outline-width: 2px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.8), 0 2px 10px rgba(0, 0, 0, 0.6);
+}
+
+.tl-tile.is-shield {
+  outline-color: var(--tl-gold-lit);
+  outline-width: 2px;
+}
+
+.tl-tile.is-dead {
+  filter: grayscale(0.8) brightness(0.55);
+}
+
+/* Mana gem and the two stat discs. Same shape language as the game.
+   `tl-cs` rather than `tl-stat`: the dashboard already owns that name,
+   and sharing it dressed every disc in a 16px-padded panel. */
+.tl-gem,
+.tl-cs {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  border: 1px solid rgba(0, 0, 0, 0.7);
+}
+
+.tl-gem {
+  left: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: radial-gradient(circle at 35% 30%, #7ec8f5, #1560a8 70%, #0b3c6e);
+  box-shadow: 0 0 6px rgba(60, 150, 230, 0.5);
+}
+
+.tl-cs {
+  width: 17px;
+  height: 17px;
+  bottom: 3px;
+  font-size: 0.68rem;
+}
+
+.tl-tile .tl-atk {
+  left: 3px;
+  background: radial-gradient(circle at 35% 30%, #ffd98a, #c98a1c 70%, #6d4708);
+}
+
+.tl-tile .tl-hp {
+  right: 3px;
+  background: radial-gradient(circle at 35% 30%, #ff9b96, #c0272d 70%, #6d0f12);
+}
+
+.tl-tile .tl-hp.is-hurt {
+  box-shadow: 0 0 7px rgba(224, 82, 90, 0.75);
+}
+
+.tl-tile-marks {
+  position: absolute;
+  right: 3px;
+  top: 3px;
+  display: flex;
+  gap: 3px;
+}
+
+.tl-mark {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: block;
+  border: 1px solid rgba(0, 0, 0, 0.6);
+}
+
+.tl-mark-taunt {
+  background: #c9ccd6;
+}
+.tl-mark-shield {
+  background: var(--tl-gold-lit);
+}
+.tl-mark-stealth {
+  background: #7e6ba8;
+}
+.tl-mark-frozen {
+  background: #7fd4f0;
+}
+
+/* --------------------------------------------------------------- the hero
+   banner on the coach home: portrait, name, and a wash of class colour. */
+.tl-banner {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid var(--tl-line);
+  box-shadow: var(--tl-shadow);
+  padding: 26px 30px;
+  min-height: 190px;
+  display: flex;
+  align-items: center;
+  background: linear-gradient(100deg, var(--tl-surface-2) 0%, var(--tl-surface) 55%, var(--tl-bg-2) 100%);
+}
+
+.tl-banner-art {
+  position: absolute;
+  inset: 0 0 0 auto;
+  /* Sharp, and with no medallion in front of it. At this width the
+     block is roughly 1.4:1 rather than a 5:1 strip, so `classFocal()`
+     can put the face in frame for every hero — checked against all
+     eleven arts. The mask fades it into the panel, so there is no hard
+     edge for anything to line up against. */
+  width: 46%;
+  object-fit: cover;
+  opacity: 0.9;
+  mask-image: linear-gradient(90deg, transparent, #000 62%);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 62%);
+  pointer-events: none;
+}
+
+.tl-banner-name {
+  font-family: var(--tl-display);
+  font-size: 2.6rem;
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.65);
+}
+
+.tl-banner-stats {
+  font-size: 0.95rem;
+  color: var(--tl-text);
+  opacity: 0.82;
+}
+
+.tl-banner-stats b {
+  font-variant-numeric: tabular-nums;
+  color: var(--tl-gold-lit);
+  font-weight: 700;
+}
+
+/* ---------------------------------------------------------------- pieces */
+.tl-hero-plate {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  padding: 3px 12px 3px 4px;
+  border: 1px solid var(--tl-line-soft);
+  background: rgba(0, 0, 0, 0.35);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+}
+
+.tl-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 3px 6px 3px 12px;
+  font-size: 0.78rem;
+  border: 1px solid var(--tl-line-soft);
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.tl-rule {
+  height: 1px;
+  border: 0;
+  background: linear-gradient(90deg, transparent, var(--tl-line), transparent);
+  margin: 0;
+}
+
+.tl-scroll {
+  overflow-x: auto;
+}
+
+.tl-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.76rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--tl-muted);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--tl-line-soft);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+/* A row that behaves like a link without being one. */
+.tl-row {
+  display: block;
+  width: 100%;
+  text-align: start;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 0 -10px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.tl-row:hover,
+.tl-row:focus-visible {
+  background: rgba(201, 162, 39, 0.09);
+}
+
+/* The board sides in the replay. */
+.tl-side {
+  border-radius: 10px;
+  border: 1px solid var(--tl-line-soft);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 90px), var(--tl-surface);
+  padding: 14px 16px;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.tl-side.is-active {
+  border-color: rgba(201, 162, 39, 0.5);
+  box-shadow: 0 0 0 1px rgba(201, 162, 39, 0.16), var(--tl-shadow);
+}
+
+.tl-empty-board {
+  font-size: 0.8rem;
+  color: var(--tl-faint);
+  font-style: italic;
+  padding: 12px 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tl-row {
+    transition: none;
+  }
+}
+
+
+/* --------------------------------------------------------------- accent
+   Spectrum's accent is Adobe blue, which fights the brass everywhere it
+   appears — primary buttons, the active tab underline, slider fills.
+
+   The ramp is re-pointed at brass through Spectrum's own custom
+   properties. The selector matches on a substring because the emitted
+   class names are content-hashed, and `!important` is needed because the
+   tokens are declared on the provider element itself, not inherited from
+   above. If a future Spectrum renames these, the accent quietly goes
+   back to blue — a cosmetic regression, not a broken screen. */
+[class*='spectrum--dark'],
+[class*='spectrum--darkest'] {
+  --spectrum-accent-color-100: #241c07 !important;
+  --spectrum-accent-color-200: #33270a !important;
+  --spectrum-accent-color-300: #46360d !important;
+  --spectrum-accent-color-400: #5a4510 !important;
+  --spectrum-accent-color-500: #6d5412 !important;
+  --spectrum-accent-color-600: #7c6014 !important;
+  --spectrum-accent-color-700: #8a6d14 !important;
+  --spectrum-accent-color-800: #9a7a18 !important;
+  --spectrum-accent-color-900: #a7841c !important;
+  --spectrum-accent-color-1000: #b8921f !important;
+  --spectrum-accent-color-1100: #c9a227 !important;
+  --spectrum-accent-color-1200: #d8b23c !important;
+  --spectrum-accent-color-1300: #e8c65a !important;
+  --spectrum-accent-color-1400: #f2d787 !important;
+
+  --spectrum-accent-background-color-default: #8a6d14 !important;
+  --spectrum-accent-background-color-hover: #a7841c !important;
+  --spectrum-accent-background-color-down: #6d5412 !important;
+  --spectrum-accent-background-color-key-focus: #a7841c !important;
+}

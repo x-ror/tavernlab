@@ -30,9 +30,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 if not getattr(sys, "frozen", False):
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
+import console
+import paths
 from hs2 import carddata, decks
 
-CACHE_DIR = "advisor_cache"
+# The same directory `app.py` uses, so the interface and the CLI
+# share one cache instead of each building its own.
+CACHE_DIR = paths.in_home("advisor_cache")
+COACH_LOG = paths.in_home("coach_log.md")
 
 CLS_ALIASES = {
     "mage": "MAGE", "маг": "MAGE", "hunter": "HUNTER", "мисливець": "HUNTER",
@@ -47,7 +52,13 @@ CLS_ALIASES = {
 
 
 def deck_key(code):
-    return hashlib.sha1(code.strip().encode()).hexdigest()[:12]
+    """Must agree with `app.deck_key`: both address one cache file."""
+    from hs2 import deckstring
+    try:
+        code = deckstring.extract(code)
+    except ValueError:
+        code = code.strip()
+    return hashlib.sha1(code.encode()).hexdigest()[:12]
 
 
 def load_deck(code):
@@ -91,7 +102,7 @@ def cmd_stats(args):
     json.dump({"code": args.deck.strip(), "cls": deck.cls,
                "deck_cards": sorted(deck_counts(deck)),
                "games_per_opp": args.games, "stats": stats},
-              open(path, "w"), ensure_ascii=False)
+              open(path, "w", encoding="utf-8"), ensure_ascii=False)
     total = sum(s["games"] for s in stats.values())
     print(f"{total} інструментованих боїв за {time.time()-t0:.0f}с "
           f"-> {path}")
@@ -105,7 +116,7 @@ def load_stats(code):
     if not os.path.exists(path):
         raise SystemExit("Спершу побудуйте статистику: "
                          f"python3 advisor.py stats --deck \"{code[:20]}…\"")
-    return json.load(open(path))
+    return json.load(open(path, encoding="utf-8"))
 
 
 # ---------------------------------------------------------------- mulligan
@@ -225,13 +236,14 @@ def cmd_coach(args):
     for cn, d in best:
         lines.append(f"- {cn}: {d:+.1%} коли дотягнута")
     lines.append("")
-    with open("coach_log.md", "a") as f:
+    with open(COACH_LOG, "a", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     print("\n".join(lines))
-    print("-> дописано в coach_log.md")
+    print(f"-> дописано в {COACH_LOG}")
 
 
 if __name__ == "__main__":
+    console.init()
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("stats")

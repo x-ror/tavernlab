@@ -19,22 +19,61 @@ from urllib.parse import parse_qs, urlparse
 
 if getattr(sys, "frozen", False):          # PyInstaller
     BASE = sys._MEIPASS
-    WORKDIR = os.path.dirname(sys.executable)
 else:
     BASE = os.path.dirname(os.path.abspath(__file__))
-    WORKDIR = BASE
 sys.path.insert(0, BASE)
-os.chdir(WORKDIR)
 
-from hs2 import carddata, decks
+import console
+import paths
+from hs2 import carddata, decks, formats
 from store import open_store
 
-PORT = 8765
+# The database, the log and the caches live in the user data
+# directory, not beside the program: a checkout is not a place to
+# keep a player's game history, and a frozen build gets replaced.
+WORKDIR = paths.ensure_home()
+
+# Overridable so a second instance can run beside the first. Two of them
+# on one port is not a clash you can see: the newcomer fails to bind and
+# every request is answered by whichever one got there first.
+PORT = int(os.environ.get("TAVERNLAB_PORT") or 8765)
+# The React/Spectrum front end, if it has been built. It is optional on
+# purpose: without `web/dist` the app is exactly what it was, and the
+# runtime still needs nothing but CPython.
+WEB_DIR = os.path.join(BASE, "web", "dist")
+WEB_TYPES = {".html": "text/html", ".js": "text/javascript",
+             ".css": "text/css", ".json": "application/json",
+             ".svg": "image/svg+xml", ".png": "image/png",
+             ".woff2": "font/woff2", ".woff": "font/woff",
+             ".ico": "image/x-icon", ".map": "application/json"}
+
+# Card and hero art, if `scripts/fetch_art.py` has been run. Serving is
+# read-only from disk and never falls back to the network: the whole
+# point of a prefetched cache is that looking at a card during a review
+# does not tell a CDN which card you are looking at. Missing art is a
+# 404 and the UI draws its own placeholder.
+ART_KINDS = ("hero", "tile", "art")
+ART_DIRS = [os.path.join(WORKDIR, "art_cache"),
+            os.path.join(BASE, "art_cache")]
+
+NOT_BUILT_HTML = """<!doctype html>
+<html lang="uk"><head><meta charset="utf-8"><title>TavernLab</title>
+<style>body{background:#14100e;color:#efe6db;font:16px/1.6 system-ui,
+sans-serif;display:grid;place-items:center;height:100vh;margin:0}
+div{max-width:34rem;padding:2rem}code{background:#000;padding:.15em .4em;
+border-radius:4px;color:#e8c65a}</style></head><body><div>
+<h1>Інтерфейс не зібрано</h1>
+<p>Зберіть його один раз:</p>
+<p><code>cd web &amp;&amp; npm install &amp;&amp; npm run build</code></p>
+<p>Потім перезавантажте цю сторінку. API вже працює.</p>
+</div></body></html>
+"""
+
 JOBS = {}          # id -> {status, progress:[], result, error}
 CACHE_DIR = os.path.join(WORKDIR, "advisor_cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 _lock = threading.Lock()
-_METAS = None
+_METAS = {}          # format -> gauntlet
 STORE = None       # set in main(); JOBS is progress-only, sqlite is truth
 
 # Observability: local, cheap, no SaaS. HTTP logging stays off unless
@@ -72,12 +111,18 @@ DEFAULT_SETTINGS = {
     "logs_dir": "",
     "language": "",            # "" = follow the browser/OS
     "deckstring": "",
+    "deck_name": "",
     "player_name": "",
     # Unused until the v1 tailer (PR 6). Kept here so the setting exists
     # and defaults to off before any live code can read it.
     "live_eval": "0",
     "live_lethal_mode": "line",
 }
+
+# Written by the app, not typed by the user: `deck_name` is lifted from
+# the `### Name` line of a pasted deck. It is a setting so it survives a
+# restart, but it must never appear as a field in the settings form.
+DERIVED_SETTINGS = ("deck_name",)
 
 
 def store():
@@ -90,19 +135,23 @@ def store():
     return STORE
 
 
-def metas():
-    global _METAS
+def metas(fmt=formats.STANDARD):
+    """The gauntlet for a format, cached per format."""
     with _lock:
-        if _METAS is None:
-            if not carddata.DEFS:
-                carddata.build_defs()
-            _METAS = decks.load_meta()
-    return _METAS
+        if fmt not in _METAS:
+            carddata.ensure_defs(fmt)
+            _METAS[fmt] = decks.load_meta(fmt)
+    return _METAS[fmt]
 
 
 def deck_key(code):
     import hashlib
-    return hashlib.sha1(code.strip().encode()).hexdigest()[:12]
+    from hs2 import deckstring
+    try:
+        code = deckstring.extract(code)
+    except ValueError:
+        code = code.strip()      # unparseable: hash it as given
+    return hashlib.sha1(code.encode()).hexdigest()[:12]
 
 
 def stats_path(code):
@@ -284,8 +333,11 @@ def all_settings():
 # -------------------------------------------------------------- API logic
 def api_resolve(payload):
     from evaluate import try_resolve
-    deck, info = try_resolve(payload["code"])
+    from hs2 import deckstring
+    code = payload["code"]
+    deck, info = try_resolve(code)
     info["ok"] = deck is not None
+    info["name"] = deckstring.deck_name(code)
     return info
 
 
@@ -297,22 +349,37 @@ def job_analyze(jid, code, games):
     from hs2.optimize import deck_counts
     deck, info = try_resolve(code)
     if deck is None:
+        if info.get("illegal"):
+            raise ValueError(
+                f"Не легальні у форматі «{info.get('format')}»: "
+                + ", ".join(info["illegal"]))
         raise ValueError(info.get("error") or
                          "Нереалізовані карти: " +
                          ", ".join(info["unimplemented"]))
     log = log_to(jid)
-    log(f"Клас: {info['cls'].title()}, {info['total']} карт. Симулюю…")
-    avg, rates = gauntlet_winrate(deck, metas(), games)
-    log(f"Оцінка готова ({games * len(metas())} боїв). Телеметрія…")
-    stats = build_stats(deck, metas(), n_per_opp=max(800, games))
+    # Everything below has to agree on the format: the gauntlet, the
+    # corpus the pool workers build, and the deck itself.
+    fmt = info.get("format") or formats.STANDARD
+    gauntlet = metas(fmt)
+    if not gauntlet:
+        raise ValueError(
+            f"Немає гаунтлета для формату «{fmt}» "
+            f"({decks.gauntlet_path(fmt)}).")
+    log(f"Клас: {info['cls'].title()}, {info['total']} карт "
+        f"[{fmt}]. Симулюю…")
+    avg, rates = gauntlet_winrate(deck, gauntlet, games, fmt=fmt)
+    log(f"Оцінка готова ({games * len(gauntlet)} боїв). Телеметрія…")
+    stats = build_stats(deck, gauntlet, n_per_opp=max(800, games),
+                        fmt=fmt)
     json.dump({"code": code.strip(), "cls": deck.cls,
                "deck_cards": sorted(deck_counts(deck)),
                "games_per_opp": games, "stats": stats},
-              open(stats_path(code), "w"), ensure_ascii=False)
+              open(stats_path(code), "w", encoding="utf-8"),
+              ensure_ascii=False)
     log("Готово.")
     coach = build_coach(code)
     return {"cls": info["cls"], "cards": info["cards"],
-            "avg": round(avg, 4),
+            "avg": round(avg, 4), "format": fmt,
             "rates": {k: round(v, 4) for k, v in rates.items()},
             "games": games, "coach": coach}
 
@@ -324,7 +391,14 @@ def job_optimize(jid, code):
     if deck is None:
         raise ValueError("Колода не резолвиться")
     log = log_to(jid)
-    best, wr, hist = optimize(deck, metas(), n_eval=250, rounds=2,
+    # `optimize` reads the loaded format off `carddata`, and `try_resolve`
+    # has just loaded the deck's own — but say it out loud so the gauntlet
+    # cannot silently be the other format's.
+    fmt = info.get("format") or formats.STANDARD
+    gauntlet = metas(fmt)
+    if not gauntlet:
+        raise ValueError(f"Немає гаунтлета для формату «{fmt}»")
+    best, wr, hist = optimize(deck, gauntlet, n_eval=250, rounds=2,
                               proposals=12, log=log)
     kept = [(o, i, round(d, 4)) for o, i, w, d in hist if d > 0.015]
     near = sorted([(o, i, round(d, 4)) for o, i, w, d in hist
@@ -470,11 +544,86 @@ def api_cards(payload):
     return {"cards": out}
 
 
+def tiers_path(fmt):
+    return os.path.join(WORKDIR, f"tiers_{fmt}.json")
+
+
+def job_tiers(jid, fmt, games):
+    """Play the gauntlet against itself. Quadratic, hence a job.
+
+    Cached to `WORKDIR/tiers_<fmt>.json` so the answer survives a
+    restart: nobody should have to re-run a 30k-game matrix to look at a
+    table they already computed.
+    """
+    from hs2 import tiers as tiers_mod
+    say = log_to(jid)
+    gauntlet = metas(fmt)
+    if not gauntlet:
+        raise ValueError(f"Немає гаунтлета для формату «{fmt}»")
+    out = tiers_mod.build(gauntlet, n_games=games, fmt=fmt, log=say)
+    out["computed_at"] = time.time()
+    with open(tiers_path(fmt), "w", encoding="utf-8") as fh:
+        json.dump(out, fh, ensure_ascii=False)
+    return out
+
+
+def api_tiers_start(payload):
+    fmt = (payload or {}).get("format") or formats.STANDARD
+    games = max(20, min(1000, int((payload or {}).get("games", 200))))
+    return {"job": start_job(job_tiers, fmt, games)}
+
+
+def api_tiers_read(query):
+    """The cached table, or `null` — never a computation on a GET."""
+    fmt = (query.get("format") or [formats.STANDARD])[0]
+    path = tiers_path(fmt)
+    if not os.path.exists(path):
+        return {"format": fmt, "tiers": None}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {"format": fmt, "tiers": None}
+
+
 def api_meta(payload):
+    """The gauntlet a deck is scored against, in full.
+
+    `cards` keeps its `[[name, count], ...]` shape — the UI maps deck
+    name to class from it. `cardlist` is the same deck with everything
+    needed to *draw* it: id for the art tile, cost for the curve, and
+    whether `hs2` can actually simulate the card.
+    """
     from hs2.optimize import deck_counts
-    return {"decks": [{"name": d.name, "cls": d.cls,
-                       "cards": sorted(deck_counts(d).items())}
-                      for d in metas()]}
+    fmt = (payload or {}).get("format") or formats.STANDARD
+    exported = decks.export_gauntlet(fmt)
+    out = []
+    for d in metas(fmt):
+        by_id = {}
+        for cid in d.card_ids:
+            by_id[cid] = by_id.get(cid, 0) + 1
+        cardlist = []
+        for cid, n in by_id.items():
+            cd = carddata.DEFS.get(cid)
+            if cd is None:
+                continue
+            cardlist.append({"id": cid, "card": cd.name, "n": n,
+                             "cost": cd.cost, "rarity": cd.rarity,
+                             "type": cd.type,
+                             "implemented": bool(cd.implemented)})
+        cardlist.sort(key=lambda c: (c["cost"], c["card"]))
+        code = exported.get(d.name) or {}
+        out.append({"name": d.name, "cls": d.cls,
+                    "archetype": d.archetype,
+                    "cards": sorted(deck_counts(d).items()),
+                    "cardlist": cardlist,
+                    # An importable code, and whether it is the whole
+                    # deck: a sideboard cannot be encoded from the
+                    # gauntlet file, so the UI has to say so.
+                    "deckstring": code.get("code"),
+                    "deckstring_cards": code.get("cards"),
+                    "deckstring_complete": code.get("complete", False)})
+    return {"format": fmt, "decks": out}
 
 
 def api_winprob(payload):
@@ -510,11 +659,21 @@ def api_import_last_session(payload):
 
 
 def api_set_settings(payload):
+    from hs2 import deckstring
     st = store()
     for key, value in payload.items():
         if key not in DEFAULT_SETTINGS:
             continue
-        st.submit("set_setting", key, "" if value is None else str(value))
+        value = "" if value is None else str(value)
+        if key == "deckstring" and value.strip():
+            name = deckstring.deck_name(value)
+            try:
+                value = deckstring.extract(value)
+            except ValueError:
+                pass             # keep it; /api/resolve will explain why
+            else:
+                st.submit("set_setting", "deck_name", name or "")
+        st.submit("set_setting", key, value)
     return {"settings": all_settings()}
 
 
@@ -721,18 +880,21 @@ def api_game_reparse(game_id):
 
 ROUTES = {"/api/resolve": api_resolve, "/api/mull": api_mull,
           "/api/predict": api_predict, "/api/meta": api_meta,
+          "/api/tiers": api_tiers_start,
           "/api/cardnames": api_cardnames, "/api/cards": api_cards,
           "/api/winprob": api_winprob,
           "/api/import/log": api_import_log,
           "/api/import/last_session": api_import_last_session,
           "/api/settings": api_set_settings}
 
-# GET routes. `webui.html`'s `api()` is POST-only, so the UI needs a
-# separate `getJSON()` for every one of these (design §2.7).
+# GET routes. The original UI's `api()` helper was POST-only, so the web
+# UI needs a plain fetch for every one of these (design §2.7).
 _GAME_RE = re.compile(r"^/api/games/(\d+)$")
 _GAME_SUB_RE = re.compile(r"^/api/games/(\d+)/(events|replay|review)$")
 _ANALYZE_RE = re.compile(r"^/api/games/(\d+)/(analyze|reparse)$")
 _LOCALE_RE = re.compile(r"^/locales/([a-z]{2}(?:-[A-Za-z]{2})?)\.json$")
+# Card ids are `[A-Za-z0-9_]`, hero art is filed under the class name.
+_ART_RE = re.compile(r"^/api/art/(hero|tile|art)/([A-Za-z0-9_]{1,64})$")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -763,9 +925,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         path, query = parsed.path, parse_qs(parsed.query)
-        if path in ("/", "/index.html"):
-            html = open(os.path.join(BASE, "webui.html"), "rb").read()
-            return self._send(html, ctype="text/html")
+        if path in ("/", "/index.html") or path == "/app" or                 path.startswith(("/app/", "/assets/")):
+            return self._send_web(path)
+        m = _ART_RE.match(path)
+        if m:
+            return self._send_art(m.group(1), m.group(2))
         m = _LOCALE_RE.match(path)
         if m:
             return self._send_locale(m.group(1))
@@ -783,6 +947,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({"settings": all_settings()})
             if path == "/api/labels":
                 return self._send(api_labels())
+            if path == "/api/tiers":
+                return self._reply(api_tiers_read(query))
             if path == "/api/metrics":
                 return self._send(api_metrics())
             m = _GAME_SUB_RE.match(path)
@@ -801,6 +967,59 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             return self._send({"error": str(e)}, 500)
         return self._send({"error": "not found"}, 404)
+
+    def _send_art(self, kind, name):
+        """Serve one prefetched illustration, or 404.
+
+        There is deliberately no network fallback here. `fetch_art.py`
+        fills the cache once, on purpose; a lazy download would put a
+        request on the wire for every card the player looks at, which is
+        exactly what the read-only-logs posture exists to avoid.
+        """
+        for ext, ctype in ((".jpg", "image/jpeg"), (".png", "image/png")):
+            for root in ART_DIRS:
+                target = os.path.join(root, kind, name + ext)
+                if os.path.isfile(target):
+                    body = open(target, "rb").read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Length", str(len(body)))
+                    # Immutable by card id: the browser should never ask
+                    # twice while scrubbing a replay.
+                    self.send_header("Cache-Control",
+                                     "public, max-age=31536000, immutable")
+                    self.end_headers()
+                    return self.wfile.write(body)
+        return self._send({"error": "no cached art",
+                           "hint": "python3 scripts/fetch_art.py"}, 404)
+
+    def _send_web(self, path):
+        """Serve the built front end out of `web/dist`.
+
+        Vite emits a relative-base bundle, so the entry is reachable as
+        `/app` and its assets as `/assets/...`. Anything that resolves
+        outside `WEB_DIR` is a 404 rather than a file read: this server
+        binds to loopback, but a path traversal is still a path
+        traversal.
+        """
+        rel = path[len("/app"):] if path.startswith("/app") else path
+        rel = rel.lstrip("/") or "index.html"
+        root = os.path.abspath(WEB_DIR)
+        target = os.path.abspath(os.path.join(root, rel))
+        if os.path.commonpath([target, root]) != root:
+            return self._send({"error": "not found"}, 404)
+        if not os.path.isfile(target):
+            # A missing build used to be a 404 next to a working classic
+            # UI. It is now the whole product, so the browser gets a page
+            # it can read rather than a JSON blob.
+            if rel == "index.html":
+                return self._send(NOT_BUILT_HTML.encode(), 404,
+                                  ctype="text/html")
+            return self._send({"error": "the web UI is not built: run "
+                                        "`npm run build` in web/"}, 404)
+        ctype = WEB_TYPES.get(os.path.splitext(target)[1],
+                              "application/octet-stream")
+        return self._send(open(target, "rb").read(), ctype=ctype)
 
     def _send_locale(self, lang):
         path = os.path.join(BASE, "locales", f"{lang}.json")
@@ -840,6 +1059,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    # Deliberately here and not at import: `tests` and the CLIs
+    # import this module, and a library that moves the process is a
+    # trap for every relative path its importer had.
+    os.chdir(WORKDIR)
     setup_logging()
     log.info("start workdir=%s debug=%s", WORKDIR, DEBUG)
     print("Таверна-Лаб: завантажую карти…")
@@ -855,6 +1078,9 @@ def main():
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     url = f"http://127.0.0.1:{PORT}"
     print(f"Готово: {url}  (Ctrl+C — вихід)")
+    if not os.path.isfile(os.path.join(WEB_DIR, "index.html")):
+        print("УВАГА: інтерфейс не зібрано — "
+              "`cd web && npm install && npm run build`")
     threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
         srv.serve_forever()
@@ -863,6 +1089,7 @@ def main():
 
 
 if __name__ == "__main__":
+    console.init()
     import multiprocessing
     multiprocessing.freeze_support()
     main()

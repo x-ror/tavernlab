@@ -11,9 +11,17 @@
 #    capture.hslog_import.
 
 datas = [
-    ('webui.html', '.'),
+    # The React/Spectrum UI — the whole front end since the vanilla
+    # `webui.html` was retired. Built by `npm run build` in web/;
+    # PyInstaller only copies it, so a freeze made without that step
+    # answers 404 on every page.
+    ('web/dist', 'web/dist'),
     ('hs2/standard_cards.json', 'hs2'),
-    ('hs2/meta_decks_2026.json', 'hs2'),
+    # The Wild pool and its gauntlet. Wild is a build-time choice the way
+    # web/dist is: without them the app serves Standard and says so.
+    ('hs2/wild_cards.json', 'hs2'),
+    ('hs2/meta_decks_2026.json', 'hs2'),   # Standard gauntlet
+    ('hs2/wild_decks.json', 'hs2'),        # Wild gauntlet
     ('hs2/winprob.json', 'hs2'),
     ('store/schema.sql', 'store'),
     ('locales/en.json', 'locales'),
@@ -26,7 +34,7 @@ hiddenimports = [
     'store', 'store.db', 'store.migrate_jsonl',
     'eval', 'eval.types', 'eval.visible', 'eval.snapshots',
     'eval.mapper', 'eval.ledger', 'eval.classify', 'eval.review',
-    'eval.taggers', 'eval.solvers', 'eval.solvers.lethal',
+    'eval.taggers', 'eval.i18n', 'eval.solvers', 'eval.solvers.lethal',
     'hslog', 'hslog.parser', 'hslog.packets', 'hslog.player',
     'hslog.tokens', 'hslog.export',
     'hearthstone', 'hearthstone.enums', 'aniso8601',

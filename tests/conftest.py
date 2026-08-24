@@ -1,12 +1,22 @@
 """Shared fixtures. `hs2` card data is built once per session (~1 s)."""
 import os
 import sys
+import tempfile
 
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+# `app` and `advisor` resolve their data directory at import time, and
+# a test run must never land in the real one: it would read the
+# developer's own games and write a cache into their profile.
+# One stable directory rather than mkdtemp, which would leave a new
+# one behind on every run.
+os.environ.setdefault(
+    "TAVERNLAB_HOME",
+    os.path.join(tempfile.gettempdir(), "tavernlab-tests"))
 
 
 @pytest.fixture(scope="session", autouse=True)

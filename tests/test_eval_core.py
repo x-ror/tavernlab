@@ -6,6 +6,7 @@ rules are the product: a wrong `lethal_ok` publishes a false accusation.
 import pytest
 
 from eval import classify as cl
+from eval.i18n import text_of
 from eval import ledger
 from eval.mapper import Overlay, build_overlay, _filler_deck
 from eval.solvers import lethal as lethal_solver
@@ -168,7 +169,7 @@ def test_no_lethal_publishes_nothing(carddb):
     assert not f.available and not f.missed
     v = cl.classify(cl.gates_for(lethal=f.to_dict()))
     assert v.label is None
-    assert "search_ok=0" in v.reason
+    assert "search_ok=0" in text_of(v.reason)
 
 
 def test_lethal_ok_false_suppresses_the_label(carddb):
@@ -245,7 +246,7 @@ def test_notes_carry_a_caveat_not_a_verdict():
     vs.hands[1] = [card(20, 1, name="Frostbolt", cost=2)]
     note = ledger.build(vs).notes[0]
     assert "note" in note.tags
-    assert note.caveats and "not a verdict" in note.caveats[0]
+    assert note.caveats and "not a verdict" in text_of(note.caveats[0])
     assert not any(t in note.tags for t in ("blunder", "mistake"))
 
 

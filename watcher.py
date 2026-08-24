@@ -23,6 +23,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import console  # noqa: E402  (needs the path above)
+import paths    # noqa: E402
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
@@ -32,8 +35,8 @@ def main():
                     help="взяти найновішу сесію з --logs-dir")
     ap.add_argument("--only-last", action="store_true",
                     help="імпортувати лише останню гру з файлу")
-    ap.add_argument("--workdir", default=os.path.dirname(
-        os.path.abspath(__file__)), help="де лежить tavernlab.sqlite")
+    ap.add_argument("--workdir", default=paths.default_home(),
+                    help="де лежить tavernlab.sqlite")
     ap.add_argument("--dry-run", action="store_true",
                     help="розібрати й показати, нічого не записуючи")
     args = ap.parse_args()
@@ -59,7 +62,7 @@ def main():
         return
 
     from store import open_store
-    store = open_store(args.workdir)
+    store = open_store(paths.ensure_home(args.workdir))
     try:
         ids = import_log(store, path, only_last=args.only_last)
     finally:
@@ -72,4 +75,5 @@ def main():
 
 
 if __name__ == "__main__":
+    console.init()
     main()

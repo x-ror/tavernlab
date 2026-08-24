@@ -7,6 +7,7 @@ was a mistake" is a claim this layer is not entitled to make.
 
 Budget: <1 ms per turn (design §3.2).
 """
+from eval.i18n import msg
 from eval.types import Explanation
 
 # What the log calls "this minion cannot attack right now".
@@ -107,35 +108,38 @@ def build(vs, us_pid=None, side="us", hero_power_used=None,
 
 
 def notes(led):
-    """Template-rendered, keyed for i18n. Never an LLM (design §3.4)."""
+    """Template-rendered, keyed for i18n. Never an LLM (design §3.4).
+
+    Every string goes through `eval.i18n.msg`, which pairs a stable key
+    with its numbers and renders the English from `locales/en.json`. A
+    review is stored once and read for years, so it cannot be frozen in
+    whatever language happened to be selected the day it was written.
+    """
     out = []
+    unspent = msg("note.mana_unspent", turn=led.turn, mana=led.mana_left)
     if led.mana_left > 0 and led.affordable_unplayed:
         cards = ", ".join(c["card"] for c in led.affordable_unplayed[:3])
         out.append(Explanation(
-            what=f"Ended turn {led.turn} with {led.mana_left} mana unspent",
-            why_bad=[f"{cards} was affordable"],
+            what=unspent,
+            why_bad=[msg("note.mana_affordable", cards=cards)],
             tags=["mana_waste", "note"],
-            caveats=["Holding mana is sometimes correct (secrets, "
-                     "combo, play-around); this is an observation, "
-                     "not a verdict."]))
+            caveats=[msg("note.mana_caveat")]))
     elif led.mana_left >= 2:
-        out.append(Explanation(
-            what=f"Ended turn {led.turn} with {led.mana_left} mana unspent",
-            tags=["mana_waste", "note"]))
+        out.append(Explanation(what=unspent, tags=["mana_waste", "note"]))
     if led.unused_attacks:
         who = ", ".join(led.unused_attackers[:3])
         out.append(Explanation(
-            what=f"{led.unused_attacks} attack(s) unused on turn "
-                 f"{led.turn}",
-            why_bad=[f"{who} could still have swung"],
+            what=msg("note.attacks_unused", n=led.unused_attacks,
+                     turn=led.turn),
+            why_bad=[msg("note.attackers_could_swing", who=who)],
             tags=["unused_attack", "note"]))
     if led.hero_attack_unused:
         out.append(Explanation(
-            what=f"Hero attack unused on turn {led.turn}",
+            what=msg("note.hero_attack_unused", turn=led.turn),
             tags=["unused_attack", "note"]))
     if led.hero_power_skipped and led.mana_left >= 2:
         out.append(Explanation(
-            what=f"Hero power unused on turn {led.turn} "
-                 f"({led.mana_left} mana left)",
+            what=msg("note.hero_power_unused", turn=led.turn,
+                     mana=led.mana_left),
             tags=["hero_power", "note"]))
     return out

@@ -112,18 +112,18 @@ def classify(gates):
 
 def hidden_reason(gates):
     """Say *why* nothing was published; the UI shows this verbatim."""
+    from eval.i18n import msg
     if not gates.get("search_ok"):
-        return ("search_ok=0; logistic ΔWP is not a ranking signal")
+        return msg("why.search_off")
     if not gates.get("actions_complete"):
-        return "actions_complete=0; the legal set is not provably complete"
-    return "no label passed its gate"
+        return msg("why.actions_incomplete")
+    return msg("why.no_gate")
 
 
 def wp_caveat():
     """The sentence that must accompany every win-probability chart."""
-    return ("WP is logistic, 8 board features + bias (9 weights), 66.7% "
-            "on sim snapshots; hatched; not a play-ranking oracle; not "
-            "calibrated on your games.")
+    from eval.i18n import render
+    return render("rev.caveat_wp")
 
 
 def legend():

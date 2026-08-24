@@ -11,6 +11,7 @@ UI)".  Three rules it exists to enforce:
 import time
 
 from eval import classify as cl
+from eval.i18n import msg, text_of, texts_of
 from eval import ledger as ledger_mod
 from eval.mapper import fields_parse
 from eval import taggers
@@ -379,26 +380,24 @@ def _mulligan_choices(pt):
 def _explain(pt, finding, verdict, vs=None, us_pid=None, ctx=None,
              chosen=None):
     name = pt.get("name") or pt.get("card_id") or pt.get("kind") or "action"
-    what = {"play": f"Played {name}", "attack": f"Attacked with {name}",
-            "hero_power": "Used hero power",
-            "location": f"Used {name}",
-            "mulligan": "Mulligan", "discover": f"Discover from {name}",
-            "turn_start": "Turn start"}.get(pt.get("kind"),
-                                            f"{pt.get('kind')} {name}")
-    e = Explanation(what=what, tags=[pt.get("kind") or "action"])
+    kind = pt.get("kind")
+    if kind in ("play", "attack", "hero_power", "location", "mulligan",
+                "discover", "turn_start"):
+        what = msg("act." + kind, name=name)
+    else:
+        what = msg("act.other", kind=kind, name=name)
+    e = Explanation(what=what, tags=[kind or "action"])
     if finding is not None and finding.missed:
-        e.why_bad.append(f"Lethal was available: {finding.plan}")
+        # The lethal *plan* itself is card names from the solver, not
+        # prose; it is passed through rather than translated.
+        e.why_bad.append(msg("rev.why_lethal_available", plan=finding.plan))
         e.tags.append("lethal")
         if finding.approx:
-            e.caveats.append(
-                "The lethal line was found by a bounded search and is "
-                "not proven exact.")
+            e.caveats.append(msg("rev.caveat_lethal_bounded"))
     if verdict.label is None and verdict.reason:
         e.caveats.append(verdict.reason)
     if finding is not None and not finding.hand_complete:
-        e.caveats.append(
-            "Some cards in hand are not implemented, so 'no lethal' "
-            "here means unknown, not proven absent.")
+        e.caveats.append(msg("rev.caveat_hand_incomplete"))
     _add_strategic(e, pt, vs, us_pid, ctx, chosen)
     return e
 
@@ -439,48 +438,61 @@ def _ledger_moments(turns):
                 if d.get("seq") is not None]
         anchor = seqs[-1] if seqs else None
         for note in led.get("notes", []):
+            why = note.get("why_bad") or []
             scored.append((weight, {
                 "seq": anchor, "turn": t["turn"],
                 "title": note.get("what"), "label": "note",
-                "detail": "; ".join(note.get("why_bad") or []),
+                # `detail` stays the English string every existing
+                # consumer reads; `details` is the same thing keyed, for
+                # a UI that speaks another language.
+                "detail": "; ".join(texts_of(why)),
+                "details": why,
                 "conf": None}))
     scored.sort(key=lambda x: -x[0])
     return [m for _w, m in scored[:MAX_LEDGER_MOMENTS]]
 
 
 def _report(turns, moments, result, outcome, timed_out=False):
+    """The report, keyed.
+
+    `headline`/`bullets`/`caveats` stay the English strings they always
+    were — stored reviews and every current consumer read those. `i18n`
+    carries the same content as (key, params) so the UI can render it in
+    the player's language. Both come from one definition in
+    `eval.i18n.msg`, so they cannot drift apart.
+    """
     missed = [m for m in moments if m["label"] == "missed_lethal"]
-    bullets, caveats = [], [cl.wp_caveat()]
+    bullets, caveats = [], [msg("rev.caveat_wp")]
     if missed:
         first = missed[0]
-        headline = (f"Thrown on turn {first['turn']}: lethal was on the "
-                    f"board.")
+        headline = msg("rev.headline_thrown", turn=first["turn"])
         for m in missed:
-            bullets.append(f"Missed lethal on turn {m['turn']} "
-                           f"({m['detail']}).")
+            bullets.append(msg("rev.bullet_missed_lethal",
+                               turn=m["turn"], detail=m["detail"]))
         if any(m.get("approx") for m in missed):
-            caveats.append(
-                "A lethal marked approximate came from a bounded taunt "
-                "search; the line is plausible, not proven.")
+            caveats.append(msg("rev.caveat_approx"))
     elif result == "loss":
-        headline = "No missed lethal found; the leaks were smaller."
+        headline = msg("rev.headline_loss")
     elif result == "win":
-        headline = "Won. Nothing critical flagged."
+        headline = msg("rev.headline_win")
     else:
-        headline = "Game reviewed."
+        headline = msg("rev.headline_default")
 
     for m in moments:
         if m["label"] == "note" and m["detail"]:
-            bullets.append(f"Turn {m['turn']}: {m['detail']}")
-    caveats.append(
-        "search_ok=0 in this build: no play is ranked, and no "
-        "Mistake/Blunder/Best label is produced.")
+            # Hand the note itself, not its English rendering: the
+            # frame and its filling have to translate together.
+            bullets.append(msg("rev.bullet_turn_note", turn=m["turn"],
+                               detail=m.get("details") or m["detail"]))
+    caveats.append(msg("rev.caveat_search_off"))
     if timed_out:
-        caveats.append(
-            f"The lethal search hit its {int(REVIEW_TIMEOUT_S)} s budget "
-            f"and was switched off partway through; later turns were not "
-            f"checked for a missed lethal.")
+        caveats.append(msg("rev.caveat_timeout",
+                           seconds=int(REVIEW_TIMEOUT_S)))
     if outcome.get("result") == "unknown":
-        caveats.append("The log ends before a winner was recorded.")
-    return {"headline": headline, "bullets": bullets[:6],
-            "caveats": caveats}
+        caveats.append(msg("rev.caveat_unknown_result"))
+    return {"headline": text_of(headline),
+            "bullets": texts_of(bullets)[:6],
+            "caveats": texts_of(caveats),
+            "i18n": {"headline": headline,
+                     "bullets": bullets[:6],
+                     "caveats": caveats}}

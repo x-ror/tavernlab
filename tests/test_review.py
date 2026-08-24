@@ -185,7 +185,15 @@ def test_review_json_matches_the_ui_contract(reviews, path):
         assert key in review, key
     assert review["status"] == "ready"
     assert set(review["matchup"]) >= {"us", "them"}
-    assert set(review["report"]) == {"headline", "bullets", "caveats"}
+    # `i18n` mirrors the three English fields as (key, params) so the UI
+    # can translate them; the English stays because stored reviews and
+    # every current consumer read it.
+    assert set(review["report"]) == {"headline", "bullets", "caveats",
+                                     "i18n"}
+    i18n = review["report"]["i18n"]
+    assert i18n["headline"]["text"] == review["report"]["headline"]
+    assert [m["text"] for m in i18n["bullets"]] == review["report"]["bullets"]
+    assert [m["text"] for m in i18n["caveats"]] == review["report"]["caveats"]
     assert review["evaluator_version"] == cl.EVALUATOR_VERSION
     json.dumps(review)          # must survive the store round-trip
 

@@ -7,8 +7,21 @@ except ValueError:          # Windows: no fork
     _ctx = multiprocessing.get_context("spawn")
 Pool = _ctx.Pool
 
+from . import formats
 from .engine import Game
 from .ai import Agent
+
+
+def _init_worker(fmt):
+    """Build the card defs in a spawned worker (Windows has no fork,
+    so nothing the parent built is inherited).
+
+    The format is an argument because the worker cannot see the
+    decks: a Wild matrix needs the Wild corpus or every card id in
+    it is a KeyError.
+    """
+    from . import carddata
+    carddata.ensure_defs(fmt)
 
 
 def play_match(deck_a, deck_b, n_games, base_seed=0):
@@ -33,7 +46,8 @@ def _worker(args):
     return (da.name, db.name, wa, wb, dr)
 
 
-def run_matrix(decks_a, decks_b, n_games, processes=14, chunk=500):
+def run_matrix(decks_a, decks_b, n_games, processes=14, chunk=500,
+               fmt=formats.STANDARD):
     jobs = []
     seed = 1
     for da in decks_a:
@@ -45,7 +59,8 @@ def run_matrix(decks_a, decks_b, n_games, processes=14, chunk=500):
                 seed += 1
                 done += k
     results = {}
-    with Pool(processes) as pool:
+    with Pool(processes, initializer=_init_worker,
+              initargs=(fmt,)) as pool:
         for ai, bi, wa, wb, dr in pool.imap_unordered(_worker, jobs,
                                                       chunksize=1):
             key = (ai, bi)
@@ -54,9 +69,10 @@ def run_matrix(decks_a, decks_b, n_games, processes=14, chunk=500):
     return results
 
 
-def gauntlet_winrate(deck, gauntlet, n_per_opp, processes=14):
+def gauntlet_winrate(deck, gauntlet, n_per_opp, processes=14,
+                     fmt=formats.STANDARD):
     res = run_matrix([deck], gauntlet, n_per_opp, processes=processes,
-                     chunk=max(50, n_per_opp // processes))
+                     chunk=max(50, n_per_opp // processes), fmt=fmt)
     rates = {}
     for gd in gauntlet:
         wa, wb, dr = res[(deck.name, gd.name)]

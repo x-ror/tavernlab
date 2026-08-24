@@ -6,6 +6,10 @@
   python3 update_meta.py --check                             # покриття карт
   python3 update_meta.py --drop "Назва колоди"
 
+Гаунтлет свій для кожного формату; `--format wild` працює з
+`hs2/wild_decks.json`. Це і є шлях замінити згенерований baseline
+справжніми колодами з трекерів.
+
 Формат файла: рядки "Назва колоди | AAECA..." (порожні і # ігноруються).
 Після зміни гаунтлета перерахуйте матриці: python3 run2_final.py
 """
@@ -17,25 +21,32 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-from hs2 import carddata
+import console
+from hs2 import carddata, decks, formats
 from hs2.deckstring import decode
 
-META_PATH = "hs2/meta_decks_2026.json"
+
+def load(fmt):
+    path = decks.gauntlet_path(fmt)
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
 
 
-def load():
-    return json.load(open(META_PATH))
+def save(data, fmt):
+    with open(decks.gauntlet_path(fmt), "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=1)
 
 
-def save(data):
-    json.dump(data, open(META_PATH, "w"), ensure_ascii=False, indent=1)
-
-
-def decode_to_entry(code):
-    if not carddata.DEFS:
-        carddata.build_defs()
+def decode_to_entry(code, fmt):
+    carddata.ensure_defs(fmt)
     by_dbf = {d.dbf: d for d in carddata.DEFS.values()}
     info = decode(code)
+    declared = formats.from_deckstring(info.get("format"))
+    if declared and declared != fmt:
+        print(f"  ⚠ деккод заявляє формат «{declared}», а гаунтлет "
+              f"«{fmt}» — перевірте --format")
     hero = by_dbf.get(info["heroes"][0]) if info["heroes"] else None
     cards, sb, unknown, unimpl = [], [], [], []
     votes = {}
@@ -63,8 +74,8 @@ def decode_to_entry(code):
             "total": sum(n for _, n in cards)}, unknown, sorted(set(unimpl))
 
 
-def add_deck(data, name, code):
-    entry, unknown, unimpl = decode_to_entry(code)
+def add_deck(data, name, code, fmt):
+    entry, unknown, unimpl = decode_to_entry(code, fmt)
     if unknown:
         print(f"  ✗ {name}: невідомі dbf {unknown} — оновіть датасет "
               "(python3 hs2/build_data.py cards.json)")
@@ -81,9 +92,12 @@ def add_deck(data, name, code):
     return True
 
 
-def check(data):
-    if not carddata.DEFS:
-        carddata.build_defs()
+def check(data, fmt):
+    carddata.ensure_defs(fmt)
+    if not data:
+        print(f"Гаунтлета для «{fmt}» немає "
+              f"({decks.gauntlet_path(fmt)})")
+        return
     total_missing = {}
     for name, info in data.items():
         for cn, n in info["cards"] + info.get("sideboard", []):
@@ -108,29 +122,33 @@ def main():
     ap.add_argument("--file")
     ap.add_argument("--drop")
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--format", choices=formats.FORMATS,
+                    default=formats.STANDARD)
     args = ap.parse_args()
-    data = load()
+    data = load(args.format)
     changed = False
     if args.add:
-        changed |= add_deck(data, args.add[0], args.add[1])
+        changed |= add_deck(data, args.add[0], args.add[1], args.format)
     if args.file:
         for line in open(args.file):
             line = line.strip()
             if not line or line.startswith("#") or "|" not in line:
                 continue
             name, code = [x.strip() for x in line.split("|", 1)]
-            changed |= add_deck(data, name, code)
+            changed |= add_deck(data, name, code, args.format)
     if args.drop:
         if data.pop(args.drop, None) is not None:
             print(f"  − {args.drop} видалено")
             changed = True
     if changed:
-        save(data)
-        print(f"Гаунтлет: {len(data)} колод -> {META_PATH}")
-        print("Не забудьте перерахувати: python3 run2_final.py")
+        save(data, args.format)
+        print(f"Гаунтлет [{args.format}]: {len(data)} колод -> "
+              f"{decks.gauntlet_path(args.format)}")
+        print("Не забудьте перерахувати: python3 scripts/run2_final.py")
     if args.check or not (args.add or args.file or args.drop):
-        check(data)
+        check(data, args.format)
 
 
 if __name__ == "__main__":
+    console.init()
     main()

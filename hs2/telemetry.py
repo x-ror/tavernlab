@@ -13,8 +13,21 @@ except ValueError:          # Windows: no fork
     _ctx = multiprocessing.get_context("spawn")
 Pool = _ctx.Pool
 
+from . import formats
 from .engine import Game
 from .ai import Agent
+
+
+def _init_worker(fmt):
+    """Build the card defs in a spawned worker (Windows has no fork,
+    so nothing the parent built is inherited).
+
+    The format is an argument because the worker cannot see the
+    decks: a Wild matrix needs the Wild corpus or every card id in
+    it is a KeyError.
+    """
+    from . import carddata
+    carddata.ensure_defs(fmt)
 
 
 class TelemetryGame(Game):
@@ -61,11 +74,13 @@ def _worker(args):
     return (opp.name, play_instrumented(deck, opp, n, base_seed=seed))
 
 
-def build_stats(deck, gauntlet, n_per_opp=1500, processes=14):
+def build_stats(deck, gauntlet, n_per_opp=1500, processes=14,
+                fmt=formats.STANDARD):
     jobs = [(deck, opp, n_per_opp, i + 1)
             for i, opp in enumerate(gauntlet)]
     out = {}
-    with Pool(processes) as pool:
+    with Pool(processes, initializer=_init_worker,
+              initargs=(fmt,)) as pool:
         for name, res in pool.imap_unordered(_worker, jobs):
             out[name] = res
     return out

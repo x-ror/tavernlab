@@ -1,7 +1,11 @@
-"""Candidate deck construction + hill-climbing optimizer (Standard pool)."""
+"""Candidate deck construction + hill-climbing optimizer.
+
+The pool follows whichever format `carddata` currently holds, so the same
+optimizer serves Standard and Wild without knowing which it is in.
+"""
 import random
 
-from . import carddata
+from . import carddata, formats
 from .decks import Deck
 from .sim import gauntlet_winrate
 
@@ -11,9 +15,24 @@ CLASS_OF = {
 
 
 def class_pool(cls):
-    return carddata.standard_pool(
+    """Buildable cards for a class, one entry per card name.
+
+    Deduplication matters once Wild is loaded: ~1000 names are printed in
+    more than one set, and `build_seed` keys its counts by name while
+    counting every def it walks. Two printings of the same card then
+    overwrite one entry but advance the total twice, and the seed comes
+    out of the loop three cards short of a legal deck.
+    """
+    pool = carddata.standard_pool(
         lambda d: d.cls in (cls, "NEUTRAL") and
         d.type in ("MINION", "SPELL", "WEAPON", "LOCATION"))
+    seen, out = set(), []
+    for d in pool:
+        if d.name in seen:
+            continue
+        seen.add(d.name)
+        out.append(d)
+    return out
 
 
 def card_quality(d):
@@ -110,7 +129,9 @@ def propose(deck, rng, seen):
 def optimize(deck, gauntlet, n_eval=200, rounds=2, proposals=10,
              processes=14, seed=11, log=print):
     rng = random.Random(seed)
-    base, _ = gauntlet_winrate(deck, gauntlet, n_eval, processes=processes)
+    fmt = carddata.LOADED_FORMAT or formats.STANDARD
+    base, _ = gauntlet_winrate(deck, gauntlet, n_eval,
+                               processes=processes, fmt=fmt)
     log(f"[{deck.name}] baseline {base:.3f}")
     current = deck
     history = []
@@ -126,7 +147,7 @@ def optimize(deck, gauntlet, n_eval=200, rounds=2, proposals=10,
                 cand = swap(current, o, i)
             except (ValueError, KeyError):
                 continue
-            wr, _ = gauntlet_winrate(cand, gauntlet, n_eval,
+            wr, _ = gauntlet_winrate(cand, gauntlet, n_eval, fmt=fmt,
                                      processes=processes)
             delta = wr - base
             history.append((o, i, wr, delta))

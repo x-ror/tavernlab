@@ -1,0 +1,830 @@
+{
+ "Deathknight Wild Baseline": {
+  "class": "DEATHKNIGHT",
+  "cards": [
+   [
+    "Ancient Totem",
+    2
+   ],
+   [
+    "Crabrider",
+    2
+   ],
+   [
+    "Cyborg Patriarch",
+    2
+   ],
+   [
+    "Dark Iron Harbinger",
+    2
+   ],
+   [
+    "Emergency Surgery",
+    2
+   ],
+   [
+    "Imprisoned Vilefiend",
+    2
+   ],
+   [
+    "King Mukla",
+    1
+   ],
+   [
+    "Marsh Drake",
+    2
+   ],
+   [
+    "Pelican Diver",
+    2
+   ],
+   [
+    "Prize Vendor",
+    2
+   ],
+   [
+    "Rock Rager",
+    2
+   ],
+   [
+    "Sandmaw",
+    2
+   ],
+   [
+    "The Beast",
+    1
+   ],
+   [
+    "The Curator",
+    1
+   ],
+   [
+    "Time-Twisted Seer",
+    2
+   ],
+   [
+    "Ultraxion",
+    1
+   ],
+   [
+    "Worgen Greaser",
+    2
+   ]
+  ],
+  "sideboard": [],
+  "total": 30,
+  "source": "generated from the implemented Wild pool (scripts/make_wild_gauntlet.py) - not tracker meta"
+ },
+ "Demonhunter Wild Baseline": {
+  "class": "DEMONHUNTER",
+  "cards": [
+   [
+    "Ancient Totem",
+    2
+   ],
+   [
+    "Broxigar",
+    1
+   ],
+   [
+    "Crabrider",
+    2
+   ],
+   [
+    "Cyborg Patriarch",
+    2
+   ],
+   [
+    "Dark Iron Harbinger",
+    2
+   ],
+   [
+    "Imprisoned Vilefiend",
+    2
+   ],
+   [
+    "Irida Sinseeker",
+    1
+   ],
+   [
+    "King Mukla",
+    1
+   ],
+   [
+    "Marsh Drake",
+    2
+   ],
+   [
+    "Pelican Diver",
+    2
+   ],
+   [
+    "Prize Vendor",
+    2
+   ],
+   [
+    "Rock Rager",
+    2
+   ],
+   [
+    "Rotten Applebaum",
+    2
+   ],
+   [
+    "Sandmaw",
+    2
+   ],
+   [
+    "The Curator",
+    1
+   ],
+   [
+    "Time-Twisted Seer",
+    2
+   ],
+   [
+    "Worgen Greaser",
+    2
+   ]
+  ],
+  "sideboard": [],
+  "total": 30,
+  "source": "generated from the implemented Wild pool (scripts/make_wild_gauntlet.py) - not tracker meta"
+ },
+ "Druid Wild Baseline": {
+  "class": "DRUID",
+  "cards": [
+   [
+    "Ancient Totem",
+    2
+   ],
+   [
+    "Crabrider",
+    2
+   ],
+   [
+    "Cyborg Patriarch",
+    2
+   ],
+   [
+    "Dark Iron Harbinger",
+    2
+   ],
+   [
+    "Evergreen Stag",
+    1
+   ],
+   [
+    "Imprisoned Vilefiend",
+    2
+   ],
+   [
+    "King Mukla",
+    1
+   ],
+   [
+    "Marsh Drake",
+    2
+   ],
+   [
+    "Pelican Diver",
+    2
+   ],
+   [
+    "Prize Vendor",
+    2
+   ],
+   [
+    "Rock Rager",
+    2
+   ],
+   [
+    "Rotten Applebaum",
+    2
+   ],
+   [
+    "Sandmaw",
+    2
+   ],
+   [
+    "The Beast",
+    1
+   ],
+   [
+    "The Curator",
+    1
+   ],
+   [
+    "Time-Twisted Seer",
+    2
+   ],
+   [
+    "Worgen Greaser",
+    2
+   ]
+  ],
+  "sideboard": [],
+  "total": 30,
+  "source": "generated from the implemented Wild pool (scripts/make_wild_gauntlet.py) - not tracker meta"
+ },
+ "Hunter Wild Baseline": {
+  "class": "HUNTER",
+  "cards": [
+   [
+    "Ancient Totem",
+    2
+   ],
+   [
+    "Catch of the Day",
+    2
+   ],
+   [
+    "Crabrider",
+    2
+   ],
+   [
+    "Cyborg Patriarch",
+    2
+   ],
+   [
+    "Dark Iron Harbinger",
+    2
+   ],
+   [
+    "Imprisoned Vilefiend",
+    2
+   ],
+   [
+    "King Mukla",
+    1
+   ],
+   [
+    "Marsh Drake",
+    2
+   ],
+   [
+    "Pelican Diver",
+    2
+   ],
+   [
+    "Prize Vendor",
+    2
+   ],
+   [
+    "Rock Rager",
+    2
+   ],
+   [
+    "Rotten Applebaum",
+    2
+   ],
+   [
+    "Sandmaw",
+    2
+   ],
+   [
+    "The Beast",
+    1
+   ],
+   [
+    "The Curator",
+    1
+   ],
+   [
+    "Ultraxion",
+    1
+   ],
+   [
+    "Worgen Greaser",
+    2
+   ]
+  ],
+  "sideboard": [],
+  "total": 30,
+  "source": "generated from the implemented Wild pool (scripts/make_wild_gauntlet.py) - not tracker meta"
+ },
+ "Mage Wild Baseline": {
+  "class": "MAGE",
+  "cards": [
+   [
+    "Ancient Totem",
+    2
+   ],
+   [
+    "Crabrider",
+    2
+   ],
+   [
+    "Cyborg Patriarch",
+    2
+   ],
+   [
+    "Dark Iron Harbinger",
+    2
+   ],
+   [
+    "Flame Lance",
+    2
+   ],
+   [
+    "Imprisoned Vilefiend",
+    2
+   ],
+   [
+    "King Mukla",
+    1
+   ],
+   [
+    "Marsh Drake",
+    2
+   ],
+   [
+    "Pelican Diver",
+    2
+   ],
+   [
+    "Raincaller",
+    2
+   ],
+   [
+    "Rock Rager",
+    2
+   ],
+   [
+    "Sandmaw",
+    2
+   ],
+   [
+    "The Beast",
+    1
+   ],
+   [
+    "The Curator",
+    1
+   ],
+   [
+    "Time-Twisted Seer",
+    2
+   ],
+   [
+    "Ultraxion",
+    1
+   ],
+   [
+    "Worgen Greaser",
+    2
+   ]
+  ],
+  "sideboard": [],
+  "total": 30,
+  "source": "generated from the implemented Wild pool (scripts/make_wild_gauntlet.py) - not tracker meta"
+ },
+ "Paladin Wild Baseline": {
+  "class": "PALADIN",
+  "cards": [
+   [
+    "Ancient Totem",
+    2
+   ],
+   [
+    "Crabrider",
+    2
+   ],
+   [
+    "Cyborg Patriarch",
+    2
+   ],
+   [
+    "Dark Iron Harbinger",
+    2
+   ],
+   [
+    "Imprisoned Vilefiend",
+    2
+   ],
+   [
+    "King Mukla",
+    1
+   ],
+   [
+    "Marsh Drake",
+    2
+   ],
+   [
+    "Pelican Diver",
+    2
+   ],
+   [
+    "Prize Vendor",
+    2
+   ],
+   [
+    "Rock Rager",
+    2
+   ],
+   [
+    "Rotten Applebaum",
+    2
+   ],
+   [
+    "Sandmaw",
+    2
+   ],
+   [
+    "The Beast",
+    1
+   ],
+   [
+    "The Curator",
+    1
+   ],
+   [
+    "Time-Twisted Seer",
+    2
+   ],
+   [
+    "Ultraxion",
+    1
+   ],
+   [
+    "Worgen Greaser",
+    2
+   ]
+  ],
+  "sideboard": [],
+  "total": 30,
+  "source": "generated from the implemented Wild pool (scripts/make_wild_gauntlet.py) - not tracker meta"
+ },
+ "Priest Wild Baseline": {
+  "class": "PRIEST",
+  "cards": [
+   [
+    "Ancient Totem",
+    2
+   ],
+   [
+    "Crabrider",
+    2
+   ],
+   [
+    "Cyborg Patriarch",
+    2
+   ],
+   [
+    "Dark Iron Harbinger",
+    2
+   ],
+   [
+    "Imprisoned Homunculus",
+    2
+   ],
+   [
+    "Imprisoned Vilefiend",
+    2
+   ],
+   [
+    "King Mukla",
+    1
+   ],
+   [
+    "Lunarwing Messenger",
+    2
+   ],
+   [
+    "Marsh Drake",
+    2
+   ],
+   [
+    "Pelican Diver",
+    2
+   ],
+   [
+    "Power Word: Tentacles",
+    2
+   ],
+   [
+    "Rock Rager",
+    2
+   ],
+   [
+    "Sandmaw",
+    2
+   ],
+   [
+    "The Beast",
+    1
+   ],
+   [
+    "Unshackle Soul",
+    2
+   ],
+   [
+    "Worgen Greaser",
+    2
+   ]
+  ],
+  "sideboard": [],
+  "total": 30,
+  "source": "generated from the implemented Wild pool (scripts/make_wild_gauntlet.py) - not tracker meta"
+ },
+ "Rogue Wild Baseline": {
+  "class": "ROGUE",
+  "cards": [
+   [
+    "Ancient Totem",
+    2
+   ],
+   [
+    "Crabrider",
+    2
+   ],
+   [
+    "Cyborg Patriarch",
+    2
+   ],
+   [
+    "Dark Iron Harbinger",
+    2
+   ],
+   [
+    "Imprisoned Vilefiend",
+    2
+   ],
+   [
+    "King Mukla",
+    1
+   ],
+   [
+    "Marsh Drake",
+    2
+   ],
+   [
+    "Pelican Diver",
+    2
+   ],
+   [
+    "Prize Vendor",
+    2
+   ],
+   [
+    "Rock Rager",
+    2
+   ],
+   [
+    "Rotten Applebaum",
+    2
+   ],
+   [
+    "Sandmaw",
+    2
+   ],
+   [
+    "The Beast",
+    1
+   ],
+   [
+    "The Curator",
+    1
+   ],
+   [
+    "Time-Twisted Seer",
+    2
+   ],
+   [
+    "Ultraxion",
+    1
+   ],
+   [
+    "Worgen Greaser",
+    2
+   ]
+  ],
+  "sideboard": [],
+  "total": 30,
+  "source": "generated from the implemented Wild pool (scripts/make_wild_gauntlet.py) - not tracker meta"
+ },
+ "Shaman Wild Baseline": {
+  "class": "SHAMAN",
+  "cards": [
+   [
+    "Ancient Totem",
+    2
+   ],
+   [
+    "Crabrider",
+    2
+   ],
+   [
+    "Cyborg Patriarch",
+    2
+   ],
+   [
+    "Dark Iron Harbinger",
+    2
+   ],
+   [
+    "Drakkari Defender",
+    2
+   ],
+   [
+    "Earth Elemental",
+    2
+   ],
+   [
+    "Flamewreathed Faceless",
+    2
+   ],
+   [
+    "Imprisoned Vilefiend",
+    2
+   ],
+   [
+    "King Mukla",
+    1
+   ],
+   [
+    "Marsh Drake",
+    2
+   ],
+   [
+    "Pelican Diver",
+    2
+   ],
+   [
+    "Rock Rager",
+    2
+   ],
+   [
+    "Rocket Hopper",
+    2
+   ],
+   [
+    "The Beast",
+    1
+   ],
+   [
+    "Time-Twisted Seer",
+    2
+   ],
+   [
+    "Totem Golem",
+    2
+   ]
+  ],
+  "sideboard": [],
+  "total": 30,
+  "source": "generated from the implemented Wild pool (scripts/make_wild_gauntlet.py) - not tracker meta"
+ },
+ "Warlock Wild Baseline": {
+  "class": "WARLOCK",
+  "cards": [
+   [
+    "Ancient Totem",
+    2
+   ],
+   [
+    "Crabrider",
+    2
+   ],
+   [
+    "Cyborg Patriarch",
+    2
+   ],
+   [
+    "Dark Iron Harbinger",
+    2
+   ],
+   [
+    "Imprisoned Vilefiend",
+    2
+   ],
+   [
+    "King Mukla",
+    1
+   ],
+   [
+    "Marsh Drake",
+    2
+   ],
+   [
+    "Midway Maniac",
+    2
+   ],
+   [
+    "Pelican Diver",
+    2
+   ],
+   [
+    "Rock Rager",
+    2
+   ],
+   [
+    "Rotten Applebaum",
+    2
+   ],
+   [
+    "Sandmaw",
+    2
+   ],
+   [
+    "The Beast",
+    1
+   ],
+   [
+    "The Curator",
+    1
+   ],
+   [
+    "Time-Twisted Seer",
+    2
+   ],
+   [
+    "Ultraxion",
+    1
+   ],
+   [
+    "Worgen Greaser",
+    2
+   ]
+  ],
+  "sideboard": [],
+  "total": 30,
+  "source": "generated from the implemented Wild pool (scripts/make_wild_gauntlet.py) - not tracker meta"
+ },
+ "Warrior Wild Baseline": {
+  "class": "WARRIOR",
+  "cards": [
+   [
+    "Ancient Totem",
+    2
+   ],
+   [
+    "Crabrider",
+    2
+   ],
+   [
+    "Cyborg Patriarch",
+    2
+   ],
+   [
+    "Dark Iron Harbinger",
+    2
+   ],
+   [
+    "Imprisoned Vilefiend",
+    2
+   ],
+   [
+    "King Mukla",
+    1
+   ],
+   [
+    "Marsh Drake",
+    2
+   ],
+   [
+    "Pelican Diver",
+    2
+   ],
+   [
+    "Public Defender",
+    2
+   ],
+   [
+    "Rock Rager",
+    2
+   ],
+   [
+    "Rotten Applebaum",
+    2
+   ],
+   [
+    "Sandmaw",
+    2
+   ],
+   [
+    "The Beast",
+    1
+   ],
+   [
+    "The Curator",
+    1
+   ],
+   [
+    "Time-Twisted Seer",
+    2
+   ],
+   [
+    "Ultraxion",
+    1
+   ],
+   [
+    "Worgen Greaser",
+    2
+   ]
+  ],
+  "sideboard": [],
+  "total": 30,
+  "source": "generated from the implemented Wild pool (scripts/make_wild_gauntlet.py) - not tracker meta"
+ }
+}

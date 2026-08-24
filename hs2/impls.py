@@ -1613,16 +1613,22 @@ def _portal_chain(g, p, num):
              4: "TIME_020t5"}
 
     def demon_dr(g2, own, m):
-        g2.draw(p)
+        # `own` is the demon's controller in *this* game, so its opponent
+        # is Broxigar's player here. Closing over `p` instead would hand
+        # the draw and the card to the original game every time a clone
+        # ran this deathrattle - the same live-object capture that
+        # `effects.py` removed from `Player.listeners`.
+        me = own.opponent
+        g2.draw(me)
         if num < 4:
             from .carddata import make_inst
-            p.deck.append(make_inst(names[num + 1]))
-            g2.rng.shuffle(p.deck)
+            me.deck.append(make_inst(names[num + 1]))
+            g2.rng.shuffle(me.deck)
         else:
-            brox = p.marks.get("brox_gone")
+            brox = me.marks.get("brox_gone")
             if brox is not None:
                 brox.cost_delta = -brox.card.cost + 1
-                g2.add_to_hand(p, brox)
+                g2.add_to_hand(me, brox)
     d = CardDef(id=f"argus_demon{num}", name="Demon of Argus", type=MINION,
                 cls="NEUTRAL", cost=1, atk=num, hp=1, races=["DEMON"],
                 coll=False, implemented=True,

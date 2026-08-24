@@ -83,11 +83,25 @@ def test_legacy_post_routes_still_work(server):
 
 
 def test_index_still_serves_the_ui(server):
+    """`/` is the built React app since `webui.html` was retired.
+
+    If `web/dist` is missing the server answers 404 with a readable page
+    telling you to build it, so both outcomes are HTML carrying a script
+    tag or the build instruction — never a JSON error blob.
+    """
     base, _ids, _st = server
-    with urllib.request.urlopen(base + "/", timeout=10) as r:
-        body = r.read().decode()
-    assert r.headers["Content-Type"].startswith("text/html")
-    assert "<script>" in body
+    try:
+        with urllib.request.urlopen(base + "/", timeout=10) as r:
+            body, status = r.read().decode(), r.status
+            ctype = r.headers["Content-Type"]
+    except urllib.error.HTTPError as exc:
+        body, status = exc.read().decode(), exc.code
+        ctype = exc.headers["Content-Type"]
+    assert ctype.startswith("text/html")
+    if status == 200:
+        assert "<script" in body and 'id="root"' in body
+    else:
+        assert status == 404 and "npm run build" in body
 
 
 # ------------------------------------------------------------ new reads
@@ -407,6 +421,10 @@ def test_analyse_twice_does_not_start_two_jobs(server):
         assert second["already_running"] is True
     job = _await(base, first["job"])
     assert job["status"] == "done", job.get("error")
+    if second["job"] != first["job"]:
+        # The first job can finish before the second POST lands; then the
+        # second legitimately starts its own, and it has to be awaited too.
+        _await(base, second["job"])
     # The claim is released, so a later analyse starts a fresh job.
     third = post(base, f"/api/games/{gid}/analyze")
     assert third["already_running"] is False

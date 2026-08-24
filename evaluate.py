@@ -18,7 +18,8 @@ import time
 
 sys.path.insert(0, ".")
 
-from hs2 import carddata, decks
+import console
+from hs2 import carddata, decks, formats
 from hs2.deckstring import decode
 from hs2.decks import Deck
 from hs2.sim import gauntlet_winrate
@@ -29,14 +30,18 @@ HERO_CLASS = {  # hero dbfId prefixes resolved via card data instead
 
 
 def try_resolve(code, name="Your Deck"):
-    """Returns (deck_or_None, info: {cls, total, unimplemented, missing})."""
-    if not carddata.DEFS:
-        carddata.build_defs()
-    by_dbf = {d.dbf: d for d in carddata.DEFS.values()}
+    """Returns (deck_or_None, info: {cls, total, unimplemented,
+    missing, format, illegal})."""
     try:
         info = decode(code)
     except Exception as e:
         return None, {"error": f"Невалідний деккод: {e}"}
+    # Decode first: the format decides which corpus to load, and a
+    # Wild deck read against the Standard corpus reports its own
+    # cards as missing.
+    fmt = formats.from_deckstring(info.get("format"))
+    carddata.ensure_defs(fmt or formats.STANDARD)
+    by_dbf = {d.dbf: d for d in carddata.DEFS.values()}
     hero = by_dbf.get(info["heroes"][0]) if info["heroes"] else None
     if hero is not None and hero.cls != "NEUTRAL":
         cls = hero.cls
@@ -49,38 +54,58 @@ def try_resolve(code, name="Your Deck"):
         if not votes:
             return None, {"error": "Не вдалося визначити клас колоди"}
         cls = max(votes, key=votes.get)
-    cardlist, missing, unimpl = [], [], []
+    # An implemented card that is not legal here is a different answer
+    # from one we cannot simulate; the caller deserves both.
+    cardlist, missing, unimpl, illegal = [], [], [], []
     for dbf, n in info["cards"]:
         d = by_dbf.get(dbf)
         if d is None:
-            missing.append(dbf)
+            # Not in this format's corpus. If the Wild delta knows it, the
+            # honest answer is "Wild-only", not "unknown card".
+            wild_name = carddata.wild_name_for(dbf)
+            if wild_name is not None:
+                illegal.append(wild_name)
+            else:
+                missing.append(dbf)
             continue
         if not d.implemented:
             unimpl.append(d.name)
+        if fmt and not formats.is_legal(d, fmt):
+            illegal.append(d.name)
         cardlist.append((d.name, n))
     for dbf, n, owner in info["sideboards"]:
         d = by_dbf.get(dbf)
         owner_d = by_dbf.get(owner)
         if d is None:
-            missing.append(dbf)
+            # Not in this format's corpus. If the Wild delta knows it, the
+            # honest answer is "Wild-only", not "unknown card".
+            wild_name = carddata.wild_name_for(dbf)
+            if wild_name is not None:
+                illegal.append(wild_name)
+            else:
+                missing.append(dbf)
             continue
         if owner_d is not None and owner_d.name == "Commander Beatrix":
             n = 10
         if not d.implemented:
             unimpl.append(d.name)
+        if fmt and not formats.is_legal(d, fmt):
+            illegal.append(d.name)
         cardlist.append((d.name, n))
     meta = {"cls": cls, "total": sum(n for _, n in cardlist),
             "unimplemented": sorted(set(unimpl)), "missing": missing,
+            "format": fmt, "illegal": sorted(set(illegal)),
             "cards": sorted(cardlist)}
-    if missing or unimpl:
+    if missing or unimpl or illegal:
         return None, meta
     return Deck.from_names(name, cls, "midrange", sorted(cardlist)), meta
 
 
 def resolve_deck(code, name="Your Deck"):
-    carddata.build_defs()
-    by_dbf = {d.dbf: d for d in carddata.DEFS.values()}
     info = decode(code)
+    fmt = formats.from_deckstring(info.get("format"))
+    carddata.ensure_defs(fmt or formats.STANDARD)
+    by_dbf = {d.dbf: d for d in carddata.DEFS.values()}
     hero = by_dbf.get(info["heroes"][0])
     if hero is not None and hero.cls != "NEUTRAL":
         cls = hero.cls
@@ -97,27 +122,49 @@ def resolve_deck(code, name="Your Deck"):
     cardlist = []
     missing = []
     unimpl = []
+    illegal = []
     for dbf, n in info["cards"]:
         d = by_dbf.get(dbf)
         if d is None:
-            missing.append(dbf)
+            # Not in this format's corpus. If the Wild delta knows it, the
+            # honest answer is "Wild-only", not "unknown card".
+            wild_name = carddata.wild_name_for(dbf)
+            if wild_name is not None:
+                illegal.append(wild_name)
+            else:
+                missing.append(dbf)
             continue
         if not d.implemented:
             unimpl.append(d.name)
+        if fmt and not formats.is_legal(d, fmt):
+            illegal.append(d.name)
         cardlist.append((d.name, n))
     for dbf, n, owner in info["sideboards"]:
         d = by_dbf.get(dbf)
         owner_d = by_dbf.get(owner)
         if d is None:
-            missing.append(dbf)
+            # Not in this format's corpus. If the Wild delta knows it, the
+            # honest answer is "Wild-only", not "unknown card".
+            wild_name = carddata.wild_name_for(dbf)
+            if wild_name is not None:
+                illegal.append(wild_name)
+            else:
+                missing.append(dbf)
             continue
         if owner_d is not None and owner_d.name == "Commander Beatrix":
             n = 10
         if not d.implemented:
             unimpl.append(d.name)
+        if fmt and not formats.is_legal(d, fmt):
+            illegal.append(d.name)
         cardlist.append((d.name, n))
+    if illegal:
+        print(f"ЦІ КАРТИ НЕ ЛЕГАЛЬНІ У ФОРМАТІ {(fmt or '?').upper()}:")
+        for cn in sorted(set(illegal)):
+            print(f"  - {cn}")
+        raise SystemExit(1)
     if missing:
-        raise SystemExit(f"Cards not in Standard dataset (dbf): {missing}")
+        raise SystemExit(f"Cards not in the card corpus (dbf): {missing}")
     if unimpl:
         print("ЦІ КАРТИ ЩЕ НЕ РЕАЛІЗОВАНІ В СИМУЛЯТОРІ:")
         for cn in sorted(set(unimpl)):
@@ -143,15 +190,25 @@ def main():
 
     code = args.deckstring
     if args.file:
-        code = open(args.file).read().strip()
+        code = open(args.file, encoding="utf-8-sig").read().strip()
     if not code:
         ap.error("pass a deckstring or --file")
 
     deck = resolve_deck(code)
-    metas = decks.load_meta()
+    # Gauntlet follows the deck's format: a Wild deck measured against the
+    # Standard gauntlet would be a number with no meaning attached.
+    fmt = formats.from_deckstring(decode(code).get("format")) \
+        or formats.STANDARD
+    metas = decks.load_meta(fmt)
+    if not metas:
+        raise SystemExit(
+            f"Немає гаунтлета для формату «{fmt}»: файл "
+            f"{decks.gauntlet_path(fmt)} відсутній.\n"
+            f"Зберіть його з колод трекерів (update_meta.py), або оцініть "
+            f"колоду того формату, для якого гаунтлет є.")
     t0 = time.time()
     avg, rates = gauntlet_winrate(deck, metas, args.games,
-                                  processes=args.procs)
+                                  processes=args.procs, fmt=fmt)
     dt = time.time() - t0
     n_total = args.games * len(metas)
     print(f"\n=== {n_total} боїв за {dt:.0f}с ===")
@@ -181,4 +238,5 @@ def main():
 
 
 if __name__ == "__main__":
+    console.init()
     main()
