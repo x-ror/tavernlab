@@ -200,6 +200,7 @@ def build_overlay(vs, us_cls=None, them_cls=None, us_pid=None):
         _apply_hero(p, vs.heroes.get(pid) or {})
         _apply_mana(p, vs.mana.get(pid) or {})
         _apply_weapon(game, p, vs.weapons.get(pid) or {})
+        _apply_hero_power(game, p, vs.hero_powers.get(pid), ov)
         p.corpses = int(vs.corpses.get(pid, 0) or 0)
         _apply_board(game, p, vs.board(pid))
 
@@ -273,6 +274,44 @@ def _apply_weapon(game, p, weapon):
     banked = p.marks.pop("log_hero_atk", None)
     if banked is not None:
         p.temp_atk = max(0, banked - (p.weapon.atk if p.weapon else 0))
+
+
+def _apply_hero_power(game, p, info, ov=None):
+    """Project the logged hero power, including whether it is spent.
+
+    Two things the class default gets wrong. It is the wrong *card* when
+    the power was replaced (Justicar, a hero card) — one real fixture has
+    a Priest holding `Blessing of the Moon`, not `Lesser Heal`. And it is
+    always shown unspent, so `find_lethal` counted a Fireblast the player
+    had already fired: on the two real fixtures that is true of 22/56 and
+    119/221 positions.
+
+    When the log tells us nothing, the power is marked **used**. A hero
+    power can only ever add damage, so assuming it is spent can cost us a
+    lethal we would have found — while assuming it is free invents one,
+    and a false missed-lethal call is the failure the design calls
+    product-ending.
+    """
+    if p.hero_power is None:
+        return None
+    if not info:
+        p.hero_power.used = p.hero_power.uses_per_turn
+        if ov is not None and "hero power state unknown" not in ov.reasons:
+            ov.reasons.append("hero power state unknown — treated as used")
+        return p.hero_power
+
+    card, known = _def_for(info.get("card_id"), info.get("name"))
+    if known and card.type == "HERO_POWER":
+        hp = HeroPowerState(card, cost=info.get("cost"))
+        hp.eid = 0
+        p.hero_power = game.reg(hp)
+    elif info.get("cost") is not None:
+        p.hero_power.cost = int(info["cost"])
+    p.hero_power.used = 1 if info.get("exhausted") else 0
+    if info.get("passive"):
+        p.hero_power.passive = True
+    p.hero_power2 = None
+    return p.hero_power
 
 
 def _apply_board(game, p, views):

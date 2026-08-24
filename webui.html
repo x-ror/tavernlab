@@ -576,8 +576,13 @@ function renderReview(){
   }
   const r=reviewData;
   const blocked=(reviewGame||{}).reviewable===false;
-  let h=reviewHeader(r.status==="ready"&&!blocked)+blockedHtml();
-  if(r.status!=="ready"){
+  /* `partial` means the review finished but the lethal search hit its
+     budget — the ledger, the WP series and every turn are complete, and
+     the report says in its own caveats what was skipped. Gating on
+     status alone threw all of that away and showed "not ready". */
+  const hasReview=Array.isArray(r.turns)&&r.turns.length>0;
+  let h=reviewHeader(hasReview&&!blocked)+blockedHtml();
+  if(!hasReview){
     h+=`<div class="card-block">
       <p><b>${esc(t("review.status",
         {status:tk("review_status",r.status||"none")}))}</b></p>`;
@@ -592,6 +597,10 @@ function renderReview(){
     return;
   }
   const rep=r.report||{};
+  if(r.status!=="ready")
+    h+=`<div class="card-block warn"><b>${esc(t("review.status",
+      {status:tk("review_status",r.status||"none")}))}</b>
+      <p class="small">${esc(t("review.partial_note"))}</p></div>`;
   h+=`<div class="card-block"><h2>${esc(rep.headline||"")}</h2>`;
   if((rep.bullets||[]).length)
     h+="<ul>"+rep.bullets.map(b=>`<li>${esc(b)}</li>`).join("")+"</ul>";

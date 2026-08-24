@@ -183,6 +183,7 @@
  "review.not_ready": "This game has no review yet. The analysis runs locally and takes a few seconds.",
  "review.open_in_replay": "replay this ply",
  "review.open_replay": "Open replay",
+ "review.partial_note": "The review is complete, but the lethal search hit its time budget part-way through — later turns were not checked for a missed lethal. Everything else below is whole. Re-analyse to try again.",
  "review.pick": "Pick a game on the Games tab to open its review.",
  "review.reanalyse": "Re-analyse",
  "review.search_off": "search_ok=0 in this build: no play is ranked and no skill glyph is published.",

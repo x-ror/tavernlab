@@ -80,6 +80,10 @@ def gates_for(*, lethal=None, actions_complete=False, search_ok=False,
         "lethal_available": bool(lethal.get("available")),
         "lethal_taken": bool(lethal.get("taken")),
         "not_taken": not lethal.get("taken"),
+        # `classify` downgrades an approximate line to 0.75. Dropping the
+        # flag here published a bounded taunt search at 0.95 and hid the
+        # "not proven exact" warning with it.
+        "approx": bool(lethal.get("approx")),
         "actions_complete": bool(actions_complete),
         "search_ok": bool(search_ok),
         "search_depth": int(search_depth or 0) >= 1,

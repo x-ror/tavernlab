@@ -69,6 +69,10 @@ class VisibleState:
     mana: dict = field(default_factory=dict)    # pid -> crystals/used/temp
     heroes: dict = field(default_factory=dict)  # pid -> hp/armor/atk/...
     weapons: dict = field(default_factory=dict)
+    # pid -> {eid, card_id, name, cost, exhausted}. Separate from
+    # `heroes` because a hero power can be *replaced* mid-game (Justicar,
+    # hero cards), so the class default is not a safe stand-in.
+    hero_powers: dict = field(default_factory=dict)
     boards: dict = field(default_factory=dict)  # pid -> [EntityView]
     hands: dict = field(default_factory=dict)   # pid -> [EntityView]
     secrets: dict = field(default_factory=dict)
@@ -124,8 +128,8 @@ class VisibleState:
             if k in ("boards", "hands"):
                 v = {int(p): [EntityView.from_dict(x) for x in lst]
                      for p, lst in v.items()}
-            elif k in ("mana", "heroes", "weapons", "secrets",
-                       "deck_counts", "corpses", "quest"):
+            elif k in ("mana", "heroes", "weapons", "hero_powers",
+                       "secrets", "deck_counts", "corpses", "quest"):
                 v = {int(p): x for p, x in v.items()}
             setattr(vs, k, v)
         return vs

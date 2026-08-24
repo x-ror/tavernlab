@@ -47,6 +47,12 @@ log = logging.getLogger("tavernlab")
 METRICS = {"games_ingested": 0, "parse_dirty": 0, "reviews_run": 0,
            "review_ms_total": 0.0, "lethal_calls": 0, "errors": 0}
 
+# One review job per game at a time. Startup re-queues every `pending`
+# review, so a user who also clicks "Analyse" would otherwise get two
+# jobs writing the same generation: `replace_decisions` deletes then
+# bulk-inserts, and two interleaved runs trip the UNIQUE key.
+_reviewing = {}          # game_id -> job id currently running
+
 
 def setup_logging():
     if log.handlers:
@@ -142,8 +148,31 @@ def job_import(jid, path, logs_dir=None, only_last=False):
     logging.getLogger("tavernlab").info(
         "import %s -> %s", os.path.basename(path), ids)
     for gid in ids:
-        start_job(job_review, gid)
+        start_review(gid)
     return {"games": ids, "path": path}
+
+
+def start_review(game_id, fn=None):
+    """Start a review (or a reparse), or hand back the one in flight."""
+    st = store()                       # outside the lock: store() takes it
+    with _lock:
+        jid = _reviewing.get(game_id)
+        if jid is not None and JOBS.get(jid, {}).get("status") == "running":
+            return jid, False
+        _reviewing[game_id] = _PENDING_CLAIM
+    st.submit("upsert_review", game_id, "pending")
+    jid = start_job(fn or job_review, game_id)
+    with _lock:
+        _reviewing[game_id] = jid
+    return jid, True
+
+
+_PENDING_CLAIM = "claiming"
+
+
+def _release_review(game_id):
+    with _lock:
+        _reviewing.pop(game_id, None)
 
 
 def job_review(jid, game_id):
@@ -198,6 +227,8 @@ def job_review(jid, game_id):
             "review game=%s failed", game_id)
         st.submit("upsert_review", game_id, "error", {"error": str(exc)})
         raise
+    finally:
+        _release_review(game_id)
 
 
 def migrate_legacy_jsonl():
@@ -229,7 +260,7 @@ def resume_pending_reviews():
     except Exception:
         return []
     for gid in pending:
-        start_job(job_review, gid)
+        start_review(gid)
     return pending
 
 
@@ -638,8 +669,8 @@ def api_game_review(game_id):
 
 def api_game_analyze(game_id):
     # `pending` lands before the job starts, so a restart resumes it.
-    store().submit("upsert_review", game_id, "pending")
-    return {"job": start_job(job_review, game_id)}
+    jid, started = start_review(game_id)
+    return {"job": jid, "already_running": not started}
 
 
 def job_reparse(jid, game_id):
@@ -679,12 +710,13 @@ def job_reparse(jid, game_id):
     logging.getLogger("tavernlab").info(
         "reparse game=%s generation=%s events=%s", game_id, gen,
         len(events))
+    # Runs inline; its `finally` releases the claim this job took.
     return job_review(jid, game_id)
 
 
 def api_game_reparse(game_id):
-    store().submit("upsert_review", game_id, "pending")
-    return {"job": start_job(job_reparse, game_id)}
+    jid, started = start_review(game_id, job_reparse)
+    return {"job": jid, "already_running": not started}
 
 
 ROUTES = {"/api/resolve": api_resolve, "/api/mull": api_mull,

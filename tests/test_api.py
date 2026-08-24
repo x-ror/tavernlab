@@ -374,3 +374,57 @@ def test_reparse_without_a_stored_slice_fails_loudly(server, tmp_path):
     job = _await(base, post(base, f"/api/games/{gid}/reparse")["job"])
     assert job["status"] == "error"
     assert "raw_power" in job["error"] or "slice" in job["error"]
+
+
+# ── 14: partial reviews and concurrent jobs ──────────────────────────
+def test_a_partial_review_still_serves_its_summary(server):
+    """`partial` means the lethal search ran out of budget, not that the
+    review failed: the ledger, WP series and turns are all complete."""
+    base, ids, st = server
+    gid = ids[0]
+    ready = get(base, f"/api/games/{gid}/review")
+    st.submit("upsert_review", gid, "partial",
+              {"summary": dict(ready, status="partial")})
+    body = get(base, f"/api/games/{gid}/review")
+    assert body["status"] == "partial"
+    assert body["turns"] and body["wp_series"] and body["report"]
+    assert body["key_moments"] is not None
+    # restore
+    st.submit("upsert_review", gid, "ready", {"summary": ready})
+
+
+def test_analyse_twice_does_not_start_two_jobs(server):
+    """Startup re-queues every pending review; a user clicking Analyse
+    on top of that had both jobs writing the same generation, and
+    replace_decisions deletes-then-inserts."""
+    import app as _app
+    base, ids, st = server
+    gid = ids[0]
+    first = post(base, f"/api/games/{gid}/analyze")
+    second = post(base, f"/api/games/{gid}/analyze")
+    if _app.JOBS[first["job"]]["status"] == "running":
+        assert second["job"] == first["job"]
+        assert second["already_running"] is True
+    job = _await(base, first["job"])
+    assert job["status"] == "done", job.get("error")
+    # The claim is released, so a later analyse starts a fresh job.
+    third = post(base, f"/api/games/{gid}/analyze")
+    assert third["already_running"] is False
+    _await(base, third["job"])
+    assert st.get_review(gid)["status"] in ("ready", "partial")
+
+
+def test_a_failed_review_releases_its_claim(server):
+    """Without the release in `finally`, one crash wedges that game for
+    the life of the process."""
+    import app as _app
+    base, _ids, st = server
+    gid = st.submit("create_game", {"mode": "casual", "created_at": 0,
+                                    "started_at": 0, "log_hash": "wedge"})
+    job = _await(base, post(base, f"/api/games/{gid}/analyze")["job"])
+    assert job["status"] in ("done", "error")
+    with _app._lock:
+        assert gid not in _app._reviewing, "claim leaked after the job"
+    again = post(base, f"/api/games/{gid}/analyze")
+    assert again["already_running"] is False
+    _await(base, again["job"])

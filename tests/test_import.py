@@ -194,8 +194,8 @@ def test_import_writes_game_events_and_pending_review(tmp_path):
         assert gzip.decompress(game["raw_power"]).decode().startswith("D ")
 
         evs = store.get_events(gid)
-        assert len(evs) == 23
-        assert [e["seq"] for e in evs] == list(range(23))
+        assert len(evs) == 25
+        assert [e["seq"] for e in evs] == list(range(25))
         assert evs[0]["type"] == "CREATE_GAME"
         assert json.loads(evs[0]["payload"])["type"] == "CREATE_GAME"
         assert all(e["parse_generation"] == 1 for e in evs)

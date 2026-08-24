@@ -108,22 +108,38 @@ def _wp(vs, us_pid):
         return 0.5
 
 
+def _int(v, default=0):
+    return v if isinstance(v, int) and not isinstance(v, bool) else default
+
+
 def read_outcome(events, us_pid):
     """Who won, on which turn, and did *we* land the kill.
 
     `lethal_turn` is what turns "missed lethal" into "played lethal": the
     turn our opponent's PLAYSTATE went LOST.
+
+    Only the **GameEntity** carries the game-wide turn counter. Each
+    player also has a TURN tag counting *its own* turns, and the client
+    emits it right before PLAYSTATE: on a real 13-turn game the tail
+    reads `GameEntity TURN=13`, `Player TURN=7`, `WON`. Counting both
+    left `lethal_turn=7` while the killing decision sat in bucket 13, so
+    the turn you actually won on was reported as a missed lethal —
+    exactly the false positive the design calls product-ending.
+    `eval/visible.py` has always filtered this; `read_outcome` did not.
     """
     out = {"winner_pid": None, "result": "unknown", "end_turn": None,
            "lethal_turn": None}
-    eid_to_pid, turn = {}, 0
+    eid_to_pid, turn, game_eid = {}, 0, 1
     for ev in events:
         t = ev.get("type")
         if t == "CREATE_GAME":
+            game_eid = ev.get("entity_id") or 1
+            turn = _int(((ev.get("tags") or {}).get("TURN")), turn)
             for pl in ev.get("players", []):
                 eid_to_pid[pl.get("entity_id")] = pl.get("player_id")
         elif t == "TAG_CHANGE":
-            if ev.get("tag") == "TURN" and isinstance(ev.get("value"), int):
+            if ev.get("tag") == "TURN" and ev.get("entity_id") == game_eid \
+                    and isinstance(ev.get("value"), int):
                 turn = ev["value"]
             elif ev.get("tag") == "PLAYSTATE":
                 pid = eid_to_pid.get(ev.get("entity_id"))
@@ -164,6 +180,15 @@ def _walk_turns(states, points, us_pid, us_cls, them_cls, outcome, deep,
     turns, decisions, moments, lethal_ok_by_seq = [], [], [], {}
     timed_out = False
     order = sorted(by_turn)
+    # Belt and braces on top of the GameEntity-only turn counter: if we
+    # won, the last turn we acted on *is* the turn we killed on, whatever
+    # order the client happened to print the closing tags in. Without a
+    # second source here, one odd log resurrects "missed lethal on the
+    # turn you won".
+    our_turns = [t for t in order
+                 if any(pt.get("side") == "us" for _vs, pt in by_turn[t])]
+    kill_turn = (our_turns[-1] if outcome.get("result") == "win"
+                 and our_turns else None)
     for i, turn in enumerate(order):
         rows = by_turn[turn]
         ours = [(vs, pt) for vs, pt in rows if pt.get("side") == "us"]
@@ -178,7 +203,9 @@ def _walk_turns(states, points, us_pid, us_cls, them_cls, outcome, deep,
         finding, found_seq = None, None
         if ours:
             finding, found_seq = _probe_lethal(
-                ours, us_pid, us_cls, them_cls, outcome, turn, deep)
+                ours, us_pid, us_cls, them_cls, outcome, turn, deep,
+                taken=(outcome.get("lethal_turn") == turn
+                       or kill_turn == turn))
             led.lethal = bool(finding and finding.available)
 
         turn_decisions = []
@@ -257,9 +284,9 @@ def _hero_power_used(rows):
     return None if not rows else False
 
 
-def _probe_lethal(ours, us_pid, us_cls, them_cls, outcome, turn, deep):
+def _probe_lethal(ours, us_pid, us_cls, them_cls, outcome, turn, deep,
+                  taken=False):
     """Best finding across the probe positions on our turn."""
-    taken = outcome.get("lethal_turn") == turn
     acted = [(vs, pt) for vs, pt in ours
              if pt.get("kind") in LETHAL_PROBE_KINDS]
     picks = acted or ours

@@ -456,6 +456,30 @@ class Reconstructor:
             "cls": t.get("CLASS"),
         }
 
+    def _hero_power(self, pid):
+        """The player's *current* hero power.
+
+        A replaced power (Justicar, a hero card) is moved to SETASIDE and
+        the new one takes its place in PLAY, so "CARDTYPE=HERO_POWER,
+        controller=pid, zone=PLAY" identifies exactly one entity. Its
+        EXHAUSTED tag is the only record that the power was already spent
+        this turn — without it a lethal search counts a Fireblast that
+        the player had no way left to fire.
+        """
+        for eid in sorted(self.entities):
+            e = self.entities[eid]
+            if e.cardtype() != "HERO_POWER" or e.controller() != pid:
+                continue
+            if e.zone() != "PLAY":
+                continue
+            t = e.tags
+            return {"eid": eid, "card_id": e.card_id,
+                    "name": card_name(e.card_id),
+                    "cost": _int(t.get("COST"), 2),
+                    "exhausted": bool(_int(t.get("EXHAUSTED"), 0)),
+                    "passive": bool(_int(t.get("HIDE_STATS"), 0))}
+        return None
+
     def _weapon(self, pid):
         peid = self.player_eid.get(pid)
         eid = None
@@ -524,6 +548,9 @@ class Reconstructor:
             w = self._weapon(pid)
             if w:
                 vs.weapons[pid] = w
+            hp = self._hero_power(pid)
+            if hp:
+                vs.hero_powers[pid] = hp
             vs.boards[pid] = []
             vs.hands[pid] = []
             vs.secrets[pid] = []

@@ -477,6 +477,24 @@ def test_blocked_games_hide_the_analyse_button(html):
     assert "const blocked=" in body
     assert "if(!blocked)" in body, \
         "the Analyse button must be suppressed for a blocked game"
-    assert "reviewHeader(r.status===\"ready\"&&!blocked)" in body, \
+    assert "reviewHeader(hasReview&&!blocked)" in body, \
         "re-analyse must be suppressed for a blocked game too"
+
+
+def test_a_partial_review_is_rendered_not_hidden(html):
+    """`partial` means the lethal search ran out of budget; the ledger,
+    the WP series and every turn are still complete, and the report says
+    so in its own caveats. Gating the whole pane on status==="ready"
+    threw all of that away."""
+    fn = re.search(r"function renderReview\(\)\{.*?\n}", html, re.S)
+    body = fn.group(0)
+    assert "const hasReview=" in body
+    assert 'r.status!=="ready"' not in body.split("const rep=")[0], \
+        "the early return must key off the payload, not the status"
+    assert "if(!hasReview){" in body, \
+        "only a review with no turns may fall back to 'not ready'"
+    # …and a partial review still says what was skipped.
+    after = body.split("const rep=")[1]
+    assert 'r.status!=="ready"' in after
+    assert "review.partial_note" in after
 

@@ -88,6 +88,8 @@ D 12:00:05.0100000 GameState.DebugPrintPower() -     META_DATA - Meta=DAMAGE Dat
 D 12:00:05.0110000 GameState.DebugPrintPower() -                 Info[0] = [entityName=Player2 id=56 zone=PLAY zonePos=0 cardId=HERO_03 player=2]
 D 12:00:05.0200000 GameState.DebugPrintPower() -     TAG_CHANGE Entity=56 tag=DAMAGE value=30
 D 12:00:05.0300000 GameState.DebugPrintPower() - BLOCK_END
+D 12:00:05.0000000 GameState.DebugPrintPower() - TAG_CHANGE Entity=Player1#00001 tag=TURN value=4
+D 12:00:05.0000000 GameState.DebugPrintPower() - TAG_CHANGE Entity=Player2#00002 tag=TURN value=3
 D 12:00:05.0000000 GameState.DebugPrintPower() - TAG_CHANGE Entity=Player1#00001 tag=PLAYSTATE value=WON
 D 12:00:05.0000000 GameState.DebugPrintPower() - TAG_CHANGE Entity=Player2#00002 tag=PLAYSTATE value=LOST
 D 12:00:05.0000000 GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=STATE value=COMPLETE
