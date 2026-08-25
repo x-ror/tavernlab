@@ -2869,6 +2869,57 @@ fn blood_doctor_thalena_grants_an_independent_second_hero_power() {
 }
 
 #[test]
+fn shaladrassil_gives_the_five_plain_dream_cards_by_default() {
+    let mut f = Fix::new();
+    f.play("Shaladrassil", None);
+    let names: Vec<&str> = f.g.players[0].hand.iter().map(|hc| hc.card.name()).collect();
+    for n in ["Nightmare", "Dream", "Laughing Sister", "Ysera Awakens", "Emerald Drake"] {
+        assert!(names.contains(&n), "missing {n}");
+    }
+}
+
+#[test]
+fn shaladrassil_corrupts_them_after_a_higher_cost_card_was_played_while_held() {
+    let mut f = Fix::new();
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Shaladrassil").unwrap()));
+    let pricier = tavernlab_core::cards::all()
+        .find(|c| {
+            c.def().cost > 8
+                && c.def().collectible
+                && c.def().kind() == tavernlab_core::cards::Kind::Minion
+        })
+        .expect("need a Minion costing more than Shaladrassil's own 8");
+    f.g.players[0].mana = 10;
+    f.play(pricier.name(), None);
+
+    let idx = f.g.players[0]
+        .hand
+        .iter()
+        .position(|hc| hc.card.name() == "Shaladrassil")
+        .unwrap();
+    f.g.players[0].mana = 10;
+    let ok = f.g.apply(Action::Play {
+        hand: idx as u8,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    });
+    assert!(ok);
+    let names: Vec<&str> = f.g.players[0].hand.iter().map(|hc| hc.card.name()).collect();
+    for n in [
+        "Corrupted Nightmare",
+        "Corrupted Dream",
+        "Corrupted Laughing Sister",
+        "Corrupted Awakening",
+        "Corrupted Drake",
+    ] {
+        assert!(names.contains(&n), "missing {n}");
+    }
+}
+
+#[test]
 fn unshackle_soul_costs_one_after_playing_an_opponents_card() {
     let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
     let unshackle = by_name("Unshackle Soul").unwrap();

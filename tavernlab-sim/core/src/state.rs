@@ -297,6 +297,9 @@ impl Marks {
     /// This exact card was drawn by Platysaur's battlecry, so its
     /// deathrattle knows which card in hand to discard.
     pub const DRAWN_BY_PLATYSAUR: Marks = Marks(1 << 2);
+    /// A card costing more than this one's own printed cost was played
+    /// while this card sat in hand (Shaladrassil).
+    pub const PLAYED_HIGHER_COST: Marks = Marks(1 << 3);
 
     #[inline]
     pub const fn has(self, m: Marks) -> bool {

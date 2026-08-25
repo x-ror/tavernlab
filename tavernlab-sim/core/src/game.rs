@@ -852,6 +852,11 @@ impl Game {
                 other.marks.insert(Marks::PLAYED_OPPONENT_CARD);
             }
         }
+        for other in p.hand.iter_mut() {
+            if def.cost > other.card.def().cost {
+                other.marks.insert(Marks::PLAYED_HIGHER_COST);
+            }
+        }
 
         // A secret is set, not cast: it goes to its own zone and waits.
         if def.kind() == Kind::Spell && def.keywords.has(Keywords::SECRET) {

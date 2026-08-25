@@ -361,6 +361,18 @@ mod tokens {
     pub const KHELOS: CardId = token("DINO_410t");
     /// Blood Doctor Thal'ena's granted second Hero Power.
     pub const VAMPYRS_KISS: CardId = token("JAIL_446hp");
+    /// The five Dream cards Shaladrassil hands out, paired with their
+    /// Corrupted counterparts.
+    pub const NIGHTMARE: CardId = token("DREAM_05");
+    pub const CORRUPTED_NIGHTMARE: CardId = token("EDR_846t1");
+    pub const DREAM: CardId = token("DREAM_04");
+    pub const CORRUPTED_DREAM: CardId = token("EDR_846t2");
+    pub const LAUGHING_SISTER: CardId = token("DREAM_01");
+    pub const CORRUPTED_LAUGHING_SISTER: CardId = token("EDR_846t3");
+    pub const YSERA_AWAKENS: CardId = token("DREAM_02");
+    pub const CORRUPTED_AWAKENING: CardId = token("EDR_846t4");
+    pub const EMERALD_DRAKE: CardId = token("DREAM_03");
+    pub const CORRUPTED_DRAKE: CardId = token("EDR_846t5");
 
     /// The three Dreadseeds. Cards that summon "a random Dormant Dreadseed"
     /// roll one of these.
@@ -2557,6 +2569,18 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     ),
     battlecry("Blood Doctor Thal'ena", T::None, |g, c| {
         g.player_mut(c.side).second_hero_power = Some(tokens::VAMPYRS_KISS);
+    }),
+    spell("Shaladrassil", T::None, |g, c| {
+        let corrupt = c.marks.has(Marks::PLAYED_HIGHER_COST);
+        for (normal, corrupted) in [
+            (tokens::NIGHTMARE, tokens::CORRUPTED_NIGHTMARE),
+            (tokens::DREAM, tokens::CORRUPTED_DREAM),
+            (tokens::LAUGHING_SISTER, tokens::CORRUPTED_LAUGHING_SISTER),
+            (tokens::YSERA_AWAKENS, tokens::CORRUPTED_AWAKENING),
+            (tokens::EMERALD_DRAKE, tokens::CORRUPTED_DRAKE),
+        ] {
+            g.give_token(c.side, if corrupt { corrupted } else { normal });
+        }
     }),
 ];
 
