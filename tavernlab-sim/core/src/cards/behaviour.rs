@@ -2711,6 +2711,13 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         }),
         None, None, None, None, None,
     ),
+    // Needs never be played, only kept: this only sets a flag `Game::give_card`
+    // and `Game::begin_turn` read for the rest of the game. "When you have
+    // space" is approximated as a once-per-own-turn check rather than a fully
+    // reactive one -- a return can be delayed a turn, never skipped outright.
+    start_of_game("Godfrey the Betrayer", |g, c| {
+        g.player_mut(c.side).godfrey_active = true;
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -2796,6 +2803,10 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Nespirah, Enthralled",
         "the corpus text for \"Deal 1 damage\" carries no target qualifier; narrowed to enemies only as the conservative default rather than guessing it can hit friendly characters too",
+    ),
+    (
+        "Godfrey the Betrayer",
+        "\"when you have space\" is checked once per own turn (begin_turn) rather than the instant a card leaves hand, so a return can lag by up to a turn; the queue of waiting cards is also capped at 10",
     ),
 ];
 

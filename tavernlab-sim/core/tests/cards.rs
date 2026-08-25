@@ -10,7 +10,7 @@
 
 use tavernlab_core::cards::{Class, Keywords, behaviour_of, by_name};
 use tavernlab_core::game::{Action, Agent};
-use tavernlab_core::state::{Flags, Game, HandCard, Permanent, Side, Target};
+use tavernlab_core::state::{Flags, Game, HandCard, MAX_HAND, Permanent, Side, Target};
 
 const ME: Side = Side::Player0;
 const FOE: Side = Side::Player1;
@@ -3216,4 +3216,38 @@ fn nespirah_deathrattle_summons_nespirah_unshackled() {
             .iter()
             .any(|m| m.card.name() == "Nespirah, Unshackled")
     );
+}
+
+#[test]
+fn godfrey_catches_an_overdraw_instead_of_burning_it() {
+    let mut f = Fix::new();
+    f.g.players[0].godfrey_active = true;
+    let filler = by_name("Wisp").unwrap();
+    for _ in 0..MAX_HAND {
+        f.g.players[0].hand.push(HandCard::new(filler));
+    }
+    let yeti = by_name("Chillwind Yeti").unwrap();
+    assert!(
+        !f.g.give_card(ME, yeti),
+        "still reports the burn -- hand is full either way"
+    );
+    assert_eq!(f.g.players[0].overdrawn.len(), 1);
+    assert_eq!(f.g.players[0].overdrawn[0], yeti);
+}
+
+#[test]
+fn godfrey_returns_one_overdrawn_card_per_turn_discounted() {
+    let mut f = Fix::new();
+    f.g.players[0].godfrey_active = true;
+    let yeti = by_name("Chillwind Yeti").unwrap();
+    f.g.players[0].overdrawn.push(yeti);
+    f.g.players[0].deck.push(by_name("Wisp").unwrap()); // fed to the guaranteed draw
+    f.g.begin_turn();
+    let hc = f.g.players[0]
+        .hand
+        .iter()
+        .find(|hc| hc.card == yeti)
+        .expect("the overdrawn Yeti returned");
+    assert_eq!(hc.cost_delta, -1, "permanently discounted");
+    assert!(f.g.players[0].overdrawn.is_empty());
 }

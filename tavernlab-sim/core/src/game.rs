@@ -323,6 +323,17 @@ impl Game {
         p.pending = remaining;
 
         self.deaths_this_turn = 0;
+        // Godfrey the Betrayer: one overdrawn card returns per turn, ahead of
+        // the guaranteed draw below so it does not have to compete with it
+        // for the same slot. Discounted permanently, not just this turn.
+        let p = self.player_mut(side);
+        if p.godfrey_active && p.hand.len() < MAX_HAND {
+            if let Some(card) = p.overdrawn.pop() {
+                let mut hc = HandCard::new(card);
+                hc.cost_delta = -1;
+                self.player_mut(side).hand.push(hc);
+            }
+        }
         self.draw(side, 1);
         self.board_dirty = true;
         for entry in fired.iter().copied() {
@@ -1071,10 +1082,20 @@ impl Game {
     }
 
     /// Put a card in hand, or burn it if the hand is full.
+    ///
+    /// Godfrey the Betrayer changes only the "burn" half: instead of vanishing,
+    /// the card waits in `overdrawn` for space, returned discounted from
+    /// `begin_turn`. Everything that reaches hand this way -- a draw, a
+    /// Discover, any other `give_card` caller -- is "overdrawn" the same way
+    /// a fatigue-style empty draw is not: this only ever fires when a card
+    /// existed and had nowhere to go, which is exactly what the card means.
     pub fn give_card(&mut self, side: Side, card: CardId) -> bool {
         let p = self.player_mut(side);
         if p.hand.len() >= MAX_HAND {
-            return false; // overdraw burns the card
+            if p.godfrey_active {
+                p.overdrawn.push(card);
+            }
+            return false;
         }
         p.hand.push(HandCard::new(card))
     }

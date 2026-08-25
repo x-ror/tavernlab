@@ -473,6 +473,17 @@ pub struct Player {
     /// gates *whether* the discount exists at all (Passive Hero Power, Turn
     /// 3+), so this only needs to say "not yet this turn".
     pub first_minion_discounted_turn: bool,
+    /// Set for the rest of the game once Godfrey the Betrayer's Start of
+    /// Game fires (it need never be played, only kept). While set,
+    /// `Game::give_card` queues an overdraw here instead of burning it.
+    pub godfrey_active: bool,
+    /// Cards Godfrey caught on their way to being burned, waiting for hand
+    /// space; returned one at a time, discounted by 1, at this player's own
+    /// `begin_turn`. Capped rather than unbounded: a game overdrawing more
+    /// than this many cards past a full hand is not one Godfrey saves either
+    /// way, and the cap keeps this a fixed handful of bytes on every game
+    /// regardless of whether Godfrey is anywhere in play.
+    pub overdrawn: Inline<CardId, 10>,
 }
 
 impl Player {
@@ -520,6 +531,8 @@ impl Player {
             swapped_hand: None,
             minions_played_total: 0,
             first_minion_discounted_turn: false,
+            godfrey_active: false,
+            overdrawn: Inline::new(),
         }
     }
 
