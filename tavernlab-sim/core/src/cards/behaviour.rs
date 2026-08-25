@@ -21,7 +21,8 @@ use crate::effects::Area;
 use crate::events::{Event, Trigger};
 use crate::inline::Inline;
 use crate::state::{
-    Flags, Game, HandCard, MAX_DECK, MAX_HAND, Marks, Pending, PendingKind, Side, Target,
+    Flags, Game, HandCard, MAX_BOARD, MAX_DECK, MAX_HAND, Marks, Pending, PendingKind, Side,
+    Target,
 };
 
 /// What an effect is told about the circumstances it fires in.
@@ -349,6 +350,9 @@ mod tokens {
     pub const FLEEING_WRATHGUARD: CardId = token("TIME_020t4t");
     pub const FLEEING_TERRORGUARD: CardId = token("TIME_020t5t");
     pub const BROXIGAR: CardId = token("TIME_020");
+    // Warrior backlog batch.
+    pub const COLISEUM_CROCOLISK: CardId = token("TIME_873t");
+    pub const STEADFAST_SECURITY: CardId = token("TLC_622t");
     pub const GORISHI_STINGER: CardId = token("TLC_630t");
     /// Brood Keeper's "2/2 Sword". A weapon, so it never shows up through
     /// `summonable_children()`, which only ever returns minions.
@@ -3008,6 +3012,183 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         let have = g.player(c.side).hand.len();
         if have < MAX_HAND {
             g.draw_cards(c.side, MAX_HAND - have);
+        }
+    }),
+
+    // -------------------------------------------------------- backlog batch
+    // General Standard coverage, not tied to a specific meta deck. Each row
+    // reuses a verb this table already established many times over; nothing
+    // here needed new engine machinery.
+    spell("Slam", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.spell_damage(c.side, Some(t), 2);
+            let alive = match t {
+                Target::Minion(s, i) => g
+                    .player(s)
+                    .board
+                    .get(i as usize)
+                    .is_some_and(|m| !m.is_dead()),
+                Target::Hero(_) => true,
+            };
+            if alive {
+                g.draw_cards(c.side, 1);
+            }
+        }
+    }),
+    battlecry("Abusive Sergeant", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.buff_temp_atk(t, 2);
+        }
+    }),
+    battlecry("Beaming Sidekick", T::FriendlyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.buff(t, 0, 2);
+        }
+    }),
+    // "Not itself": the same exclusion Warden Maiev and Dreambound Raptor's
+    // identical "whenever/after you [play/summon] a minion" wording use.
+    trigger("Murloc Tidecaller", |g, c| {
+        if let Event::MinionSummoned { side, card, slot } = c.event
+            && side == c.side
+            && slot != c.slot
+            && card.def().races.any(Races::MURLOC)
+        {
+            g.buff(c.me(), 1, 0);
+        }
+    }),
+    battlecry("Gnawing Greenfin", T::None, |g, c| {
+        g.add_random_to_hand(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.races.any(Races::MURLOC)
+        });
+    }),
+    spell("Siphoning Growth", T::FriendlyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.destroy(t);
+            g.gain_armor(c.side, 8);
+        }
+    }),
+    battlecry("Injured Tol'vir", T::None, |g, c| {
+        if let Some(slot) = c.source {
+            g.deal_damage(Target::Minion(c.side, slot), 3);
+        }
+    }),
+    // "Swap the Attack and Health": current (post-damage) Health, not max --
+    // a damaged minion's swap should not silently forgive the damage. The
+    // new Health is a fresh value, so damage resets to 0 rather than
+    // carrying over against the new max.
+    battlecry("Crazed Alchemist", T::AnyMinion, |g, c| {
+        if let Some(Target::Minion(s, i)) = c.target
+            && let Some(m) = g.player_mut(s).board.get_mut(i as usize)
+        {
+            let health = m.health();
+            let atk = m.atk;
+            m.atk = health;
+            m.max_hp = atk;
+            m.damage = 0;
+        }
+    }),
+    battlecry("Bloodsail Raider", T::None, |g, c| {
+        let atk = g.player(c.side).weapon.map_or(0, |w| w.atk);
+        if atk > 0
+            && let Some(slot) = c.source
+        {
+            g.buff(Target::Minion(c.side, slot), atk, 0);
+        }
+    }),
+    battlecry("Maze Guide", T::None, |g, c| {
+        g.summon_random_of_cost(c.side, 2, 1);
+    }),
+    spell("Unleash the Crocolisks", T::None, |g, c| {
+        g.gain_armor(c.side, 10);
+        g.summon_token(c.side.other(), tokens::COLISEUM_CROCOLISK, 2);
+    }),
+    battlecry("Sunfury Protector", T::None, |g, c| {
+        let Some(slot) = c.source else { return };
+        let side = c.side;
+        if slot > 0 {
+            g.grant(Target::Minion(side, slot - 1), Keywords::TAUNT);
+        }
+        let right = slot as usize + 1;
+        if right < g.player(side).board.len() {
+            g.grant(Target::Minion(side, right as u8), Keywords::TAUNT);
+        }
+    }),
+    battlecry("P1CK-P0K3T", T::None, |g, c| {
+        if g.player(c.side).deck.len() >= 25 {
+            g.draw_cards(c.side, 1);
+        }
+    }),
+    // "Each turn", not "your turn" -- deliberately no side filter, unlike
+    // every other TurnStart/TurnEnd trigger in this table.
+    trigger("Micro Machine", |g, c| {
+        if matches!(c.event, Event::TurnStart { .. }) {
+            g.buff(c.me(), 1, 0);
+        }
+    }),
+    // "A minion", not "a friendly minion" -- no side filter here either;
+    // this fires off enemy minions taking damage too.
+    trigger("Frothing Berserker", |g, c| {
+        if let Event::Damaged { target, amount } = c.event
+            && amount > 0
+            && matches!(target, Target::Minion(..))
+        {
+            g.buff(c.me(), 1, 0);
+        }
+    }),
+    battlecry("Coldlight Seer", T::None, |g, c| {
+        let Some(slot) = c.source else { return };
+        let side = c.side;
+        let targets: Inline<u8, MAX_BOARD> = g
+            .player(side)
+            .board
+            .iter()
+            .enumerate()
+            .filter(|(i, m)| *i != slot as usize && m.races().any(Races::MURLOC))
+            .map(|(i, _)| i as u8)
+            .collect();
+        for i in targets.iter() {
+            g.buff(Target::Minion(side, *i), 0, 2);
+        }
+    }),
+    battlecry("Big Game Hunter", T::MinionAtkAtLeast(7), |g, c| {
+        if let Some(t) = c.target {
+            g.destroy(t);
+        }
+    }),
+    battlecry("Lifedrinker", T::None, |g, c| {
+        g.deal_damage(Target::Hero(c.side.other()), 3);
+        g.heal_hero(c.side, 3);
+    }),
+    battlecry("Twilight Drake", T::None, |g, c| {
+        let Some(slot) = c.source else { return };
+        let n = g.player(c.side).hand.len() as i16;
+        g.buff(Target::Minion(c.side, slot), 0, n);
+    }),
+    // No printed keyword to check against here: "Costs (1) less per Attack
+    // of your weapon" is a live read of the caster's own weapon, exactly
+    // what `cost_delta` exists for.
+    c(
+        "Dread Corsair",
+        T::None,
+        None, None, None, None, None, None, None,
+        Some(|g, side, _hand_idx| -g.player(side).weapon.map_or(0, |w| w.atk)),
+        None,
+    ),
+    spell("City Defenses", T::None, |g, c| {
+        g.summon_token(c.side, tokens::STEADFAST_SECURITY, 2);
+    }),
+    trigger("Steadfast Security", |g, c| {
+        if let Event::Damaged { target, amount } = c.event
+            && amount > 0
+            && target == c.me()
+        {
+            g.buff(c.me(), 1, 0);
+        }
+    }),
+    battlecry("Eggbasher", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.deal_damage(t, 1);
+            g.buff(t, 4, 0);
         }
     }),
 ];

@@ -3641,3 +3641,256 @@ fn azalina_soulsever_draws_until_the_hand_is_full() {
     f.play("Azalina Soulsever", None);
     assert_eq!(f.g.players[0].hand.len(), MAX_HAND);
 }
+
+// ------------------------------------------------------- backlog batch
+
+#[test]
+fn slam_draws_only_if_the_minion_survives() {
+    let mut f = Fix::new()
+        .deck(&["Wisp"])
+        .board(FOE, &["Boulderfist Ogre", "Wisp"]); // 6/7, 1/1
+    f.play("Slam", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 5, "6/7 took 2, survived");
+    assert_eq!(f.g.players[0].hand.len(), 1, "survived: drew a card");
+
+    f.play("Slam", foe_minion(1));
+    assert_eq!(f.their_board(), 1, "the 1/1 died to 2 damage");
+    assert_eq!(f.g.players[0].hand.len(), 1, "died: no second draw");
+}
+
+#[test]
+fn abusive_sergeant_buff_expires_at_end_of_turn() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.play("Abusive Sergeant", my_minion(0));
+    assert_eq!(f.mine(0).atk, 6, "4 base plus 2 this turn");
+    f.g.end_turn();
+    assert_eq!(f.mine(0).atk, 4, "expired");
+}
+
+#[test]
+fn beaming_sidekick_buffs_health_permanently() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.play("Beaming Sidekick", my_minion(0));
+    assert_eq!(f.mine(0).max_hp, 7);
+    f.g.end_turn();
+    assert_eq!(f.mine(0).max_hp, 7, "permanent, unlike a temp Attack buff");
+}
+
+#[test]
+fn murloc_tidecaller_reacts_to_a_murloc_summon_but_not_itself() {
+    let mut f = Fix::new().board(ME, &["Murloc Tidecaller"]);
+    assert_eq!(f.mine(0).atk, 1, "unaffected by its own arrival");
+    f.g.summon(ME, by_name("Murloc Raider").unwrap());
+    assert_eq!(f.mine(0).atk, 2, "reacted to another Murloc");
+    f.g.summon(ME, by_name("Wisp").unwrap());
+    assert_eq!(f.mine(0).atk, 2, "a non-Murloc does not trigger it");
+}
+
+#[test]
+fn gnawing_greenfin_gets_a_random_murloc() {
+    let mut f = Fix::new();
+    f.play("Gnawing Greenfin", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    let d = f.g.players[0].hand[0].card.def();
+    assert_eq!(d.kind(), Kind::Minion);
+    assert!(d.races.any(tavernlab_core::cards::Races::MURLOC));
+}
+
+#[test]
+fn siphoning_growth_destroys_a_friendly_minion_for_armor() {
+    let mut f = Fix::new().board(ME, &["Wisp"]);
+    f.g.players[0].armor = 0;
+    f.play("Siphoning Growth", my_minion(0));
+    assert_eq!(f.g.players[0].board.len(), 0);
+    assert_eq!(f.g.players[0].armor, 8);
+}
+
+#[test]
+fn injured_tolvir_damages_itself_but_keeps_taunt() {
+    let mut f = Fix::new();
+    f.play("Injured Tol'vir", None);
+    assert_eq!(f.mine(0).health(), 3, "6 max minus 3 self-damage");
+    assert!(f.mine(0).has(Keywords::TAUNT));
+}
+
+#[test]
+fn crazed_alchemist_swaps_current_attack_and_health() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.g.players[1].board[0].damage = 3; // currently 6/4
+    f.play("Crazed Alchemist", foe_minion(0));
+    assert_eq!(f.theirs(0).atk, 4, "the old (post-damage) Health");
+    assert_eq!(f.theirs(0).health(), 6, "the old Attack, undamaged");
+}
+
+#[test]
+fn bloodsail_raider_gains_attack_equal_to_the_weapon() {
+    let mut f = Fix::new();
+    f.g.players[0].weapon = Some(tavernlab_core::state::Weapon::equip(
+        by_name("Fiery War Axe").unwrap(), // 3 Attack
+    ));
+    f.play("Bloodsail Raider", None);
+    assert_eq!(f.mine(0).atk, f.mine(0).card.def().atk + 3);
+}
+
+#[test]
+fn maze_guide_summons_a_two_cost_minion() {
+    let mut f = Fix::new();
+    f.play("Maze Guide", None);
+    assert_eq!(f.g.players[0].board.len(), 2, "Maze Guide plus the summon");
+    assert_eq!(f.mine(1).card.def().cost, 2);
+}
+
+#[test]
+fn unleash_the_crocolisks_gains_armor_and_summons_for_the_opponent() {
+    let mut f = Fix::new();
+    f.g.players[0].armor = 0;
+    f.play("Unleash the Crocolisks", None);
+    assert_eq!(f.g.players[0].armor, 10);
+    assert_eq!(f.g.players[0].board.len(), 0, "not on the caster's board");
+    assert_eq!(f.g.players[1].board.len(), 2, "on the opponent's board");
+}
+
+#[test]
+fn sunfury_protector_gives_taunt_to_both_neighbors_only() {
+    let mut f = Fix::new().board(ME, &["Wisp", "Wisp"]);
+    let card = by_name("Sunfury Protector").unwrap();
+    f.g.players[0].hand.push(HandCard::new(card));
+    let idx = f.g.players[0].hand.len() as u8 - 1;
+    let ok = f.g.apply(Action::Play {
+        hand: idx,
+        target: None,
+        position: 1, // between the two Wisps
+        choice: u8::MAX,
+    });
+    assert!(ok);
+    assert!(f.mine(0).has(Keywords::TAUNT), "left neighbor");
+    assert!(!f.mine(1).has(Keywords::TAUNT), "not itself");
+    assert!(f.mine(2).has(Keywords::TAUNT), "right neighbor");
+}
+
+#[test]
+fn p1ck_p0k3t_draws_only_with_a_big_enough_deck() {
+    let mut f = Fix::new();
+    f.play("P1CK-P0K3T", None);
+    assert_eq!(f.g.players[0].hand.len(), 0, "deck too small");
+
+    let filler = by_name("Wisp").unwrap();
+    for _ in 0..25 {
+        f.g.players[0].deck.push(filler);
+    }
+    f.play("P1CK-P0K3T", None);
+    assert_eq!(f.g.players[0].hand.len(), 1, "25+ cards: drew one");
+}
+
+#[test]
+fn micro_machine_grows_on_either_players_turn_start() {
+    let mut f = Fix::new().board(ME, &["Micro Machine"]);
+    f.g.current = Side::Player1;
+    f.g.fire(tavernlab_core::events::Event::TurnStart {
+        side: Side::Player1,
+    });
+    assert_eq!(f.mine(0).atk, 2, "grew on the opponent's turn too");
+}
+
+#[test]
+fn frothing_berserker_grows_from_any_minion_taking_damage() {
+    let mut f = Fix::new()
+        .board(ME, &["Frothing Berserker"])
+        .board(FOE, &["Wisp"]);
+    f.g.deal_damage(Target::Minion(FOE, 0), 1);
+    assert_eq!(
+        f.mine(0).atk,
+        3,
+        "even an enemy minion taking damage counts"
+    );
+}
+
+#[test]
+fn coldlight_seer_buffs_other_murlocs_only() {
+    let mut f = Fix::new().board(ME, &["Murloc Raider", "Wisp"]);
+    f.play("Coldlight Seer", None);
+    assert_eq!(f.mine(0).max_hp, 3, "1 base plus 2");
+    assert_eq!(f.mine(1).max_hp, 1, "not a Murloc, unaffected");
+    assert_eq!(
+        f.mine(2).max_hp,
+        3,
+        "Coldlight Seer itself is not \"other\""
+    );
+}
+
+#[test]
+fn big_game_hunter_only_targets_seven_or_more_attack() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    let card = by_name("Big Game Hunter").unwrap();
+    f.g.players[0].hand.push(HandCard::new(card));
+    let idx = f.g.players[0].hand.len() as u8 - 1;
+    assert!(
+        !f.g.apply(Action::Play {
+            hand: idx,
+            target: foe_minion(0),
+            position: u8::MAX,
+            choice: u8::MAX,
+        }),
+        "6 Attack is not enough"
+    );
+}
+
+#[test]
+fn lifedrinker_burns_the_enemy_hero_and_heals_its_own() {
+    let mut f = Fix::new();
+    f.g.players[0].hero_hp = 20;
+    f.play("Lifedrinker", None);
+    assert_eq!(f.g.players[1].hero_hp, 27);
+    assert_eq!(f.g.players[0].hero_hp, 23);
+}
+
+#[test]
+fn twilight_drake_gains_health_per_card_in_hand() {
+    let mut f = Fix::new();
+    let filler = by_name("Wisp").unwrap();
+    for _ in 0..3 {
+        f.g.players[0].hand.push(HandCard::new(filler));
+    }
+    f.play("Twilight Drake", None);
+    assert_eq!(f.mine(0).max_hp, f.mine(0).card.def().hp + 3);
+}
+
+#[test]
+fn dread_corsair_costs_less_per_weapon_attack() {
+    let mut f = Fix::new();
+    let corsair = by_name("Dread Corsair").unwrap();
+    f.g.players[0].hand.push(HandCard::new(corsair));
+    assert_eq!(f.g.card_cost(ME, 0), corsair.def().cost, "no weapon yet");
+
+    f.g.players[0].weapon = Some(tavernlab_core::state::Weapon::equip(
+        by_name("Fiery War Axe").unwrap(), // 3 Attack
+    ));
+    assert_eq!(f.g.card_cost(ME, 0), corsair.def().cost - 3);
+}
+
+#[test]
+fn city_defenses_summons_two_taunt_walls() {
+    let mut f = Fix::new();
+    f.play("City Defenses", None);
+    assert_eq!(f.g.players[0].board.len(), 2);
+    for slot in 0..2 {
+        assert!(f.mine(slot).has(Keywords::TAUNT));
+        assert_eq!((f.mine(slot).atk, f.mine(slot).max_hp), (0, 6));
+    }
+}
+
+#[test]
+fn steadfast_security_gains_attack_when_damaged() {
+    let mut f = Fix::new();
+    f.play("City Defenses", None);
+    f.g.deal_damage(Target::Minion(ME, 0), 1);
+    assert_eq!(f.mine(0).atk, 1, "grew after taking damage");
+}
+
+#[test]
+fn eggbasher_damages_and_buffs_the_same_target() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.play("Eggbasher", foe_minion(0));
+    assert_eq!(f.theirs(0).atk, 10, "6 plus 4");
+    assert_eq!(f.theirs(0).health(), 6, "7 minus 1");
+}

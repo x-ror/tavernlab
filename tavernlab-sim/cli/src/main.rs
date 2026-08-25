@@ -8,6 +8,7 @@
 //! tavernsim demo [seed]               one game, turn by turn
 //! tavernsim coverage                  how much of the card pool is implemented
 //! tavernsim gauntlet [path]           how much of real deck lists resolves
+//! tavernsim backlog <class>           exactly which Standard cards are missing
 //! ```
 
 use std::time::Instant;
@@ -36,6 +37,7 @@ fn main() {
             _ => Formats::STANDARD,
         }),
         "gauntlet" => gauntlet(args.get(1).map(String::as_str)),
+        "backlog" => backlog(args.get(1).map(String::as_str)),
         other => {
             eprintln!("unknown command {other:?}");
             eprintln!("usage: tavernsim [bench|matrix|demo|coverage] [args]");
@@ -409,6 +411,62 @@ fn list_implemented(fmt: Formats) {
     names.dedup();
     for n in names {
         println!("{n}");
+    }
+}
+
+/// Standard-legal cards of `class` the engine does not understand yet, with
+/// full text and cost -- the working list for a manual coverage batch.
+///
+/// `coverage` says how much is missing; this says exactly what. Sorted by
+/// cost, since the cheap end of the curve tends to be the most mechanically
+/// simple and is usually where a batch pass should start.
+fn backlog(class_name: Option<&str>) {
+    use tavernlab_core::cards::Class;
+    use tavernlab_core::deck::{implemented_pool, pool};
+
+    let Some(name) = class_name else {
+        eprintln!("usage: tavernsim backlog <class>");
+        eprintln!(
+            "classes: neutral deathknight demonhunter druid hunter mage paladin priest rogue shaman warlock warrior"
+        );
+        std::process::exit(2);
+    };
+    let class = match name.to_ascii_lowercase().as_str() {
+        "neutral" => Class::Neutral,
+        "deathknight" => Class::DeathKnight,
+        "demonhunter" => Class::DemonHunter,
+        "druid" => Class::Druid,
+        "hunter" => Class::Hunter,
+        "mage" => Class::Mage,
+        "paladin" => Class::Paladin,
+        "priest" => Class::Priest,
+        "rogue" => Class::Rogue,
+        "shaman" => Class::Shaman,
+        "warlock" => Class::Warlock,
+        "warrior" => Class::Warrior,
+        other => {
+            eprintln!("unknown class {other:?}");
+            std::process::exit(2);
+        }
+    };
+
+    let all = pool(class, Formats::STANDARD);
+    let done = implemented_pool(class, Formats::STANDARD);
+    let mut missing: Vec<_> = all.into_iter().filter(|c| !done.contains(c)).collect();
+    missing.sort_by_key(|c| c.def().cost);
+    println!(
+        "{} of {} {class:?} cards unimplemented:",
+        missing.len(),
+        missing.len() + done.len()
+    );
+    for c in missing {
+        println!(
+            "  [{}] cost={} kind={:?} :: {}",
+            c.name(),
+            c.def().cost,
+            c.def().kind(),
+            c.info().text.replace('\n', " ")
+        );
     }
 }
 
