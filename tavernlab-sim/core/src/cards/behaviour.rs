@@ -350,6 +350,15 @@ mod tokens {
     /// old token instead (weaker, not the real hybrid), and noted in
     /// APPROXIMATE.
     pub const ZOMBEAST: CardId = token("ICC_800h3t");
+    /// The five printings of "The Egg of Khelos" and its final hatch,
+    /// disambiguated only by id -- all five share one printed name, so the
+    /// single behaviour row below tells them apart via `Ctx::dying`.
+    pub const EGG_OF_KHELOS_1: CardId = token("DINO_410");
+    pub const EGG_OF_KHELOS_2: CardId = token("DINO_410t2");
+    pub const EGG_OF_KHELOS_3: CardId = token("DINO_410t3");
+    pub const EGG_OF_KHELOS_4: CardId = token("DINO_410t4");
+    pub const EGG_OF_KHELOS_5: CardId = token("DINO_410t5");
+    pub const KHELOS: CardId = token("DINO_410t");
 
     /// The three Dreadseeds. Cards that summon "a random Dormant Dreadseed"
     /// roll one of these.
@@ -2514,6 +2523,24 @@ pub static BEHAVIOURS: &[Behaviour] = &[
                 g.player_mut(ctx.side).sidequest = Some((qcard, progress));
             }
         }
+    }),
+    // ------------------------------------------------------------- misc
+    deathrattle("The Egg of Khelos", |g, c| {
+        let Some(dying) = c.dying.map(|m| m.card) else {
+            return;
+        };
+        let next = if dying == tokens::EGG_OF_KHELOS_1 {
+            tokens::EGG_OF_KHELOS_2
+        } else if dying == tokens::EGG_OF_KHELOS_2 {
+            tokens::EGG_OF_KHELOS_3
+        } else if dying == tokens::EGG_OF_KHELOS_3 {
+            tokens::EGG_OF_KHELOS_4
+        } else if dying == tokens::EGG_OF_KHELOS_4 {
+            tokens::EGG_OF_KHELOS_5
+        } else {
+            tokens::KHELOS
+        };
+        g.summon_token(c.side, next, 1);
     }),
 ];
 

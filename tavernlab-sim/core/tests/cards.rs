@@ -2798,6 +2798,24 @@ fn storm_the_gates_completes_after_three_beasts_or_undead() {
 }
 
 #[test]
+fn the_egg_of_khelos_hatches_through_all_five_stages() {
+    let mut f = Fix::new().board(ME, &["The Egg of Khelos"]);
+    for _ in 0..5 {
+        let slot = f.g.players[0]
+            .board
+            .iter()
+            .position(|m| m.card.name() == "The Egg of Khelos")
+            .expect("an Egg should still be on board");
+        f.g.destroy(Target::Minion(ME, slot as u8));
+        f.g.sweep_deaths();
+    }
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!(f.mine(0).card.name(), "Khelos");
+    assert_eq!((f.mine(0).atk, f.mine(0).health()), (20, 20));
+    assert!(f.mine(0).has(Keywords::TAUNT));
+}
+
+#[test]
 fn unshackle_soul_costs_one_after_playing_an_opponents_card() {
     let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
     let unshackle = by_name("Unshackle Soul").unwrap();
