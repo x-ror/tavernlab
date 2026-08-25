@@ -2989,3 +2989,66 @@ fn unshackle_soul_costs_one_after_playing_an_opponents_card() {
     assert!(ok);
     assert_eq!(f.their_board(), 0);
 }
+
+#[test]
+fn elise_the_navigator_plays_as_a_vanilla_body() {
+    let mut f = Fix::new();
+    f.play("Elise the Navigator", None);
+    assert_eq!(f.mine(0).atk, 3);
+    assert_eq!(f.mine(0).max_hp, 5);
+}
+
+#[test]
+fn bashana_runetotem_gets_three_bare_treants() {
+    let mut f = Fix::new();
+    f.play("Bashana Runetotem", None);
+    assert_eq!(f.g.players[0].board.len(), 4, "Bashana plus three Treants");
+    for slot in 1..4 {
+        assert_eq!(f.mine(slot).card.name(), "Treant");
+        assert_eq!(f.mine(slot).atk, 2);
+        assert_eq!(f.mine(slot).max_hp, 2);
+    }
+}
+
+#[test]
+fn toreth_the_unbreaking_plays_with_its_printed_keywords() {
+    let mut f = Fix::new();
+    f.play("Toreth the Unbreaking", None);
+    assert!(f.mine(0).has(Keywords::DIVINE_SHIELD));
+    assert!(f.mine(0).has(Keywords::TAUNT));
+}
+
+#[test]
+fn tiny_pal_deals_one_to_all_enemies_after_the_hero_attacks() {
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti"]); // 4/5
+    f.g.players[0].weapon = Some(tavernlab_core::state::Weapon::equip(
+        by_name("Tiny Pal").unwrap(),
+    ));
+    f.g.apply(Action::HeroAttack {
+        target: Target::Hero(FOE),
+    });
+    assert_eq!(
+        f.theirs(0).max_hp - f.theirs(0).damage,
+        4,
+        "the Yeti took 1 from the fixed ammo"
+    );
+    assert_eq!(
+        f.g.players[1].hero_hp,
+        30 - 2 - 1,
+        "the hero took 2 from the swing and 1 from the ammo"
+    );
+}
+
+#[test]
+fn nightmare_fuel_discovers_a_minion_copy_from_the_opponents_deck() {
+    let mut f = Fix::new();
+    f.g.players[1].deck.push(by_name("Chillwind Yeti").unwrap());
+    f.play("Nightmare Fuel", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Chillwind Yeti");
+    assert_eq!(
+        f.g.players[1].deck.len(),
+        1,
+        "the opponent keeps their copy"
+    );
+}

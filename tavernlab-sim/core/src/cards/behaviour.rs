@@ -308,7 +308,11 @@ mod tokens {
     pub const FROG: CardId = token("hexfrog");
     pub const SPECTRAL_SPIDER: CardId = token("EX1_554t");
     pub const IMP: CardId = token("EX1_598");
-    pub const TREANT: CardId = token("EX1_160t");
+    // Despite the old constant name, "EX1_160t" is the 2/2 Panther Power of
+    // the Wild summons -- not a Treant. Kept distinct from the real one below
+    // so a future Treant card cannot inherit the mistake.
+    pub const PANTHER: CardId = token("EX1_160t");
+    pub const TREANT: CardId = token("EX1_tk9");
     pub const VIOLET_APPRENTICE: CardId = token("EX1_014t");
     pub const COIN: CardId = token("GAME_005");
     pub const GHOUL: CardId = token("HERO_11bpt");
@@ -908,7 +912,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     choose("Power of the Wild", &[
         m(T::None, |g, c| g.buff_area(c.side, Area::FriendlyMinions, 1, 1)),
         m(T::None, |g, c| {
-            g.summon_token(c.side, tokens::TREANT, 1);
+            g.summon_token(c.side, tokens::PANTHER, 1);
         }),
     ]),
     choose("Mark of Nature", &[
@@ -2591,6 +2595,41 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         T::None,
         None, None, None, None, None, None, None, None, None,
     ),
+    // "Craft a custom location" from the deck's cost curve needs a
+    // location-generation system the engine does not have. This row exists
+    // only so `is_implemented` sees a vanilla 3/5.
+    c(
+        "Elise the Navigator",
+        T::None,
+        None, None, None, None, None, None, None, None, None,
+    ),
+    // "Carve 12 Mana worth of Nature spells into them" needs per-token stat
+    // state the engine does not track; only the three bare Treants land.
+    battlecry("Bashana Runetotem", T::None, |g, c| {
+        g.summon_token(c.side, tokens::TREANT, 3);
+    }),
+    // The "three hits to break" aura needs a per-shield hit counter the
+    // engine's Divine Shield flag does not have. This row exists only so
+    // `is_implemented` sees the printed Divine Shield and Taunt.
+    c(
+        "Toreth the Unbreaking",
+        T::None,
+        None, None, None, None, None, None, None, None, None,
+    ),
+    // Fixed ammunition rather than the four choosable, cycling effects: this
+    // always fires the plainest of the four (1 damage to all enemies) and
+    // never freezes, summons or discounts, so it is weaker every game.
+    trigger("Tiny Pal", |g, c| {
+        if matches!(c.event, Event::AfterAttack { attacker: Target::Hero(s), .. } if s == c.side) {
+            g.damage_area(c.side, Area::AllEnemies, 1);
+        }
+    }),
+    // Combo (arriving with a Dark Gift, G11) is not implemented; the base
+    // Discover always fires without it -- the same approximation already
+    // used for Darkrider and Shadowflame Suffusion.
+    spell("Nightmare Fuel", T::None, |g, c| {
+        g.discover_from_opponent_deck(c.side, |d| d.kind() == super::Kind::Minion);
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -2648,6 +2687,26 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Stadium Announcer",
         "Rewind is not modelled -- both equips are single, independent rolls",
+    ),
+    (
+        "Elise the Navigator",
+        "crafting a custom location from the deck's cost curve needs a location-generation system the engine does not have; plays as a vanilla 3/5",
+    ),
+    (
+        "Bashana Runetotem",
+        "\"Carve 12 Mana worth of Nature spells into them\" needs per-token stat state the engine does not have; only the three bare 2/2 Treants are summoned",
+    ),
+    (
+        "Toreth the Unbreaking",
+        "the aura giving friendly Divine Shields three hits before breaking needs a hit counter the engine's Divine Shield flag does not have; Divine Shield behaves normally (one hit) instead",
+    ),
+    (
+        "Tiny Pal",
+        "the four choosable, cycling ammunition effects are approximated as one fixed effect -- 1 damage to all enemies after each hero attack -- with no freeze, summon or discount option",
+    ),
+    (
+        "Nightmare Fuel",
+        "the Combo bonus (the discovered minion arrives with a Dark Gift, G11) is not implemented; the base Discover always fires without it",
     ),
 ];
 
