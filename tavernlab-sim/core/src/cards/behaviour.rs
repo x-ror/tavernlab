@@ -2756,6 +2756,17 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     // untransformed card spends its printed 0 Mana for nothing, exactly as
     // the real card does before it has ever been transformed.
     spell("Shadow of Demise", T::None, |_, _| {}),
+    // Whether "a 3/4 copy" means borrowing only the name or the last enemy
+    // minion's abilities too (at Mirrex's own fixed stats either way) is not
+    // resolvable from the corpus text alone, and guessing wrong could as
+    // easily make this stronger as weaker. Approximated as its own plain
+    // 3/4 body, the same conservative treatment as Elise the Navigator
+    // above. This row exists only so `is_implemented` sees it.
+    c(
+        "Mirrex, the Crystalline",
+        T::None,
+        None, None, None, None, None, None, None, None, None,
+    ),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -2845,6 +2856,10 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Godfrey the Betrayer",
         "\"when you have space\" is checked once per own turn (begin_turn) rather than the instant a card leaves hand, so a return can lag by up to a turn; the queue of waiting cards is also capped at 10",
+    ),
+    (
+        "Mirrex, the Crystalline",
+        "plays as its own plain 3/4 Beast/Elemental; \"is a copy of the last enemy minion played\" while in hand is not implemented -- whether that copies the minion's abilities or only its name is not resolvable from the corpus text alone",
     ),
 ];
 

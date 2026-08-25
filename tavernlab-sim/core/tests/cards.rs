@@ -3330,3 +3330,11 @@ fn shadow_of_demise_does_nothing_cast_in_its_original_form() {
     f.play("Shadow of Demise", None);
     assert_eq!(f.g.players[0].hand.len(), 0);
 }
+
+#[test]
+fn mirrex_plays_as_its_own_plain_body() {
+    let mut f = Fix::new();
+    f.play("Mirrex, the Crystalline", None);
+    assert_eq!(f.mine(0).atk, 3);
+    assert_eq!(f.mine(0).max_hp, 4);
+}
