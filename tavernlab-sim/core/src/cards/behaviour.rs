@@ -57,6 +57,10 @@ pub struct Ctx {
     /// `crate::state::Marks`. `Marks::NONE` everywhere but a spell or
     /// battlecry Ctx.
     pub marks: crate::state::Marks,
+    /// Mana spent on anything else while this card sat in hand, snapshotted
+    /// the same way `marks` is (Merithra of the Dream). `0` everywhere but a
+    /// spell or battlecry Ctx.
+    pub mana_spent: i16,
 }
 
 /// A card effect. A `fn` pointer rather than a boxed closure, so the table is
@@ -2390,6 +2394,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
                     outcast: false,
                     dying: None,
                     marks: Marks::NONE,
+                    mana_spent: 0,
                 },
             );
         }
@@ -2717,6 +2722,26 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     // reactive one -- a return can be delayed a turn, never skipped outright.
     start_of_game("Godfrey the Betrayer", |g, c| {
         g.player_mut(c.side).godfrey_active = true;
+    }),
+    // `add_random_to_hand`'s own return value already covers both stopping
+    // conditions ("Fill" reaching a full hand, and the Dragon pool running
+    // dry), so the loop needs no separate length check.
+    battlecry("Merithra of the Dream", T::None, |g, c| {
+        let discount = c.mana_spent >= 25;
+        loop {
+            let before = g.player(c.side).hand.len();
+            let added = g.add_random_to_hand(c.side, |d| {
+                d.kind() == super::Kind::Minion && d.races.any(Races::DRAGON)
+            });
+            if !added {
+                break;
+            }
+            if discount
+                && let Some(hc) = g.player_mut(c.side).hand.get_mut(before)
+            {
+                hc.cost_delta = 1 - hc.card.def().cost;
+            }
+        }
     }),
 ];
 

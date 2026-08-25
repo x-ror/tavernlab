@@ -912,6 +912,7 @@ impl Game {
                     outcast: false,
                     dying: None,
                     marks: crate::state::Marks::NONE,
+                    mana_spent: 0,
                 },
             );
         }
@@ -1038,6 +1039,7 @@ impl Game {
                         outcast: false,
                         dying: Some(m),
                         marks: crate::state::Marks::NONE,
+                        mana_spent: 0,
                     },
                 );
                 fired += 1;

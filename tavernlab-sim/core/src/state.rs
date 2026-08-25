@@ -321,6 +321,11 @@ pub struct HandCard {
     /// `u16::MAX` for never.
     pub locked_turn: u16,
     pub marks: Marks,
+    /// Mana spent on anything else -- a card, a Hero Power -- while this one
+    /// has been sitting in hand, since it arrived (Merithra of the Dream).
+    /// Unlike `Marks`, this is a running sum rather than a flag, so it lives
+    /// as its own field.
+    pub mana_spent_while_held: i16,
 }
 
 impl HandCard {
@@ -330,6 +335,7 @@ impl HandCard {
             cost_delta: 0,
             locked_turn: u16::MAX,
             marks: Marks::NONE,
+            mana_spent_while_held: 0,
         }
     }
 }
@@ -717,6 +723,7 @@ mod tests {
                 cost_delta: 0,
                 locked_turn: 0,
                 marks: Marks::NONE,
+                mana_spent_while_held: 0,
             }
         );
         assert_eq!(

@@ -3251,3 +3251,39 @@ fn godfrey_returns_one_overdrawn_card_per_turn_discounted() {
     assert_eq!(hc.cost_delta, -1, "permanently discounted");
     assert!(f.g.players[0].overdrawn.is_empty());
 }
+
+#[test]
+fn merithra_fills_the_hand_with_dragons_at_normal_cost() {
+    use tavernlab_core::cards::Races;
+
+    let mut f = Fix::new();
+    f.play("Merithra of the Dream", None);
+    assert_eq!(f.g.players[0].hand.len(), MAX_HAND);
+    for hc in f.g.players[0].hand.iter() {
+        assert!(hc.card.def().races.any(Races::DRAGON));
+        assert_eq!(hc.cost_delta, 0, "no discount below 25 Mana spent");
+    }
+}
+
+#[test]
+fn merithra_discounts_the_dragons_to_one_after_spending_25_mana_while_held() {
+    let mut f = Fix::new();
+    let merithra = by_name("Merithra of the Dream").unwrap();
+    let mut hc = HandCard::new(merithra);
+    hc.mana_spent_while_held = 25;
+    f.g.players[0].hand.push(hc);
+    let idx = f.g.players[0].hand.len() as u8 - 1;
+    assert!(f.g.apply(Action::Play {
+        hand: idx,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    for hc in f.g.players[0].hand.iter() {
+        assert_eq!(
+            hc.card.def().cost + hc.cost_delta,
+            1,
+            "each Dragon costs exactly 1"
+        );
+    }
+}

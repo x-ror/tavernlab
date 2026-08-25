@@ -176,6 +176,7 @@ impl Game {
                         outcast: false,
                         dying: None,
                         marks: Marks::NONE,
+                        mana_spent: 0,
                     },
                 );
             }
@@ -892,6 +893,11 @@ impl Game {
                 other.marks.insert(Marks::PLAYED_MINION);
             }
         }
+        // Corpses-paid cards already cost 0 Mana here, so this stays correct
+        // without a separate check (Merithra of the Dream).
+        for other in p.hand.iter_mut() {
+            other.mana_spent_while_held = other.mana_spent_while_held.saturating_add(cost);
+        }
         if def.class() != Class::Neutral && def.class() != p.class {
             for other in p.hand.iter_mut() {
                 other.marks.insert(Marks::PLAYED_OPPONENT_CARD);
@@ -978,6 +984,7 @@ impl Game {
                 outcast,
                 dying: None,
                 marks: hc.marks,
+                mana_spent: hc.mana_spent_while_held,
             };
             if def.kind() == Kind::Spell {
                 self.countered = false;
@@ -1005,6 +1012,7 @@ impl Game {
                 outcast,
                 dying: None,
                 marks: hc.marks,
+                mana_spent: hc.mana_spent_while_held,
             };
             if def.kind() == Kind::Spell {
                 // Counterspell gets its chance before the spell resolves.
@@ -1089,6 +1097,16 @@ impl Game {
     /// Discover, any other `give_card` caller -- is "overdrawn" the same way
     /// a fatigue-style empty draw is not: this only ever fires when a card
     /// existed and had nowhere to go, which is exactly what the card means.
+    /// Credit `amount` of mana spent to every card currently in `side`'s
+    /// hand (Merithra of the Dream). Called from wherever mana is actually
+    /// deducted -- a card play, a Hero Power -- rather than from `give_card`,
+    /// since a card just added to hand should not count mana spent to add it.
+    fn add_mana_spent_to_hand(&mut self, side: Side, amount: i16) {
+        for hc in self.player_mut(side).hand.iter_mut() {
+            hc.mana_spent_while_held = hc.mana_spent_while_held.saturating_add(amount);
+        }
+    }
+
     pub fn give_card(&mut self, side: Side, card: CardId) -> bool {
         let p = self.player_mut(side);
         if p.hand.len() >= MAX_HAND {
@@ -1552,6 +1570,7 @@ impl Game {
                             outcast: false,
                             dying: Some(body),
                             marks: Marks::NONE,
+                            mana_spent: 0,
                         },
                     );
                 }
@@ -1600,6 +1619,7 @@ impl Game {
                     outcast: false,
                     dying: None,
                     marks: Marks::NONE,
+                    mana_spent: 0,
                 },
             );
         }
@@ -1655,6 +1675,7 @@ impl Game {
             self.spend_corpses(side, cost);
         } else {
             self.player_mut(side).mana -= cost;
+            self.add_mana_spent_to_hand(side, cost);
         }
         let p = self.player_mut(side);
         if second {
@@ -1767,6 +1788,7 @@ impl Game {
                 outcast: false,
                 dying: None,
                 marks: Marks::NONE,
+                mana_spent: 0,
             },
         );
         self.board_dirty = true;
