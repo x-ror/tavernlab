@@ -3167,3 +3167,53 @@ fn zees_might_doubles_the_battlecry_of_every_fifth_minion_played() {
         "the 5th minion's battlecry fired twice"
     );
 }
+
+#[test]
+fn nespirah_deals_one_and_reopens_after_a_fel_spell() {
+    use tavernlab_core::events::Event;
+
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti"]); // 4/5
+    f.play("Nespirah, Enthralled", None);
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "Nespirah, Enthralled")
+        .unwrap() as u8;
+    let target = Some(Target::Minion(FOE, 0));
+
+    assert!(f.g.apply(Action::UseLocation { slot, target }));
+    assert_eq!(f.theirs(0).health(), 4, "took 1 damage");
+    assert!(
+        !f.g.apply(Action::UseLocation { slot, target }),
+        "already used this turn"
+    );
+
+    f.g.fire(Event::SpellCast {
+        side: ME,
+        card: by_name("Eye Beam").unwrap(), // Fel school; not itself played
+    });
+    assert!(
+        f.g.apply(Action::UseLocation { slot, target }),
+        "reopened by the Fel spell"
+    );
+    assert_eq!(f.theirs(0).health(), 3, "took a second point of damage");
+}
+
+#[test]
+fn nespirah_deathrattle_summons_nespirah_unshackled() {
+    let mut f = Fix::new();
+    f.play("Nespirah, Enthralled", None);
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "Nespirah, Enthralled")
+        .unwrap();
+    f.g.deal_damage(Target::Minion(ME, slot as u8), 5);
+    f.g.sweep_deaths();
+    assert!(
+        f.g.players[0]
+            .board
+            .iter()
+            .any(|m| m.card.name() == "Nespirah, Unshackled")
+    );
+}

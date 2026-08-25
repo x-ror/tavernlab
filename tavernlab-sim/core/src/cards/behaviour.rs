@@ -325,6 +325,7 @@ mod tokens {
     pub const ARCANE_MISSILES: CardId = token("EX1_277");
     pub const MUGS_MAGIC: CardId = token("JAIL_800hp1");
     pub const ZEES_MIGHT: CardId = token("JAIL_800hp2");
+    pub const NESPIRAH_UNSHACKLED: CardId = token("CATA_527t2");
     pub const GORISHI_STINGER: CardId = token("TLC_630t");
     /// Brood Keeper's "2/2 Sword". A weapon, so it never shows up through
     /// `summonable_children()`, which only ever returns minions.
@@ -2680,6 +2681,36 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             .map(|&card| HandCard::new(card))
             .collect();
     }),
+    // Location. "Deal 1 damage" carries no target qualifier in the corpus
+    // text -- Blizzard's own Location oracle text often omits it, relying on
+    // the in-game targeting reticle -- so this is narrowed to enemies only
+    // as the conservative default; see APPROXIMATE. "Reopen" clears the same
+    // `Flags::USED` + `cooldown` pair `Game::use_location` sets, which is
+    // exactly what stands between a Location and using it again this turn.
+    c(
+        "Nespirah, Enthralled",
+        T::EnemyCharacter,
+        Some(|g, c| {
+            if let Some(t) = c.target {
+                g.spell_damage(c.side, Some(t), 1);
+            }
+        }),
+        None,
+        Some(|g, c| {
+            g.summon_token(c.side, tokens::NESPIRAH_UNSHACKLED, 1);
+        }),
+        Some(|g, c| {
+            if let Event::SpellCast { side, card } = c.event
+                && side == c.side
+                && card.def().school() == super::School::Fel
+                && let Some(m) = g.player_mut(c.side).board.get_mut(c.slot as usize)
+            {
+                m.flags.remove(Flags::USED);
+                m.cooldown = 0;
+            }
+        }),
+        None, None, None, None, None,
+    ),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -2761,6 +2792,10 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Dreambound Raptor",
         "the random Bonus Effect pool is fixed to a single always +1/+1, rather than a random draw from the full set of stat and keyword grants",
+    ),
+    (
+        "Nespirah, Enthralled",
+        "the corpus text for \"Deal 1 damage\" carries no target qualifier; narrowed to enemies only as the conservative default rather than guessing it can hit friendly characters too",
     ),
 ];
 
