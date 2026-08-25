@@ -187,6 +187,9 @@ impl Game {
         if hc.card.def().kind() == Kind::Spell {
             cost -= self.player(side).next_spell_discount;
         }
+        if hc.card.def().kind() == Kind::Minion && hc.card.def().races.any(Races::BEAST) {
+            cost -= self.player(side).next_beast_discount;
+        }
         cost.max(0)
     }
 
@@ -206,6 +209,7 @@ impl Game {
         p.hero_bonus_atk = 0;
         p.cards_played_turn = 0;
         p.spells_cast_turn = 0;
+        p.schools_cast_turn = 0;
         for m in p.board.iter_mut() {
             m.attacks_done = 0;
             m.flags.remove(Flags::JUST_SUMMONED);
@@ -254,6 +258,7 @@ impl Game {
         p.played_races_last = p.played_races_turn;
         p.played_races_turn = Races::NONE;
         p.next_spell_discount = 0;
+        p.next_beast_discount = 0;
         self.sweep_deaths();
     }
 
@@ -649,9 +654,14 @@ impl Game {
         p.cards_played_turn += 1;
         if def.kind() == Kind::Spell {
             p.spells_cast_turn += 1;
+            p.schools_cast_turn |= 1 << def.school;
         }
         if def.kind() == Kind::Minion {
             p.played_races_turn |= def.races;
+            if def.races.any(Races::BEAST) {
+                // The discount is spent by the first Beast that uses it.
+                p.next_beast_discount = 0;
+            }
         }
         if def.overload > 0 {
             p.overload_next += def.overload as i16;
@@ -669,6 +679,7 @@ impl Game {
         }
 
         let mut slot = None;
+        let mut broken_weapon = None;
         match def.kind() {
             Kind::Minion | Kind::Location => {
                 let m = Permanent::summon(hc.card);
@@ -682,12 +693,17 @@ impl Game {
                 }
             }
             Kind::Weapon => {
-                p.weapon = Some(Weapon::equip(hc.card));
+                // Equipping over an existing weapon breaks it, same as any
+                // other way a weapon can leave play.
+                broken_weapon = p.weapon.replace(Weapon::equip(hc.card));
             }
             Kind::Spell => {}
             _ => unreachable!("filtered above"),
         }
         self.board_dirty = true;
+        if let Some(old) = broken_weapon {
+            self.fire_weapon_deathrattle(side, old);
+        }
 
         if let Some(mode) = chosen {
             let ctx = Ctx {
@@ -696,6 +712,7 @@ impl Game {
                 target,
                 source: slot,
                 outcast,
+                dying: None,
             };
             if def.kind() == Kind::Spell {
                 self.countered = false;
@@ -718,6 +735,7 @@ impl Game {
                 target,
                 source: slot,
                 outcast,
+                dying: None,
             };
             if def.kind() == Kind::Spell {
                 // Counterspell gets its chance before the spell resolves.
@@ -968,12 +986,13 @@ impl Game {
 
         // A hero swing spends weapon durability whether or not it connected.
         if from.is_none() {
-            let p = self.player_mut(side);
-            if let Some(w) = p.weapon.as_mut() {
+            let mut spent = false;
+            if let Some(w) = self.player_mut(side).weapon.as_mut() {
                 w.durability -= 1;
-                if w.durability <= 0 {
-                    p.weapon = None;
-                }
+                spent = w.durability <= 0;
+            }
+            if spent {
+                self.destroy_weapon(side);
             }
         }
 
@@ -1155,12 +1174,12 @@ impl Game {
         // something else again; the cap stops a pathological chain from hanging
         // a batch run. It is a backstop, not a rule.
         for _ in 0..16 {
-            let mut dying: Inline<(Side, CardId, u8), { MAX_BOARD * 2 }> = Inline::new();
+            let mut dying: Inline<(Side, CardId, u8, Permanent), { MAX_BOARD * 2 }> = Inline::new();
             for i in 0..2 {
                 let side = Side::from_index(i);
                 for (slot, m) in self.players[i].board.iter().enumerate() {
                     if m.is_dead() {
-                        dying.push((side, m.card, slot as u8));
+                        dying.push((side, m.card, slot as u8, *m));
                     }
                 }
             }
@@ -1177,7 +1196,7 @@ impl Game {
             // order. A minion summoned by one therefore lands at the end rather
             // than in the vacated slot — a documented simplification, and the
             // only place board position is not preserved exactly.
-            for (side, card, slot) in dying.iter().copied() {
+            for (side, card, slot, body) in dying.iter().copied() {
                 if let Some(f) = behaviour_of(card).and_then(|b| b.deathrattle) {
                     f(
                         self,
@@ -1187,6 +1206,7 @@ impl Game {
                             target: None,
                             source: Some(slot),
                             outcast: false,
+                            dying: Some(body),
                         },
                     );
                 }
@@ -1199,12 +1219,12 @@ impl Game {
             // interleaving with the rattles.
             // Corpses are a rule, not a card: the Death Knight banks one for
             // every friendly minion that dies, however it died.
-            for (side, _, _) in dying.iter().copied() {
+            for (side, _, _, _) in dying.iter().copied() {
                 if self.player(side).class == Class::DeathKnight {
                     self.player_mut(side).corpses += 1;
                 }
             }
-            for (side, card, _) in dying.iter().copied() {
+            for (side, card, _, _) in dying.iter().copied() {
                 self.fire(Event::MinionDied { side, card });
                 if self.is_over() {
                     return;
@@ -1216,6 +1236,27 @@ impl Game {
         // point, because every one of them ends in a sweep.
         self.recompute_auras();
         self.check_over();
+    }
+
+    /// Fire a weapon's deathrattle, if it has one. Called from wherever a
+    /// weapon actually leaves play -- breaking from durability loss, being
+    /// destroyed, or being replaced by a new one -- rather than from
+    /// `sweep_deaths`, because a weapon is not a board permanent and never
+    /// appears in its sweep.
+    pub(crate) fn fire_weapon_deathrattle(&mut self, side: Side, w: Weapon) {
+        if let Some(f) = behaviour_of(w.card).and_then(|b| b.deathrattle) {
+            f(
+                self,
+                &Ctx {
+                    card: w.card,
+                    side,
+                    target: None,
+                    source: Some(crate::events::WEAPON_SLOT),
+                    outcast: false,
+                    dying: None,
+                },
+            );
+        }
     }
 
     fn check_over(&mut self) {
@@ -1344,6 +1385,7 @@ impl Game {
                 target,
                 source: Some(slot as u8),
                 outcast: false,
+                dying: None,
             },
         );
         self.board_dirty = true;

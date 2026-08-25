@@ -105,6 +105,11 @@ pub struct Permanent {
     /// Turns until a location can be used again.
     pub cooldown: u8,
     pub spell_damage: i8,
+    /// A generic per-instance counter for cards that need to remember
+    /// something about themselves while they are on the board -- how many of
+    /// their controller's turns they have lived through, so a deathrattle can
+    /// scale by it. Zero for every card that does not use it.
+    pub growth: u8,
 }
 
 impl Default for CardId {
@@ -137,6 +142,7 @@ impl Permanent {
             dormant: d.dormant as u8,
             cooldown: 0,
             spell_damage: d.spell_damage,
+            growth: 0,
         };
         if p.dormant > 0 {
             p.flags.insert(Flags::DORMANT);
@@ -319,6 +325,13 @@ pub struct Player {
     /// A discount waiting to be spent on the next spell cast this turn
     /// (Preparation). Consumed by the cast, cleared at end of turn.
     pub next_spell_discount: i16,
+    /// A discount waiting to be spent on the next Beast minion played this
+    /// turn (Cower in Fear). Same shape as `next_spell_discount`, one tribe
+    /// over.
+    pub next_beast_discount: i16,
+    /// Spell schools cast this turn, as bits indexed by `School`'s own
+    /// discriminant -- "if you've cast a Fire spell this turn" reads bit 3.
+    pub schools_cast_turn: u8,
     pub cards_played_turn: u8,
     /// Spells cast this turn. Separate from `cards_played_turn` because a
     /// family of cards asks specifically about spells ("if you've cast a
@@ -360,6 +373,8 @@ impl Player {
             corpses: 0,
             herald: 0,
             next_spell_discount: 0,
+            next_beast_discount: 0,
+            schools_cast_turn: 0,
             cards_played_turn: 0,
             spells_cast_turn: 0,
             spell_power_bonus: 0,

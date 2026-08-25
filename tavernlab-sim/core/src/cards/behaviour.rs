@@ -42,6 +42,15 @@ pub struct Ctx {
     /// Whether the card was the leftmost or rightmost card in hand when it was
     /// played. A one-card hand satisfies it — the card is both ends at once.
     pub outcast: bool,
+    /// The permanent this effect belongs to, as it stood immediately before
+    /// firing -- its stats, buffs and `growth` counter included.
+    ///
+    /// Only a deathrattle needs this: a battlecry's minion is still on the
+    /// board and reachable through `source`, but a deathrattle's body is
+    /// already gone from the board by the time it runs (see
+    /// `Game::sweep_deaths`), so anything it wants to know about itself has
+    /// to arrive here instead. `None` for every other hook.
+    pub dying: Option<crate::state::Permanent>,
 }
 
 /// A card effect. A `fn` pointer rather than a boxed closure, so the table is
@@ -293,6 +302,18 @@ mod tokens {
     pub const FLAME_ELEMENTAL: CardId = token("UNG_809t1");
     pub const ARCANE_MISSILES: CardId = token("EX1_277");
     pub const GORISHI_STINGER: CardId = token("TLC_630t");
+    /// Brood Keeper's "2/2 Sword". A weapon, so it never shows up through
+    /// `summonable_children()`, which only ever returns minions.
+    pub const NIGHTMARE_SLICER: CardId = token("EDR_457t");
+    /// Eredar Deceptor's "1/1 Demon with Rush". Its Standard printing
+    /// (`CORE_TTN_843`) carries no `childIds` in this snapshot of the corpus
+    /// (see docs/RUST_CARDS_PLAN.md §2a on reprints missing child data), so
+    /// this names the original printing's token directly; summoning by id
+    /// does not check the token's own format legality.
+    pub const INVADING_FELBAT: CardId = token("TTN_843t1");
+    /// Twilight Egg's Whelp. Its base stats are overwritten to match however
+    /// many of the Egg's controller's turns it survived; see the deathrattle.
+    pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
 
     /// The three Dreadseeds. Cards that summon "a random Dormant Dreadseed"
     /// roll one of these.
@@ -1916,6 +1937,233 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.cast_random_secrets(c.side, 2);
         }
     }),
+
+    // ---------------------------------------------- 2026 meta decks, phase 1
+    // Ported from `hs2/impls.py` against the corpus text; see
+    // docs/RUST_CARDS_PLAN.md §4 phase 1. No new engine mechanism needed —
+    // existing verbs plus the small additions listed in that section.
+    // death knight
+    deathrattle("Staff of the Endbringer", |g, c| {
+        let mut all: Inline<Target, 16> = Inline::new();
+        g.collect_area(c.side, Area::AllMinions, &mut all);
+        for t in all.iter() {
+            g.destroy(*t);
+        }
+    }),
+    // druid
+    trigger("Spiderling", |g, ctx| {
+        if let Event::TurnStart { side } = ctx.event
+            && side == ctx.side
+        {
+            g.hero_attack_bonus(ctx.side, 1);
+        }
+    }),
+    // hunter
+    deathrattle("Guard Dog", |g, c| {
+        g.summon_random_where(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.cost == 1 && d.keywords.has(Keywords::DEATHRATTLE)
+        });
+    }),
+    spell("Earthen Roar", T::EnemyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.set_health(t, 1);
+        if g.holding_race(c.side, Races::DRAGON) {
+            let foe = c.side.other();
+            let pick = g
+                .player(foe)
+                .board
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|&(i, m)| {
+                    Target::Minion(foe, i as u8) != t && m.active() && m.is_minion() && m.health() >= 3
+                })
+                .max_by_key(|&(_, m)| m.health())
+                .map(|(i, _)| Target::Minion(foe, i as u8));
+            if let Some(t2) = pick {
+                g.set_health(t2, 1);
+            }
+        }
+    }),
+    spell("Cower in Fear", T::AnyMinion, |g, c| {
+        g.spell_damage(c.side, c.target, 3);
+        g.player_mut(c.side).next_beast_discount = 2;
+    }),
+    // paladin
+    spell("Judgment", T::FriendlyMinion, |g, c| {
+        let Some(Target::Minion(s, i)) = c.target else { return };
+        let Some(m) = g.player(s).board.get(i as usize) else { return };
+        let (atk, hp) = (m.atk, m.health());
+        let mut all: Inline<Target, 16> = Inline::new();
+        g.collect_area(c.side, Area::AllMinions, &mut all);
+        for t in all.iter() {
+            g.set_attack(*t, atk);
+            g.set_health(*t, hp);
+        }
+    }),
+    // Deathrattle summons a Whelp sized by how many of the Egg's controller's
+    // turns it survived; the trigger counts those turns on the Egg itself
+    // via `Permanent::growth`, read back through `Ctx::dying` once the body
+    // is gone.
+    c(
+        "Twilight Egg",
+        T::None,
+        None,
+        None,
+        Some(|g, c| {
+            let n = 1 + c.dying.map_or(0, |m| m.growth) as i16;
+            if g.summon_token(c.side, tokens::ACCELERATED_WHELP, 1) > 0
+                && let Some(last) = g.player(c.side).board.len().checked_sub(1)
+            {
+                let t = Target::Minion(c.side, last as u8);
+                g.set_attack(t, n);
+                g.set_health(t, n);
+            }
+        }),
+        Some(|g, ctx| {
+            if let Event::TurnStart { side } = ctx.event
+                && side == ctx.side
+                && let Some(m) = g.player_mut(ctx.side).board.get_mut(ctx.slot as usize)
+            {
+                m.growth = m.growth.saturating_add(1);
+            }
+        }),
+        None, None, None, None,
+    ),
+    deathrattle("Soothsayer", |g, c| {
+        g.heal_hero(c.side, 6);
+        g.summon_random_of_cost(c.side, 6, 1);
+    }),
+    // Divine Shield is the minion's own printed keyword and needs no code;
+    // only the hero-facing half of the battlecry is implemented here.
+    battlecry("Hardlight Protector", T::None, |g, c| g.heal_hero(c.side, 3)),
+    // priest
+    spell("Intertwined Fate", T::None, |g, c| {
+        g.discover_from_deck(c.side, |_| true);
+        g.discover_from_opponent_deck(c.side, |_| true);
+    }),
+    // rogue
+    // Battlecry, Combo and Deathrattle all cast the same "Fan of Knives" —
+    // Combo does not change what happens here, so it needs no separate path.
+    c(
+        "Opu the Unseen",
+        T::None,
+        None,
+        Some(|g, c| {
+            g.spell_damage_area(c.side, Area::EnemyMinions, 1);
+            g.draw_cards(c.side, 1);
+        }),
+        Some(|g, c| {
+            g.spell_damage_area(c.side, Area::EnemyMinions, 1);
+            g.draw_cards(c.side, 1);
+        }),
+        None, None, None, None, None,
+    ),
+    battlecry("Agent of the Old Ones", T::None, |g, c| {
+        let worst = g
+            .player(c.side)
+            .hand
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, hc)| hc.card.def().cost)
+            .map(|(i, _)| i);
+        if let Some(idx) = worst
+            && g.player_mut(c.side).hand.remove(idx).is_some()
+        {
+            g.give_token(c.side, tokens::COIN);
+        }
+    }),
+    spell("Deja Vu", T::None, |g, c| {
+        g.discover_from_opponent_hand(c.side);
+    }),
+    // "If you play it this turn, also pick one of the others" needs G1
+    // (per-hand-card marks); the plain Discover is a safe, weaker cut of it.
+    spell("Cultist Map", T::None, |g, c| {
+        g.discover_from_deck(c.side, |_| true);
+    }),
+    // shaman
+    battlecry("Getaway Hogdriver", T::None, |g, c| {
+        let before = g.player(c.side).hand.len();
+        g.draw_cards(c.side, 2);
+        if g.is_over() {
+            return;
+        }
+        let drawn = &g.player(c.side).hand.as_slice()[before..];
+        let both_minions =
+            drawn.len() == 2 && drawn.iter().all(|hc| hc.card.def().kind() == super::Kind::Minion);
+        if both_minions
+            && let Some(slot) = c.source
+        {
+            g.grant(Target::Minion(c.side, slot), Keywords::CHARGE);
+        }
+    }),
+    // warlock
+    // "Make it Temporary" (burns unused at end of turn) needs per-card state
+    // the engine does not have; this Discover reads stronger than the
+    // printed card rather than weaker, unlike every other approximation.
+    spell("Cursed Catacombs", T::None, |g, c| {
+        g.discover_from_deck(c.side, |_| true);
+    }),
+    trigger("Eredar Deceptor", |g, ctx| {
+        if let Event::CardDrawn { side } = ctx.event
+            && side == ctx.side
+        {
+            g.summon_token(ctx.side, tokens::INVADING_FELBAT, 1);
+        }
+    }),
+    // warrior
+    battlecry("Brood Keeper", T::None, |g, c| {
+        if g.holding_race(c.side, Races::DRAGON) {
+            g.equip(c.side, tokens::NIGHTMARE_SLICER);
+        }
+    }),
+    // "Rewind" (a second, independent roll for each equip) is not modelled,
+    // matching the Python reference's own simplification.
+    battlecry("Stadium Announcer", T::None, |g, c| {
+        g.equip_random(c.side, |d| d.kind() == super::Kind::Weapon);
+        g.equip_random(c.side.other(), |d| d.kind() == super::Kind::Weapon);
+        g.buff_weapon(c.side, 1, 1);
+    }),
+    spell("Erupting Volcano", T::None, |g, c| {
+        let fire = g.player(c.side).schools_cast_turn & (1 << (super::School::Fire as u8)) != 0;
+        g.damage_split(c.side, Area::AllEnemies, if fire { 6 } else { 3 });
+    }),
+    // Deals its damage; does not return to hand with excess damage, which
+    // would need a per-copy variable-damage field the engine does not have.
+    spell("Torch", T::DamagedEnemyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.deal_damage(t, 8);
+        }
+    }),
+    battlecry("Darkrider", T::None, |g, c| {
+        if g.holding_race(c.side, Races::DRAGON) {
+            g.discover(c.side, |d| d.kind() == super::Kind::Minion && d.races.any(Races::DRAGON));
+        }
+    }),
+    spell("Shadowflame Suffusion", T::AnyCharacter, |g, c| {
+        g.spell_damage(c.side, c.target, 2);
+        g.discover(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.class() == super::Class::Warrior
+        });
+    }),
+    // demon hunter
+    spell("Dark Bribe", T::None, |g, c| {
+        let before = g.player(c.side).hand.len();
+        g.draw_cards(c.side, 3);
+        if g.is_over() {
+            return;
+        }
+        let cheapest = g.player(c.side).hand.as_slice()[before..]
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, hc)| hc.card.def().cost)
+            .map(|(i, _)| before + i);
+        if let Some(idx) = cheapest
+            && let Some(hc) = g.player_mut(c.side).hand.remove(idx)
+        {
+            g.give_card(c.side.other(), hc.card);
+        }
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -1957,6 +2205,30 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Cosmic Manifestations",
         "the shuffle-into-deck half needs deck insertion; only the damage is          implemented",
+    ),
+    (
+        "Hardlight Protector",
+        "the hero does not gain Divine Shield -- that needs a hero_divine_shield          field (G8); the minion's own printed Divine Shield and the heal are          both implemented",
+    ),
+    (
+        "Cursed Catacombs",
+        "\"Make it Temporary\" (burns unused at end of turn) needs per-card          state the engine does not have; the Discover alone reads stronger,          not weaker -- the second entry here that can, after Archmage Kalec",
+    ),
+    (
+        "Darkrider",
+        "the Discover comes with no Dark Gift (G11); a plain Dragon is          discovered instead",
+    ),
+    (
+        "Shadowflame Suffusion",
+        "the Discover comes with no Dark Gift (G11); a plain Warrior minion is          discovered instead",
+    ),
+    (
+        "Torch",
+        "does not return to hand with excess damage; that needs a per-copy          variable-damage field the engine does not have",
+    ),
+    (
+        "Stadium Announcer",
+        "Rewind is not modelled -- both equips are single, independent rolls",
     ),
 ];
 

@@ -1984,3 +1984,365 @@ fn spells_cast_this_turn_resets_between_turns() {
     assert_eq!(f.g.players[0].spells_cast_turn, 1, "a minion is not a spell");
     assert_eq!(f.g.players[0].cards_played_turn, 2);
 }
+
+// -------------------------------------------- 2026 meta decks, phase 1
+
+#[test]
+fn staff_of_the_endbringer_destroys_all_minions_when_it_breaks() {
+    let mut f = Fix::new()
+        .board(ME, &["Bloodfen Raptor"])
+        .board(FOE, &["Bloodfen Raptor"]);
+    let staff = by_name("Staff of the Endbringer").unwrap();
+    f.g.players[0].weapon = Some(tavernlab_core::state::Weapon {
+        durability: 1,
+        ..tavernlab_core::state::Weapon::equip(staff)
+    });
+    f.g.apply(Action::HeroAttack { target: Target::Hero(FOE) });
+    assert!(
+        f.g.players[0].board.is_empty(),
+        "the deathrattle clears the caster's own board too"
+    );
+    assert!(f.g.players[1].board.is_empty());
+    assert!(f.g.players[0].weapon.is_none(), "the staff itself is gone");
+}
+
+#[test]
+fn spiderling_gives_the_hero_plus_one_attack_on_its_controllers_turn_only() {
+    let mut f = Fix::new()
+        .board(ME, &["Spiderling"])
+        .board(FOE, &["Spiderling"]);
+    f.g.current = FOE;
+    f.g.begin_turn();
+    assert_eq!(f.g.players[0].hero_bonus_atk, 0, "not this player's turn");
+    assert_eq!(f.g.players[1].hero_bonus_atk, 1, "but it is this one's");
+}
+
+#[test]
+fn guard_dog_deathrattle_summons_a_one_cost_deathrattle_minion() {
+    let mut f = Fix::new().board(ME, &["Guard Dog"]);
+    f.g.destroy(Target::Minion(ME, 0));
+    f.g.sweep_deaths();
+    assert_eq!(
+        f.g.players[0].board.len(),
+        1,
+        "a random 1-Cost Deathrattle minion should replace it"
+    );
+    let summoned = f.g.players[0].board[0];
+    assert_eq!(summoned.card.def().cost, 1);
+    assert!(summoned.card.def().keywords.has(Keywords::DEATHRATTLE));
+}
+
+#[test]
+fn earthen_roar_sets_health_to_one_with_no_second_target_by_default() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre", "Chillwind Yeti"]); // 6/7, 4/5
+    f.play("Earthen Roar", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 1);
+    assert_eq!(f.theirs(1).health(), 5, "no Dragon in hand, no second target");
+}
+
+#[test]
+fn earthen_roar_picks_the_highest_health_second_target_when_holding_a_dragon() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre", "Chillwind Yeti"]); // 6/7, 4/5
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Winterspring Whelp").unwrap()));
+    f.play("Earthen Roar", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 1);
+    assert_eq!(f.theirs(1).health(), 1, "the other 3+ health enemy minion is also set to 1");
+}
+
+#[test]
+fn cower_in_fear_damages_and_discounts_the_next_beast() {
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti"]); // 4/5
+    f.play("Cower in Fear", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 2, "4/5 takes 3");
+    assert_eq!(f.g.players[0].next_beast_discount, 2);
+
+    let beast = by_name("Bloodfen Raptor").unwrap(); // a 2-cost Beast
+    f.g.players[0].hand.push(HandCard::new(beast));
+    let idx = f.g.players[0].hand.len() as u8 - 1;
+    assert_eq!(f.g.card_cost(ME, idx as usize), 0, "2 cost minus a 2 discount");
+    f.g.apply(Action::Play { hand: idx, target: None, position: u8::MAX, choice: u8::MAX });
+    assert_eq!(f.g.players[0].next_beast_discount, 0, "spent on the Beast that used it");
+}
+
+#[test]
+fn judgment_sets_every_minions_stats_to_the_chosen_ones() {
+    let mut f = Fix::new()
+        .board(ME, &["Wisp", "Chillwind Yeti"]) // 1/1, 4/5
+        .board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.play("Judgment", my_minion(1)); // the Chillwind Yeti, 4/5
+    assert_eq!((f.mine(0).atk, f.mine(0).health()), (4, 5));
+    assert_eq!((f.mine(1).atk, f.mine(1).health()), (4, 5));
+    assert_eq!((f.theirs(0).atk, f.theirs(0).health()), (4, 5));
+}
+
+#[test]
+fn twilight_egg_hatches_a_one_one_whelp_if_it_dies_immediately() {
+    let mut f = Fix::new().board(ME, &["Twilight Egg"]);
+    f.g.destroy(Target::Minion(ME, 0));
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!((f.mine(0).atk, f.mine(0).health()), (1, 1));
+}
+
+#[test]
+fn twilight_egg_grows_a_turn_at_a_time_before_it_hatches() {
+    let mut f = Fix::new().board(ME, &["Twilight Egg"]);
+    f.g.begin_turn(); // the Egg's controller's own next turn: one growth tick
+    f.g.destroy(Target::Minion(ME, 0));
+    f.g.sweep_deaths();
+    assert_eq!(
+        (f.mine(0).atk, f.mine(0).health()),
+        (2, 2),
+        "one turn of growth before it died"
+    );
+}
+
+#[test]
+fn soothsayer_deathrattle_heals_and_summons_a_six_cost_minion() {
+    let mut f = Fix::new().board(ME, &["Soothsayer"]);
+    f.g.players[0].hero_hp = 20;
+    f.g.destroy(Target::Minion(ME, 0));
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hero_hp, 26);
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!(f.mine(0).card.def().cost, 6);
+}
+
+#[test]
+fn hardlight_protector_heals_the_hero_and_keeps_its_own_divine_shield() {
+    let mut f = Fix::new();
+    f.g.players[0].hero_hp = 20;
+    f.play("Hardlight Protector", None);
+    assert_eq!(f.g.players[0].hero_hp, 23);
+    assert!(f.mine(0).has(Keywords::DIVINE_SHIELD), "the minion's own printed keyword");
+}
+
+#[test]
+fn intertwined_fate_discovers_a_copy_from_each_deck() {
+    let mut f = Fix::new().deck(&["Bloodfen Raptor"]);
+    f.g.players[1].deck.push(by_name("Chillwind Yeti").unwrap());
+    f.play("Intertwined Fate", None);
+    assert_eq!(f.g.players[0].hand.len(), 2, "one pick from each deck");
+    assert_eq!(f.g.players[1].deck.len(), 1, "the opponent keeps their copy");
+    assert_eq!(f.g.players[0].deck.len(), 0, "the own-deck half relocates rather than copies");
+}
+
+#[test]
+fn opu_the_unseen_battlecry_casts_fan_of_knives() {
+    let mut f = Fix::new()
+        .board(FOE, &["Wisp", "Wisp"]) // 1/1 each
+        .deck(&["Bloodfen Raptor"]);
+    f.play("Opu the Unseen", None);
+    assert_eq!(f.their_board(), 0, "Fan of Knives clears 1-health minions on battlecry");
+    assert_eq!(f.g.players[0].hand.len(), 1, "and draws");
+}
+
+#[test]
+fn opu_the_unseen_deathrattle_also_casts_fan_of_knives() {
+    let mut f = Fix::new().board(ME, &["Opu the Unseen"]).board(FOE, &["Wisp"]);
+    f.g.destroy(Target::Minion(ME, 0));
+    f.g.sweep_deaths();
+    assert_eq!(f.their_board(), 0, "the deathrattle's Fan of Knives kills the 1-health Wisp");
+}
+
+#[test]
+fn agent_of_the_old_ones_transforms_its_priciest_hand_card_into_a_coin() {
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.g.players[0].hand.push(HandCard::new(by_name("Boulderfist Ogre").unwrap()));
+    f.play("Agent of the Old Ones", None);
+    let names: Vec<&str> = f.g.players[0].hand.iter().map(|hc| hc.card.name()).collect();
+    assert!(names.contains(&"Wisp"), "the cheap card stays");
+    assert!(names.contains(&"The Coin"), "the priciest card became a Coin");
+    assert!(!names.contains(&"Boulderfist Ogre"));
+}
+
+#[test]
+fn deja_vu_discovers_a_copy_from_the_opponents_hand() {
+    let mut f = Fix::new();
+    f.g.players[1]
+        .hand
+        .push(HandCard::new(by_name("Chillwind Yeti").unwrap()));
+    f.play("Deja Vu", None);
+    assert_eq!(
+        f.g.players[0]
+            .hand
+            .iter()
+            .filter(|hc| hc.card.name() == "Chillwind Yeti")
+            .count(),
+        1
+    );
+    assert_eq!(f.g.players[1].hand.len(), 1, "the opponent keeps their card");
+}
+
+#[test]
+fn cultist_map_discovers_from_the_own_deck() {
+    let mut f = Fix::new().deck(&["Bloodfen Raptor"]);
+    f.play("Cultist Map", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].deck.len(), 0);
+}
+
+#[test]
+fn getaway_hogdriver_gains_charge_when_both_draws_are_minions() {
+    let mut f = Fix::new().deck(&["Bloodfen Raptor", "Chillwind Yeti"]);
+    f.play("Getaway Hogdriver", None);
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "Getaway Hogdriver")
+        .unwrap();
+    assert!(f.g.players[0].board[slot].has(Keywords::CHARGE));
+    assert_eq!(f.g.players[0].hand.len(), 2, "both draws stayed in hand");
+}
+
+#[test]
+fn getaway_hogdriver_stays_summoning_sick_if_a_spell_was_drawn() {
+    let mut f = Fix::new().deck(&["Bloodfen Raptor", "Fireball"]);
+    f.play("Getaway Hogdriver", None);
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "Getaway Hogdriver")
+        .unwrap();
+    assert!(!f.g.players[0].board[slot].has(Keywords::CHARGE));
+}
+
+#[test]
+fn cursed_catacombs_discovers_from_the_deck_for_free() {
+    let mut f = Fix::new().deck(&["Bloodfen Raptor"]);
+    f.play("Cursed Catacombs", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+}
+
+#[test]
+fn eredar_deceptor_summons_a_demon_each_time_its_controller_draws() {
+    let mut f = Fix::new()
+        .board(ME, &["Eredar Deceptor"])
+        .deck(&["Bloodfen Raptor"]);
+    f.g.draw_cards(ME, 1);
+    assert_eq!(
+        f.g.players[0].board.len(),
+        2,
+        "the Eredar Deceptor plus a summoned Demon"
+    );
+    let summoned = f.g.players[0].board[1];
+    assert!(summoned.races().any(tavernlab_core::cards::Races::DEMON));
+    assert!(summoned.has(Keywords::RUSH));
+}
+
+#[test]
+fn eredar_deceptor_does_not_react_to_the_opponent_drawing() {
+    let mut f = Fix::new().board(ME, &["Eredar Deceptor"]);
+    f.g.players[1].deck.push(by_name("Bloodfen Raptor").unwrap());
+    f.g.draw_cards(FOE, 1);
+    assert_eq!(f.g.players[0].board.len(), 1, "no reaction to the opponent's draw");
+}
+
+#[test]
+fn brood_keeper_equips_a_sword_only_when_holding_a_dragon() {
+    let mut f = Fix::new();
+    f.play("Brood Keeper", None);
+    assert!(f.g.players[0].weapon.is_none(), "no Dragon in hand");
+}
+
+#[test]
+fn brood_keeper_equips_when_holding_a_dragon() {
+    let mut f = Fix::new();
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Winterspring Whelp").unwrap()));
+    f.play("Brood Keeper", None);
+    let w = f.g.players[0].weapon.expect("should have equipped a sword");
+    assert_eq!((w.atk, w.durability), (2, 2));
+}
+
+#[test]
+fn stadium_announcer_equips_both_players_and_buffs_its_own() {
+    let mut f = Fix::new();
+    f.play("Stadium Announcer", None);
+    let mine = f.g.players[0].weapon.expect("should have equipped a weapon");
+    assert!(f.g.players[1].weapon.is_some(), "the opponent should have equipped too");
+    assert_eq!(mine.atk, mine.card.def().atk + 1, "the caster's own weapon gets +1/+1");
+    assert_eq!(mine.durability, mine.card.def().dur + 1);
+}
+
+#[test]
+fn erupting_volcano_deals_three_with_no_fire_spell_this_turn() {
+    let mut f = Fix::new(); // no enemy minions: the whole split lands on the hero
+    f.play("Erupting Volcano", None);
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "Erupting Volcano")
+        .unwrap() as u8;
+    f.g.apply(Action::UseLocation { slot, target: None });
+    assert_eq!(f.g.players[1].hero_hp, 27, "3 damage split with nowhere else to go");
+}
+
+#[test]
+fn erupting_volcano_deals_six_after_a_fire_spell_this_turn() {
+    let mut f = Fix::new();
+    f.play("Fireball", Some(Target::Hero(FOE))); // a Fire spell, 30 -> 24
+    f.play("Erupting Volcano", None);
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "Erupting Volcano")
+        .unwrap() as u8;
+    f.g.apply(Action::UseLocation { slot, target: None });
+    assert_eq!(f.g.players[1].hero_hp, 18, "6 damage after the +3 Fire bonus, 24 -> 18");
+}
+
+#[test]
+fn torch_deals_eight_to_a_damaged_minion_ignoring_spell_power() {
+    let mut f = Fix::new()
+        .board(ME, &["Kobold Geomancer"]) // Spell Damage +1
+        .board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[1].board[0].max_hp = 20; // tanky enough to inspect afterward
+    f.g.players[1].board[0].damage = 1; // damaged, so it is a legal target
+    f.play("Torch", foe_minion(0));
+    assert_eq!(f.theirs(0).damage, 9, "1 existing + a flat 8, unaffected by Spell Power");
+}
+
+#[test]
+fn darkrider_discovers_a_dragon_only_when_holding_one() {
+    let mut f = Fix::new();
+    f.play("Darkrider", None);
+    assert_eq!(f.g.players[0].hand.len(), 0, "no Dragon in hand, no Discover");
+}
+
+#[test]
+fn darkrider_discovers_when_holding_a_dragon() {
+    let mut f = Fix::new();
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Winterspring Whelp").unwrap()));
+    f.play("Darkrider", None);
+    let discovered = f.g.players[0].hand.last().unwrap().card;
+    assert!(discovered.def().races.any(tavernlab_core::cards::Races::DRAGON));
+}
+
+#[test]
+fn shadowflame_suffusion_deals_two_and_discovers_a_warrior_minion() {
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti"]); // 4/5
+    f.play("Shadowflame Suffusion", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 3);
+    let discovered = f.g.players[0].hand.last().unwrap().card;
+    assert_eq!(discovered.def().class(), tavernlab_core::cards::Class::Warrior);
+}
+
+#[test]
+fn dark_bribe_draws_three_and_gives_the_cheapest_to_the_opponent() {
+    let mut f = Fix::new().deck(&["Wisp", "Chillwind Yeti", "Boulderfist Ogre"]); // 0, 4, 6 cost
+    f.play("Dark Bribe", None);
+    assert_eq!(f.g.players[0].hand.len(), 2, "drew 3, gave the cheapest away");
+    assert!(
+        !f.g.players[0].hand.iter().any(|hc| hc.card.name() == "Wisp"),
+        "the 0-cost Wisp was the cheapest and went to the opponent"
+    );
+    assert_eq!(f.g.players[1].hand.len(), 1);
+    assert_eq!(f.g.players[1].hand[0].card.name(), "Wisp");
+}

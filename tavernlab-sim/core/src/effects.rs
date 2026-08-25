@@ -260,12 +260,17 @@ impl Game {
         p.crystals = (p.crystals + n).min(crate::state::MAX_MANA);
     }
 
-    /// Equip a weapon by card id, replacing whatever is held.
+    /// Equip a weapon by card id, replacing whatever is held. A replaced
+    /// weapon breaks, so its deathrattle fires first.
     pub fn equip(&mut self, side: Side, card: CardId) {
-        if let Some(c) = Some(card)
-            && c.def().kind() == Kind::Weapon
-        {
-            self.player_mut(side).weapon = Some(crate::state::Weapon::equip(c));
+        if card.def().kind() == Kind::Weapon {
+            let old = self
+                .player_mut(side)
+                .weapon
+                .replace(crate::state::Weapon::equip(card));
+            if let Some(w) = old {
+                self.fire_weapon_deathrattle(side, w);
+            }
         }
     }
 
@@ -369,9 +374,11 @@ impl Game {
         }
     }
 
-    /// Destroy a player's weapon.
+    /// Destroy a player's weapon, firing its deathrattle first.
     pub fn destroy_weapon(&mut self, side: Side) {
-        self.player_mut(side).weapon = None;
+        if let Some(w) = self.player_mut(side).weapon.take() {
+            self.fire_weapon_deathrattle(side, w);
+        }
     }
 
     /// Add attack to the held weapon, if there is one.
@@ -785,6 +792,43 @@ impl Game {
         self.give_card(side, card)
     }
 
+    /// Discover among the opponent's remaining deck, moving the pick to
+    /// `side`'s hand. The opponent keeps their copy — this only reads what
+    /// they still have left to draw, the same way `discover_from_deck` reads
+    /// the caster's own.
+    pub fn discover_from_opponent_deck(
+        &mut self,
+        side: Side,
+        pred: fn(&crate::cards::CardDef) -> bool,
+    ) -> bool {
+        let foe = side.other();
+        let mut matches: Inline<u16, { crate::state::MAX_DECK }> = Inline::new();
+        for (i, c) in self.player(foe).deck.iter().enumerate() {
+            if pred(c.def()) {
+                matches.push(i as u16);
+            }
+        }
+        if matches.is_empty() {
+            return false;
+        }
+        let pick = self.rngs.effects.index(matches.len());
+        let card = self.player(foe).deck[matches[pick] as usize];
+        self.give_card(side, card)
+    }
+
+    /// Discover a copy of a card in the opponent's hand, moving the copy to
+    /// `side`'s hand. The opponent keeps the original.
+    pub fn discover_from_opponent_hand(&mut self, side: Side) -> bool {
+        let foe = side.other();
+        let n = self.player(foe).hand.len();
+        if n == 0 {
+            return false;
+        }
+        let pick = self.rngs.effects.index(n);
+        let card = self.player(foe).hand[pick].card;
+        self.give_card(side, card)
+    }
+
     /// Add a random card matching `pred` to hand, straight from the pool.
     pub fn add_random_to_hand(
         &mut self,
@@ -866,6 +910,7 @@ impl Game {
                     target: None,
                     source: Some(slot),
                     outcast: false,
+                    dying: None,
                 },
             );
         }
@@ -888,6 +933,33 @@ impl Game {
             made += 1;
         }
         made
+    }
+
+    /// Summon a random implemented minion matching `pred` — for cards that
+    /// narrow by more than cost, such as Guard Dog's "a random 1-Cost
+    /// Deathrattle minion".
+    pub fn summon_random_where(
+        &mut self,
+        side: Side,
+        pred: fn(&crate::cards::CardDef) -> bool,
+    ) -> bool {
+        let pool = crate::cards::discover_pool(pred);
+        if pool.is_empty() {
+            return false;
+        }
+        let pick = self.rngs.effects.index(pool.len());
+        self.summon(side, pool[pick])
+    }
+
+    /// Equip a random implemented weapon matching `pred`.
+    pub fn equip_random(&mut self, side: Side, pred: fn(&crate::cards::CardDef) -> bool) -> bool {
+        let pool = crate::cards::discover_pool(pred);
+        if pool.is_empty() {
+            return false;
+        }
+        let pick = self.rngs.effects.index(pool.len());
+        self.equip(side, pool[pick]);
+        true
     }
 
     /// Give every minion in an area attack for this turn — negative to debuff.
@@ -924,6 +996,7 @@ impl Game {
                         target: None,
                         source: Some(slot as u8),
                         outcast: false,
+                        dying: Some(m),
                     },
                 );
                 fired += 1;
