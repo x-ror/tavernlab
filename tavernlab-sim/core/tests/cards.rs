@@ -3534,3 +3534,94 @@ fn atiesh_doubles_spell_damage_but_not_healing() {
         "healed for exactly 8, not doubled"
     );
 }
+
+#[test]
+fn broxigar_disappears_from_hand_at_start_of_game() {
+    use tavernlab_core::agent::{Scripted, Style};
+
+    let broxigar = by_name("Broxigar").unwrap();
+    let filler = by_name("Wisp").unwrap();
+    let mut deck = vec![broxigar];
+    deck.resize(30, filler);
+
+    let mut g = Game::new((Class::DemonHunter, &deck), (Class::DemonHunter, &deck), 1).unwrap();
+    let mut a = Scripted::new(Style::Midrange);
+    let mut b = Scripted::new(Style::Midrange);
+    let mut agents: [&mut dyn Agent; 2] = [&mut a, &mut b];
+    g.start(Side::Player0, &mut agents);
+
+    let anywhere = g.players[0].deck.iter().any(|&c| c == broxigar)
+        || g.players[0].hand.iter().any(|hc| hc.card == broxigar);
+    assert!(!anywhere, "Broxigar disappeared from both zones");
+}
+
+#[test]
+fn axe_of_cenarius_draws_a_portal_after_a_kill_but_not_a_miss() {
+    let mut f = Fix::new()
+        .deck(&["First Portal to Argus"])
+        .board(FOE, &["Wisp", "Boulderfist Ogre"]); // 1/1 dies to 3 Attack, 6/7 does not
+    f.g.players[0].weapon = Some(tavernlab_core::state::Weapon::equip(
+        by_name("Axe of Cenarius").unwrap(),
+    ));
+
+    f.g.apply(Action::HeroAttack {
+        target: Target::Minion(FOE, 0),
+    });
+    assert_eq!(
+        f.g.players[0].hand.len(),
+        1,
+        "the kill drew First Portal to Argus"
+    );
+    assert_eq!(f.g.players[0].hand[0].card.name(), "First Portal to Argus");
+
+    f.g.players[0].hero_attacks_done = 0;
+    f.g.apply(Action::HeroAttack {
+        target: Target::Minion(FOE, 0), // the Ogre now, after the Wisp's death shifted it down
+    });
+    assert_eq!(f.g.players[0].hand.len(), 1, "no kill, no second draw");
+}
+
+#[test]
+fn first_portal_to_argus_summons_fleeing_urzul_for_the_opponent() {
+    let mut f = Fix::new();
+    f.play("First Portal to Argus", None);
+    assert_eq!(f.g.players[0].board.len(), 0, "not on the caster's board");
+    assert_eq!(f.g.players[1].board.len(), 1, "on the opponent's board");
+    assert_eq!(f.g.players[1].board[0].card.name(), "Fleeing Ur'zul");
+}
+
+#[test]
+fn fleeing_urzul_deathrattle_rewards_its_controllers_opponent() {
+    let mut f = Fix::new().deck(&["Wisp"]);
+    f.g.players[1]
+        .board
+        .push(Permanent::summon(by_name("Fleeing Ur'zul").unwrap()));
+    f.g.deal_damage(Target::Minion(FOE, 0), 5);
+    f.g.sweep_deaths();
+    assert_eq!(
+        f.g.players[0].hand.len(),
+        1,
+        "the opponent of the demon's controller drew a card"
+    );
+    assert_eq!(
+        f.g.players[0]
+            .deck
+            .iter()
+            .filter(|&&c| c.name() == "Second Portal to Argus")
+            .count(),
+        1,
+        "and had the next Portal shuffled into their own deck"
+    );
+}
+
+#[test]
+fn fleeing_terrorguard_deathrattle_returns_broxigar_to_the_opponent() {
+    let mut f = Fix::new();
+    f.g.players[1]
+        .board
+        .push(Permanent::summon(by_name("Fleeing Terrorguard").unwrap()));
+    f.g.deal_damage(Target::Minion(FOE, 0), 5);
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Broxigar");
+}

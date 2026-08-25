@@ -64,6 +64,11 @@ pub enum Event {
     AfterAttack {
         attacker: Target,
         defender: Target,
+        /// Whether `defender` died in this exchange, captured before the
+        /// death sweep removes it -- by the time this event fires the board
+        /// no longer holds the body, so this is the only way a reactor can
+        /// tell "after your hero attacks and kills a minion" from a miss.
+        defender_died: bool,
     },
     /// An attack has been declared but no damage has landed yet. Secrets that
     /// react to being attacked get their chance here, and may remove the

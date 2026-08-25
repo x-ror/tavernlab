@@ -1373,6 +1373,16 @@ impl Game {
             }
         }
 
+        // Captured before the sweep below removes the body.
+        let defender_died = match target {
+            Target::Minion(s, i) => self
+                .player(s)
+                .board
+                .get(i as usize)
+                .is_some_and(|m| m.is_dead()),
+            Target::Hero(_) => false,
+        };
+
         self.board_dirty = true;
         self.sweep_deaths();
         // Fired once the exchange has fully resolved: this is what "after
@@ -1381,6 +1391,7 @@ impl Game {
         self.fire(Event::AfterAttack {
             attacker: attacker_t,
             defender: target,
+            defender_died,
         });
         self.sweep_deaths();
         true

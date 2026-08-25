@@ -336,6 +336,17 @@ mod tokens {
     pub const WICKERFANGS_LEG: CardId = token("CATA_139t");
     pub const CHARGED_HAND_OF_ALAKIR: CardId = token("CATA_153t");
     pub const SINESTRAS_WING: CardId = token("CATA_154t");
+    // Broxigar's Portal to Argus chain: each demon is "for your opponent",
+    // and each demon's own deathrattle shuffles the next portal into the
+    // *caster's* deck (a cross-player reward -- see the cards themselves).
+    pub const SECOND_PORTAL_TO_ARGUS: CardId = token("TIME_020t3");
+    pub const THIRD_PORTAL_TO_ARGUS: CardId = token("TIME_020t4");
+    pub const FINAL_PORTAL_TO_ARGUS: CardId = token("TIME_020t5");
+    pub const FLEEING_URZUL: CardId = token("TIME_020t2t");
+    pub const FLEEING_INCUBUS: CardId = token("TIME_020t3t");
+    pub const FLEEING_WRATHGUARD: CardId = token("TIME_020t4t");
+    pub const FLEEING_TERRORGUARD: CardId = token("TIME_020t5t");
+    pub const BROXIGAR: CardId = token("TIME_020");
     pub const GORISHI_STINGER: CardId = token("TLC_630t");
     /// Brood Keeper's "2/2 Sword". A weapon, so it never shows up through
     /// `summonable_children()`, which only ever returns minions.
@@ -2903,6 +2914,84 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         T::None,
         None, None, None, None, None, None, None, None, None,
     ),
+    // Broxigar's Portal to Argus chain -- ten cards (Broxigar, Axe of
+    // Cenarius, four Portals, four Demons) that all interlock, with no
+    // template gaps anywhere in any of them once each card is read in full
+    // rather than just Broxigar's own truncated summary. "Disappear" removes
+    // it from wherever Start of Game finds it; nothing else references it
+    // again until Fleeing Terrorguard's own deathrattle gives it back.
+    start_of_game("Broxigar", |g, c| {
+        let p = g.player_mut(c.side);
+        if let Some(idx) = p.hand.iter().position(|hc| hc.card == c.card) {
+            p.hand.remove(idx);
+        } else if let Some(idx) = p.deck.position(&c.card) {
+            p.deck.remove(idx);
+        }
+    }),
+    // "After your hero attacks and kills a minion": the board no longer
+    // holds the body by the time AfterAttack fires (see that event's own
+    // comment), so this reads `defender_died`, captured before the sweep,
+    // rather than trying to inspect the board.
+    trigger("Axe of Cenarius", |g, c| {
+        if matches!(
+            c.event,
+            Event::AfterAttack { attacker: Target::Hero(s), defender_died: true, .. }
+                if s == c.side
+        ) {
+            // `draw_matching`'s predicate only sees `CardDef`, which carries
+            // no printed name -- found by name on the `CardId`s themselves
+            // instead, the same way Garona Halforcen finds King Llane.
+            if let Some(idx) = g
+                .player(c.side)
+                .deck
+                .iter()
+                .position(|&card| card.name().contains("Portal to Argus"))
+            {
+                let card = g.player(c.side).deck[idx];
+                g.player_mut(c.side).deck.remove(idx);
+                g.give_card(c.side, card);
+                g.fire(Event::CardDrawn { side: c.side });
+            }
+        }
+    }),
+    // Each Portal is cast by Broxigar's own controller but summons its Demon
+    // "for your opponent" -- onto the *other* side's board.
+    spell("First Portal to Argus", T::None, |g, c| {
+        g.summon(c.side.other(), tokens::FLEEING_URZUL);
+    }),
+    spell("Second Portal to Argus", T::None, |g, c| {
+        g.summon(c.side.other(), tokens::FLEEING_INCUBUS);
+    }),
+    spell("Third Portal to Argus", T::None, |g, c| {
+        g.summon(c.side.other(), tokens::FLEEING_WRATHGUARD);
+    }),
+    spell("Final Portal to Argus", T::None, |g, c| {
+        g.summon(c.side.other(), tokens::FLEEING_TERRORGUARD);
+    }),
+    // Each Demon's own deathrattle text is written from *its controller's*
+    // perspective (Broxigar's opponent, who received it) -- "your opponent
+    // draws a card" and "into their deck" both mean Broxigar's controller,
+    // `c.side.other()` here, not the demon's own side.
+    deathrattle("Fleeing Ur'zul", |g, c| {
+        let owner = c.side.other();
+        g.draw_cards(owner, 1);
+        g.shuffle_into_deck(owner, tokens::SECOND_PORTAL_TO_ARGUS);
+    }),
+    deathrattle("Fleeing Incubus", |g, c| {
+        let owner = c.side.other();
+        g.draw_cards(owner, 1);
+        g.shuffle_into_deck(owner, tokens::THIRD_PORTAL_TO_ARGUS);
+    }),
+    deathrattle("Fleeing Wrathguard", |g, c| {
+        let owner = c.side.other();
+        g.draw_cards(owner, 1);
+        g.shuffle_into_deck(owner, tokens::FINAL_PORTAL_TO_ARGUS);
+    }),
+    // The fourth and last Demon: Broxigar itself reappears, completing the
+    // chain "Disappear ... kill all 4 Demons from Argus to reappear" names.
+    deathrattle("Fleeing Terrorguard", |g, c| {
+        g.give_card(c.side.other(), tokens::BROXIGAR);
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.
