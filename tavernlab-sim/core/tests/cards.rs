@@ -3513,3 +3513,24 @@ fn ultraxion_heralds_and_reduces_deathwings_cost_if_in_hand() {
         .expect("Deathwing is still in hand");
     assert_eq!(hc.cost_delta, -1);
 }
+
+#[test]
+fn atiesh_doubles_spell_damage_but_not_healing() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.g.players[0].weapon = Some(tavernlab_core::state::Weapon::equip(
+        by_name("Atiesh the Greatstaff").unwrap(),
+    ));
+    f.play("Fireball", foe_minion(0));
+    assert_eq!(
+        f.their_board(),
+        0,
+        "6 doubled to 12, well past 7 health -- dead and swept"
+    );
+
+    f.g.players[0].hero_hp = 10;
+    f.play("Healing Touch", Some(Target::Hero(ME)));
+    assert_eq!(
+        f.g.players[0].hero_hp, 18,
+        "healed for exactly 8, not doubled"
+    );
+}

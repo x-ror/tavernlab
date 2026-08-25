@@ -2891,6 +2891,18 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.player_mut(c.side).hand[idx].cost_delta -= 1;
         }
     }),
+    // "Costs (0) if you control Medivh" is unreachable: Medivh is a Hero
+    // card (G3, not otherwise built), which can never legally be in play,
+    // so this always costs its printed 10. The damage half of "double the
+    // damage and healing of your spells" lives in `Game::wielding_atiesh`
+    // and the functions that check it; the healing half is not implemented
+    // -- see that helper's own comment for why. This row exists only so
+    // `is_implemented` sees it.
+    c(
+        "Atiesh the Greatstaff",
+        T::None,
+        None, None, None, None, None, None, None, None, None,
+    ),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -3000,6 +3012,10 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Ultraxion",
         "\"Reduce Deathwing's Cost\" only reaches a copy currently in hand; a deck-side CardId has no cost_delta to persist the reduction on, so a copy still undrawn does not get it",
+    ),
+    (
+        "Atiesh the Greatstaff",
+        "\"Costs (0) if you control Medivh\" is unreachable -- Medivh is a Hero card, and Hero cards are not implemented -- so this always costs its printed 10; and only the damage half of the spell-doubling is implemented, not the healing half, since this engine's heal/heal_hero have no spell-specific wrapper the way spell_damage does for combat damage",
     ),
 ];
 

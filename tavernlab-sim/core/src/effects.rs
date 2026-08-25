@@ -30,18 +30,38 @@ pub enum Area {
 impl Game {
     // ------------------------------------------------------------- damage
 
+    /// Atiesh the Greatstaff: doubles a spell's own damage, applied before
+    /// Spell Power stacks on top of it -- a card that deals more and a card
+    /// that deals harder are different bonuses, and the corpus text puts
+    /// Atiesh's before the caster's Spell Damage in effect the same way a
+    /// multiplier applies before an addition.
+    ///
+    /// Healing is not doubled: unlike damage, this engine's `heal`/`heal_hero`
+    /// have no spell-specific wrapper the way `spell_damage` does for combat
+    /// damage, so nothing marks a call here as coming from a spell rather
+    /// than a battlecry or Lifesteal. Building that distinction for one
+    /// card's other half was not worth the blast radius across every
+    /// existing healing effect. See APPROXIMATE.
+    fn wielding_atiesh(&self, side: Side) -> bool {
+        self.player(side)
+            .weapon
+            .is_some_and(|w| w.card.name() == "Atiesh the Greatstaff")
+    }
+
     /// Damage from a spell or hero power, boosted by the caster's Spell Damage.
     ///
     /// Every spell that deals damage goes through this. `deal_damage` is the
     /// raw form and does not apply the bonus, because combat damage must not.
     pub fn spell_damage(&mut self, side: Side, target: Option<Target>, base: i16) -> bool {
         let Some(t) = target else { return false };
+        let base = if self.wielding_atiesh(side) { base * 2 } else { base };
         let amount = base + self.player(side).spell_power();
         self.deal_damage(t, amount)
     }
 
     /// Spell damage spread over an area.
     pub fn spell_damage_area(&mut self, side: Side, area: Area, base: i16) {
+        let base = if self.wielding_atiesh(side) { base * 2 } else { base };
         let amount = base + self.player(side).spell_power();
         self.damage_area(side, area, amount);
     }
@@ -103,6 +123,7 @@ impl Game {
     /// which is how the real thing behaves and why this cannot be written as
     /// "pick n targets, then hit them".
     pub fn damage_split(&mut self, side: Side, area: Area, base: i16) {
+        let base = if self.wielding_atiesh(side) { base * 2 } else { base };
         let total = base + self.player(side).spell_power();
         for _ in 0..total {
             let mut pool: Inline<Target, { MAX_BOARD * 2 + 2 }> = Inline::new();
@@ -420,6 +441,7 @@ impl Game {
             .rngs
             .effects
             .sample_indices(live.len(), &mut picks[..n.min(live.len())]);
+        let amount = if self.wielding_atiesh(side) { amount * 2 } else { amount };
         let boosted = amount + self.player(side).spell_power();
         for &p in picks.iter().take(taken) {
             self.deal_damage(Target::Minion(foe, live[p as usize]), boosted);
