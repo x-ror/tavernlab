@@ -2726,6 +2726,78 @@ fn spire_of_solitude_summons_a_demon_sized_by_hand_and_attacks_a_random_enemy() 
 }
 
 #[test]
+fn the_food_chain_completes_after_all_four_attack_thresholds() {
+    let mut f = Fix::new();
+    f.play("The Food Chain", None);
+    assert!(f.g.players[0].quest.is_some());
+
+    for atk in [1, 3, 5, 7] {
+        let beast = tavernlab_core::cards::all()
+            .find(|c| {
+                c.def().kind() == tavernlab_core::cards::Kind::Minion
+                    && c.def().races.any(tavernlab_core::cards::Races::BEAST)
+                    && c.def().atk == atk
+                    && c.def().collectible
+            })
+            .unwrap_or_else(|| panic!("need a {atk}-Attack Beast in the corpus"));
+        f.g.players[0].mana = 10;
+        f.play(beast.name(), None);
+    }
+    assert!(f.g.players[0].quest.is_none(), "completed and cleared");
+    assert!(
+        f.g.players[0]
+            .hand
+            .iter()
+            .any(|hc| hc.card.name() == "Shokk, Jungle Tyrant"),
+        "reward in hand"
+    );
+}
+
+#[test]
+fn unleash_the_colossus_completes_after_twelve_hits_of_exactly_two() {
+    let mut f = Fix::new();
+    f.play("Unleash the Colossus", None);
+    assert!(f.g.players[0].quest.is_some());
+    for _ in 0..12 {
+        f.g.deal_damage(Target::Hero(FOE), 2);
+    }
+    assert!(f.g.players[0].quest.is_none(), "completed and cleared");
+    assert!(
+        f.g.players[0]
+            .hand
+            .iter()
+            .any(|hc| hc.card.name() == "Gorishi Colossus"),
+        "reward in hand"
+    );
+}
+
+#[test]
+fn unleash_the_colossus_ignores_damage_that_is_not_exactly_two() {
+    let mut f = Fix::new();
+    f.play("Unleash the Colossus", None);
+    for _ in 0..12 {
+        f.g.deal_damage(Target::Hero(FOE), 3);
+    }
+    assert_eq!(f.g.players[0].quest.unwrap().1, 0, "wrong amount never counts");
+}
+
+#[test]
+fn storm_the_gates_completes_after_three_beasts_or_undead() {
+    let mut f = Fix::new();
+    f.play("Storm the Gates", None);
+    assert!(f.g.players[0].sidequest.is_some());
+    for _ in 0..3 {
+        f.g.players[0].mana = 10;
+        f.play("Bloodfen Raptor", None); // a Beast
+    }
+    assert!(f.g.players[0].sidequest.is_none(), "completed and cleared");
+    assert!(
+        f.g.players[0].hand.iter().any(|hc| hc.card.name() == "Zombeast"),
+        "reward in hand"
+    );
+}
+
+#[test]
 fn unshackle_soul_costs_one_after_playing_an_opponents_card() {
     let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
     let unshackle = by_name("Unshackle Soul").unwrap();

@@ -341,6 +341,15 @@ mod tokens {
     /// Spire of Solitude's "a Demon". Its base 1/1 is overwritten to match
     /// the caster's hand size; see the Location's activation.
     pub const SHIVARRA_INFILTRATOR: CardId = token("JAIL_511t");
+    /// The Food Chain's reward.
+    pub const SHOKK: CardId = token("TLC_830t");
+    /// Unleash the Colossus's reward.
+    pub const GORISHI_COLOSSUS: CardId = token("TLC_631t");
+    /// Storm the Gates' reward is a "custom Zombeast" crafted from two
+    /// chosen minions in the real game; approximated here as this one fixed
+    /// old token instead (weaker, not the real hybrid), and noted in
+    /// APPROXIMATE.
+    pub const ZOMBEAST: CardId = token("ICC_800h3t");
 
     /// The three Dreadseeds. Cards that summon "a random Dormant Dreadseed"
     /// roll one of these.
@@ -2441,6 +2450,71 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             }
         }
     }),
+
+    // -------------------------------------------------------- phase 4, G6
+    // Quest / Sidequest: docs/RUST_CARDS_PLAN.md §4 phase 4 (G6). Progress
+    // lives entirely in the `trigger` hook -- see Player::quest/sidequest
+    // and the extra reactor slots in Game::fire.
+    trigger("The Food Chain", |g, ctx| {
+        if let Event::CardPlayed { side, card } = ctx.event
+            && side == ctx.side
+            && card.def().kind() == super::Kind::Minion
+            && card.def().races.any(Races::BEAST)
+            && matches!(card.def().atk, 1 | 3 | 5 | 7)
+            && let Some((qcard, progress)) = g.player(ctx.side).quest
+        {
+            // 1 -> bit 0, 3 -> bit 1, 5 -> bit 2, 7 -> bit 3: which of the
+            // four thresholds have been played, not how many total.
+            let bit = 1u8 << ((card.def().atk - 1) / 2);
+            if progress & bit == 0 {
+                let progress = progress | bit;
+                if progress.count_ones() == 4 {
+                    g.give_token(ctx.side, tokens::SHOKK);
+                    g.player_mut(ctx.side).quest = None;
+                } else {
+                    g.player_mut(ctx.side).quest = Some((qcard, progress));
+                }
+            }
+        }
+    }),
+    trigger("Unleash the Colossus", |g, ctx| {
+        if let Event::Damaged { target, amount } = ctx.event
+            && amount == 2
+            && g.current == ctx.side
+        {
+            let enemy = match target {
+                Target::Hero(s) => s != ctx.side,
+                Target::Minion(s, _) => s != ctx.side,
+            };
+            if enemy
+                && let Some((qcard, progress)) = g.player(ctx.side).quest
+            {
+                let progress = progress + 1;
+                if progress >= 12 {
+                    g.give_token(ctx.side, tokens::GORISHI_COLOSSUS);
+                    g.player_mut(ctx.side).quest = None;
+                } else {
+                    g.player_mut(ctx.side).quest = Some((qcard, progress));
+                }
+            }
+        }
+    }),
+    trigger("Storm the Gates", |g, ctx| {
+        if let Event::CardPlayed { side, card } = ctx.event
+            && side == ctx.side
+            && card.def().kind() == super::Kind::Minion
+            && (card.def().races.any(Races::BEAST) || card.def().races.any(Races::UNDEAD))
+            && let Some((qcard, progress)) = g.player(ctx.side).sidequest
+        {
+            let progress = progress + 1;
+            if progress >= 3 {
+                g.give_token(ctx.side, tokens::ZOMBEAST);
+                g.player_mut(ctx.side).sidequest = None;
+            } else {
+                g.player_mut(ctx.side).sidequest = Some((qcard, progress));
+            }
+        }
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -2455,6 +2529,10 @@ pub static BEHAVIOURS: &[Behaviour] = &[
 /// coverage figure that mixes exact and approximate cards is worse than a
 /// smaller honest one.
 pub const APPROXIMATE: &[(&str, &str)] = &[
+    (
+        "Storm the Gates",
+        "the reward is a fixed old 1/1 Zombeast token rather than a custom          minion crafted from two chosen deck cards, which the engine has no          way to build",
+    ),
     (
         "Archmage Kalec",
         "\"all spells in your hand and deck\" needs per-card state in the deck;          implemented as Spell Damage on the hero, which also boosts spells          acquired after it lands -- the one entry here that can read stronger          than the card, not weaker",
@@ -2610,9 +2688,11 @@ mod tests {
     }
 
     #[test]
-    fn a_spell_declares_a_cast_effect_or_is_a_secret() {
+    fn a_spell_declares_a_cast_effect_or_is_a_secret_or_a_quest() {
         // A secret is a spell that is set rather than cast, so its behaviour
-        // lives in the `secret` hook and it has no cast effect at all.
+        // lives in the `secret` hook and it has no cast effect at all. A
+        // Quest or Sidequest is the same shape, one hook over: its progress
+        // lives entirely in `trigger` (see Player::quest/sidequest).
         for b in BEHAVIOURS {
             let card = by_name(b.name).unwrap();
             if card.def().kind() != super::super::Kind::Spell {
@@ -2625,6 +2705,16 @@ mod tests {
                 "{} and its SECRET keyword disagree",
                 b.name
             );
+            let is_quest = card.def().keywords.has(Keywords::QUEST)
+                || card.def().keywords.has(Keywords::SIDE_QUEST);
+            if is_quest {
+                assert!(
+                    b.trigger.is_some() && b.spell.is_none(),
+                    "{} is a Quest/Sidequest; its progress belongs in `trigger`, not `spell`",
+                    b.name
+                );
+                continue;
+            }
             // A Choose One card's behaviour lives in its modes, so it has no
             // cast effect of its own either.
             assert_eq!(

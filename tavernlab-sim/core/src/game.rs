@@ -141,7 +141,10 @@ impl Game {
         let mut queued: Inline<(Side, CardId), { 2 * (MAX_HAND + MAX_DECK) }> = Inline::new();
         for side in [Side::Player0, Side::Player1] {
             for hc in self.player(side).hand.iter() {
-                if behaviour_of(hc.card).and_then(|b| b.start_of_game).is_some() {
+                if behaviour_of(hc.card)
+                    .and_then(|b| b.start_of_game)
+                    .is_some()
+                {
                     queued.push((side, hc.card));
                 }
             }
@@ -417,11 +420,18 @@ impl Game {
             match d.kind() {
                 Kind::Minion | Kind::Weapon | Kind::Location => {}
                 // An unimplemented spell would cost mana and do nothing, which
-                // is worse than not being offered at all. A secret counts as
-                // implemented through its own hook rather than a cast effect.
+                // is worse than not being offered at all. A secret or a
+                // Quest/Sidequest counts as implemented through its own hook
+                // rather than a cast effect -- a Quest's progress lives in
+                // its `trigger`, the only hook it needs.
                 Kind::Spell
                     if beh.is_some_and(|b| {
-                        b.spell.is_some() || b.secret.is_some() || b.choose.is_some()
+                        b.spell.is_some()
+                            || b.secret.is_some()
+                            || b.choose.is_some()
+                            || ((d.keywords.has(Keywords::QUEST)
+                                || d.keywords.has(Keywords::SIDE_QUEST))
+                                && b.trigger.is_some())
                     }) => {}
                 Kind::Spell | Kind::Hero | Kind::HeroPower => continue,
             }
@@ -432,6 +442,32 @@ impl Game {
             if d.kind() == Kind::Spell && d.keywords.has(Keywords::SECRET) {
                 let zone = &me.secrets;
                 if zone.len() >= crate::state::MAX_SECRETS || zone.contains(&c.card) {
+                    continue;
+                }
+                out.push(Action::Play {
+                    hand: i as u8,
+                    target: None,
+                    position: u8::MAX,
+                    choice: u8::MAX,
+                });
+                continue;
+            }
+            // A Quest and a Sidequest each occupy their own single slot,
+            // separate from each other and from Secrets.
+            if d.kind() == Kind::Spell && d.keywords.has(Keywords::QUEST) {
+                if me.quest.is_some() {
+                    continue;
+                }
+                out.push(Action::Play {
+                    hand: i as u8,
+                    target: None,
+                    position: u8::MAX,
+                    choice: u8::MAX,
+                });
+                continue;
+            }
+            if d.kind() == Kind::Spell && d.keywords.has(Keywords::SIDE_QUEST) {
+                if me.sidequest.is_some() {
                     continue;
                 }
                 out.push(Action::Play {
@@ -694,7 +730,12 @@ impl Game {
             Kind::Minion | Kind::Location if self.player(side).board.is_full() => return false,
             Kind::Spell
                 if !beh.is_some_and(|b| {
-                    b.spell.is_some() || b.secret.is_some() || b.choose.is_some()
+                    b.spell.is_some()
+                        || b.secret.is_some()
+                        || b.choose.is_some()
+                        || ((def.keywords.has(Keywords::QUEST)
+                            || def.keywords.has(Keywords::SIDE_QUEST))
+                            && b.trigger.is_some())
                 }) =>
             {
                 return false;
@@ -762,6 +803,27 @@ impl Game {
         // A secret is set, not cast: it goes to its own zone and waits.
         if def.kind() == Kind::Spell && def.keywords.has(Keywords::SECRET) {
             self.player_mut(side).secrets.push(hc.card);
+            self.fire(Event::CardPlayed {
+                side,
+                card: hc.card,
+            });
+            self.sweep_deaths();
+            return true;
+        }
+        // A Quest or Sidequest is set too, in its own single-card slot; its
+        // progress lives entirely in its `trigger`, fired like any other
+        // reactor's (see `Game::fire`).
+        if def.kind() == Kind::Spell && def.keywords.has(Keywords::QUEST) {
+            self.player_mut(side).quest = Some((hc.card, 0));
+            self.fire(Event::CardPlayed {
+                side,
+                card: hc.card,
+            });
+            self.sweep_deaths();
+            return true;
+        }
+        if def.kind() == Kind::Spell && def.keywords.has(Keywords::SIDE_QUEST) {
+            self.player_mut(side).sidequest = Some((hc.card, 0));
             self.fire(Event::CardPlayed {
                 side,
                 card: hc.card,
@@ -1164,7 +1226,11 @@ impl Game {
         let (counter, counter_poison, counter_lifesteal) = match defender {
             Target::Hero(_) => (0, false, false),
             Target::Minion(s, i) => match self.player(s).board.get(i as usize) {
-                Some(d) => (d.atk, d.has(Keywords::POISONOUS), d.has(Keywords::LIFESTEAL)),
+                Some(d) => (
+                    d.atk,
+                    d.has(Keywords::POISONOUS),
+                    d.has(Keywords::LIFESTEAL),
+                ),
                 None => return,
             },
         };

@@ -430,6 +430,14 @@ pub struct Player {
     /// Effects queued against this player's own future turns; see
     /// [`Pending`].
     pub pending: Inline<Pending, 4>,
+    /// The active Quest, as (card, progress). A Quest's own printed number
+    /// is not stored here, since its `trigger` already knows it -- this is
+    /// only ever read back by the same card that wrote it.
+    pub quest: Option<(CardId, u8)>,
+    /// The active Sidequest, in its own slot: Hearthstone allows one Quest
+    /// and one Sidequest active at the same time, and Quest Hunter runs one
+    /// of each.
+    pub sidequest: Option<(CardId, u8)>,
     pub weapon: Option<Weapon>,
     pub hand: Inline<HandCard, MAX_HAND>,
     pub deck: Inline<CardId, MAX_DECK>,
@@ -468,6 +476,8 @@ impl Player {
             spell_tax_active: 0,
             spell_tax_pending: 0,
             pending: Inline::new(),
+            quest: None,
+            sidequest: None,
             weapon: None,
             hand: Inline::new(),
             deck: deck.iter().copied().collect(),

@@ -164,6 +164,10 @@ const MAX_TRIGGER_DEPTH: u8 = 8;
 /// Slot value marking a reactor as the equipped weapon rather than a board
 /// position. A weapon has no slot, but it does react.
 pub const WEAPON_SLOT: u8 = u8::MAX;
+/// Slot value marking a reactor as the active Quest.
+pub const QUEST_SLOT: u8 = u8::MAX - 1;
+/// Slot value marking a reactor as the active Sidequest.
+pub const SIDE_QUEST_SLOT: u8 = u8::MAX - 2;
 
 impl Game {
     /// Tell every permanent in play that `event` happened.
@@ -182,7 +186,7 @@ impl Game {
         }
         // Sample as (side, slot, card) rather than holding a reference: the
         // effects below take `&mut self`.
-        let mut reactors: Inline<(Side, u8, CardId), { MAX_BOARD * 2 + 2 }> = Inline::new();
+        let mut reactors: Inline<(Side, u8, CardId), { MAX_BOARD * 2 + 6 }> = Inline::new();
         for i in 0..2 {
             let side = Side::from_index(i);
             for (slot, m) in self.players[i].board.iter().enumerate() {
@@ -200,6 +204,22 @@ impl Game {
                 reactors.push((Side::from_index(i), WEAPON_SLOT, w.card));
             }
         }
+        // A Quest or Sidequest tracks its own progress through this same
+        // hook -- neither is a board permanent, so each gets a sentinel slot
+        // of its own, the same trick the weapon above uses.
+        for i in 0..2 {
+            let side = Side::from_index(i);
+            if let Some((card, _)) = self.players[i].quest
+                && behaviour_of(card).and_then(|b| b.trigger).is_some()
+            {
+                reactors.push((side, QUEST_SLOT, card));
+            }
+            if let Some((card, _)) = self.players[i].sidequest
+                && behaviour_of(card).and_then(|b| b.trigger).is_some()
+            {
+                reactors.push((side, SIDE_QUEST_SLOT, card));
+            }
+        }
 
         // No early return here: secrets are a separate zone and must get their
         // chance even when nothing on either board reacts.
@@ -208,6 +228,10 @@ impl Game {
             // Still there, still the same card, still alive?
             let still_there = if slot == WEAPON_SLOT {
                 self.player(side).weapon.is_some_and(|w| w.card == card)
+            } else if slot == QUEST_SLOT {
+                self.player(side).quest.is_some_and(|(c, _)| c == card)
+            } else if slot == SIDE_QUEST_SLOT {
+                self.player(side).sidequest.is_some_and(|(c, _)| c == card)
             } else {
                 self.player(side)
                     .board
