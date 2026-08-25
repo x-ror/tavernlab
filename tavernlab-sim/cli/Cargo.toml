@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 tavernlab-core = { workspace = true }
+tavernlab-json = { workspace = true }
 
 [[bin]]
 name = "tavernsim"

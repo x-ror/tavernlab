@@ -24,6 +24,12 @@ watcher.pid
 # 9 МБ, перезавантажується через `build_data.py --fetch`.
 cards.json
 
+# Вихід scripts/build_cards.py (design §2a): злиття живого Blizzard
+# card-library API з CardDefs.xml, 9+ МБ, і кеш того самого API.
+# Перебудовується через `build_cards.py --include-carddefs-only`.
+cards_merged.json
+blizzard_api_cache.json
+
 # ─── Артефакти збірки ────────────────────────────────────────────────
 __pycache__/
 *.py[cod]

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Hearthstone rules kernel for TavernLab"
 
-# Deliberately no dependencies.
+# Deliberately no dependencies in production.
 #
 # Two reasons, and both point the same way. Smart App Control is enforced on
 # this machine and blocks the compiled output of any crate's `build.rs`
@@ -14,6 +14,12 @@ description = "Hearthstone rules kernel for TavernLab"
 # parsed from JSON at startup, so there is nothing left for a serialisation
 # crate to do.
 [dependencies]
+
+# tavernlab-json has no build script either, so it does not run into Smart App
+# Control. It is dev-only: nothing under src/ reads a JSON file, but a test
+# that pins the engine against the real meta-deck list needs to parse one.
+[dev-dependencies]
+tavernlab-json = { workspace = true }
 
 [lib]
 # Smart App Control also blocks `rustdoc.exe`, which aborts `cargo test` at the

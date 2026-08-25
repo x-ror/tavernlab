@@ -7,6 +7,7 @@
 //! tavernsim matrix [games]            every class against every class
 //! tavernsim demo [seed]               one game, turn by turn
 //! tavernsim coverage                  how much of the card pool is implemented
+//! tavernsim gauntlet [path]           how much of real deck lists resolves
 //! ```
 
 use std::time::Instant;
@@ -18,6 +19,7 @@ use tavernlab_core::deck::curve_deck;
 use tavernlab_core::game::Agent;
 use tavernlab_core::inline::Inline;
 use tavernlab_core::state::{Game, Outcome, Side};
+use tavernlab_json::Json;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -33,6 +35,7 @@ fn main() {
             Some("wild") => Formats::WILD,
             _ => Formats::STANDARD,
         }),
+        "gauntlet" => gauntlet(args.get(1).map(String::as_str)),
         other => {
             eprintln!("unknown command {other:?}");
             eprintln!("usage: tavernsim [bench|matrix|demo|coverage] [args]");
@@ -406,4 +409,78 @@ fn list_implemented(fmt: Formats) {
     for n in names {
         println!("{n}");
     }
+}
+
+/// How much of a set of real deck lists the engine can actually field.
+///
+/// `coverage` measures the whole card pool; a percentage there can rise
+/// without a single real deck getting any closer to playable, because the
+/// pool is dominated by cards no meta deck runs. This instead resolves the
+/// actual decklists in `path` (default: the repo's own `hs2/meta_decks_2026.json`)
+/// against the implemented table, one slot at a time, and prints what is
+/// still missing so the next card to port is obvious.
+fn gauntlet(path: Option<&str>) {
+    use tavernlab_core::cards::by_name;
+    use tavernlab_core::deck::resolve_slots;
+
+    let path = path.unwrap_or("../hs2/meta_decks_2026.json");
+    let src = std::fs::read_to_string(path).unwrap_or_else(|e| {
+        eprintln!("failed to read {path}: {e}");
+        std::process::exit(1);
+    });
+    let doc = Json::parse(&src).unwrap_or_else(|e| {
+        eprintln!("failed to parse {path}: {e}");
+        std::process::exit(1);
+    });
+    let decks = doc.as_object().unwrap_or_else(|| {
+        eprintln!("{path}: expected a top-level object of deck name -> deck");
+        std::process::exit(1);
+    });
+
+    let describe = |name: &str| -> String {
+        match by_name(name) {
+            Some(c) => c.info().text.to_string(),
+            None => "(not in the corpus under this name)".to_string(),
+        }
+    };
+
+    let mut grand_ok = 0u32;
+    let mut grand_total = 0u32;
+    for (deck_name, deck) in decks {
+        let cards = pairs(deck.get("cards"));
+        let report = resolve_slots(&cards);
+        grand_ok += report.ok;
+        grand_total += report.total;
+        println!("{:<28}{:>3}/{:<3}", deck_name, report.ok, report.total);
+        for (name, count) in &report.missing {
+            println!("    x{count}  {name} — {}", describe(name));
+        }
+
+        let sideboard = pairs(deck.get("sideboard"));
+        if !sideboard.is_empty() {
+            let sb = resolve_slots(&sideboard);
+            println!("    sideboard: {}/{}", sb.ok, sb.total);
+            for (name, count) in &sb.missing {
+                println!("      x{count}  {name} — {}", describe(name));
+            }
+        }
+    }
+    println!(
+        "\n{grand_ok}/{grand_total} slots resolve across {} decks",
+        decks.len()
+    );
+}
+
+/// The `[name, count]` pairs of a deck's `"cards"` or `"sideboard"` array.
+fn pairs(v: Option<&Json>) -> Vec<(&str, u32)> {
+    v.and_then(Json::as_array)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|entry| {
+            let a = entry.as_array()?;
+            let name = a.first()?.as_str()?;
+            let count = a.get(1)?.as_i64()?;
+            Some((name, count.max(0) as u32))
+        })
+        .collect()
 }

@@ -4,7 +4,7 @@
 //! checked rather than assumed, because a deck arriving from a deck code or a
 //! generator is untrusted input.
 
-use crate::cards::{CardId, Class, Formats, Kind, all, is_implemented};
+use crate::cards::{CardId, Class, Formats, Kind, all, by_name, is_implemented};
 
 pub const DECK_SIZE: usize = 30;
 
@@ -110,6 +110,38 @@ pub fn curve_deck(class: Class, format: Formats) -> Option<Vec<CardId>> {
         }
     }
     (deck.len() == DECK_SIZE).then_some(deck)
+}
+
+/// How a decklist's requested copies resolve against the implemented table.
+pub struct SlotReport {
+    /// Requested copies covered by an implemented card of that name.
+    pub ok: u32,
+    /// Copies requested in total.
+    pub total: u32,
+    /// Names that did not resolve to an implemented card, with how many
+    /// copies were asked for.
+    pub missing: Vec<(String, u32)>,
+}
+
+/// Resolve a decklist against the corpus: how many requested copies are
+/// covered by an implemented card of that name.
+///
+/// Takes already-parsed `(name, count)` pairs rather than a file or a JSON
+/// value, so this stays available to a `core` that carries no JSON
+/// dependency in production — whatever reads the meta-deck file owns the
+/// parsing and hands the pairs in.
+pub fn resolve_slots(cards: &[(&str, u32)]) -> SlotReport {
+    let mut ok = 0;
+    let mut total = 0;
+    let mut missing = Vec::new();
+    for &(name, count) in cards {
+        total += count;
+        match by_name(name) {
+            Some(id) if is_implemented(id) => ok += count,
+            _ => missing.push((name.to_string(), count)),
+        }
+    }
+    SlotReport { ok, total, missing }
 }
 
 /// A legal 30-card deck of the cheapest minions available.
@@ -264,5 +296,23 @@ mod tests {
         for class in crate::cards::PLAYABLE_CLASSES {
             assert!(pool(class, Formats::STANDARD).len() > 50, "{class:?}");
         }
+    }
+
+    #[test]
+    fn resolve_slots_counts_implemented_copies_and_lists_the_rest() {
+        let report = resolve_slots(&[
+            ("Fireball", 2),
+            ("Not A Real Card", 1),
+            ("The Food Chain", 1), // a real card, not yet implemented
+        ]);
+        assert_eq!(report.ok, 2);
+        assert_eq!(report.total, 4);
+        assert_eq!(
+            report.missing,
+            vec![
+                ("Not A Real Card".to_string(), 1),
+                ("The Food Chain".to_string(), 1),
+            ]
+        );
     }
 }
