@@ -502,6 +502,12 @@ pub struct Player {
     /// way, and the cap keeps this a fixed handful of bytes on every game
     /// regardless of whether Godfrey is anywhere in play.
     pub overdrawn: Inline<CardId, 10>,
+    /// Cards sent here by Irida Sinseeker's battlecry, drawn from two at a
+    /// time at the start of this player's own turns. A third zone, not
+    /// folded into `deck`, because a card here is not shuffled, not subject
+    /// to fatigue, and not visible to anything that reads the deck (a
+    /// Discover, an opponent's "look at their deck" effect).
+    pub void: Inline<CardId, MAX_DECK>,
 }
 
 impl Player {
@@ -552,6 +558,7 @@ impl Player {
             godfrey_active: false,
             overdrawn: Inline::new(),
             dragon_discounted_turn: false,
+            void: Inline::new(),
         }
     }
 

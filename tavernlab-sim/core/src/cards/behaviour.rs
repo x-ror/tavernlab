@@ -2774,6 +2774,18 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.take_control(t, c.side);
         }
     }),
+    // "Except 1 card" does not say which; popped from the same end
+    // `Player::void` is later drawn from, so the one left behind is
+    // whatever last landed there rather than a random pick, avoiding an
+    // unnecessary RNG draw for a choice the card never specifies.
+    battlecry("Irida Sinseeker", T::None, |g, c| {
+        let p = g.player_mut(c.side);
+        while p.deck.len() > 1 {
+            if let Some(card) = p.deck.pop() {
+                p.void.push(card);
+            }
+        }
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.

@@ -351,6 +351,14 @@ impl Game {
                 self.player_mut(side).hand.push(hc);
             }
         }
+        // Irida Sinseeker: two cards from the Void, same "ahead of the
+        // guaranteed draw" ordering as Godfrey's return just above.
+        for _ in 0..2 {
+            let Some(card) = self.player_mut(side).void.pop() else {
+                break;
+            };
+            self.give_card(side, card);
+        }
         self.draw(side, 1);
         self.board_dirty = true;
         for entry in fired.iter().copied() {

@@ -3374,3 +3374,32 @@ fn cursed_chains_returns_the_exact_stolen_instance_not_a_same_named_double() {
         "the exact stolen instance returned, not the double"
     );
 }
+
+#[test]
+fn irida_sinseeker_sends_the_deck_to_the_void_except_one_card() {
+    let mut f = Fix::new().deck(&["Wisp", "Wisp", "Wisp"]);
+    f.play("Irida Sinseeker", None);
+    assert_eq!(f.g.players[0].deck.len(), 1, "one card left behind");
+    assert_eq!(f.g.players[0].void.len(), 2, "the rest went to the Void");
+}
+
+#[test]
+fn irida_sinseeker_draws_two_from_the_void_each_turn() {
+    let mut f = Fix::new();
+    let wisp = by_name("Wisp").unwrap();
+    f.g.players[0].void.push(wisp);
+    f.g.players[0].void.push(wisp);
+    f.g.players[0].void.push(wisp);
+    f.g.players[0].deck.push(wisp); // fed to the guaranteed draw
+    f.g.begin_turn();
+    assert_eq!(f.g.players[0].void.len(), 1, "two were taken");
+    assert_eq!(
+        f.g.players[0]
+            .hand
+            .iter()
+            .filter(|hc| hc.card == wisp)
+            .count(),
+        3,
+        "2 from the Void plus the guaranteed draw"
+    );
+}
