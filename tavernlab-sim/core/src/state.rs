@@ -51,6 +51,10 @@ impl Flags {
     /// Attacked at least once this turn — Rush cannot go face afterwards
     /// either, so this is tracked separately from the attack counter.
     pub const ATTACKED: Flags = Flags(1 << 7);
+    /// Dies at the end of its controller's current turn (Soulrest Ceremony),
+    /// independent of any keyword — silencing away the Rush it was granted
+    /// alongside this must not save it, so this is not modelled as one.
+    pub const DOOMED: Flags = Flags(1 << 8);
 
     #[inline]
     pub const fn has(self, f: Flags) -> bool {
@@ -295,6 +299,38 @@ impl HandCard {
     }
 }
 
+// -------------------------------------------------------------- pending
+
+/// What a queued [`Pending`] effect does when it fires.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PendingKind {
+    #[default]
+    None = 0,
+    /// Gain a temporary mana crystal.
+    TempCrystal = 1,
+    /// Summon `card`.
+    SummonToken = 2,
+    /// Damage the owner's own hero for `amount`.
+    HeroDamage = 3,
+}
+
+/// An effect queued against a future one of its owner's own turns —
+/// "at the start of your turn" with a duration, or "at the start of your
+/// next turn" once. Ticks down and fires in [`Game::begin_turn`], once per
+/// owning player's own turn: casting on someone else's turn does not make
+/// it fire sooner, because it is only ever read from that player's side of
+/// [`Player::pending`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pending {
+    pub kind: PendingKind,
+    /// How many more of the owner's own turns this fires on, counting the
+    /// next one. Removed once it reaches zero after firing.
+    pub turns_left: u8,
+    pub amount: i16,
+    pub card: CardId,
+}
+
 // -------------------------------------------------------------- players
 
 #[derive(Clone, Copy, Debug)]
@@ -348,6 +384,17 @@ pub struct Player {
     pub played_races_last: Races,
     pub hero_power: CardId,
     pub hero_power_uses: u8,
+    /// Extra cost on this player's own spells, active for the rest of this
+    /// turn only (Cult Neophyte, set on the *target*). Promoted from
+    /// `spell_tax_pending` at the start of the turn it applies to, and
+    /// implicitly cleared the same way at the turn after: the promotion
+    /// always overwrites it, pending or not.
+    pub spell_tax_active: i16,
+    /// A spell tax queued for the start of this player's own next turn.
+    pub spell_tax_pending: i16,
+    /// Effects queued against this player's own future turns; see
+    /// [`Pending`].
+    pub pending: Inline<Pending, 4>,
     pub weapon: Option<Weapon>,
     pub hand: Inline<HandCard, MAX_HAND>,
     pub deck: Inline<CardId, MAX_DECK>,
@@ -382,6 +429,9 @@ impl Player {
             played_races_last: Races::NONE,
             hero_power,
             hero_power_uses: 0,
+            spell_tax_active: 0,
+            spell_tax_pending: 0,
+            pending: Inline::new(),
             weapon: None,
             hand: Inline::new(),
             deck: deck.iter().copied().collect(),

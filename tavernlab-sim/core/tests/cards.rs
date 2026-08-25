@@ -2411,3 +2411,102 @@ fn cosmic_manifestations_outcast_does_it_twice() {
         assert_eq!(card.def().class(), tavernlab_core::cards::Class::DemonHunter);
     }
 }
+
+// --------------------------------------------------------------- G1 / G2
+
+#[test]
+fn acceleration_aura_grants_a_temp_crystal_for_the_next_three_turns_only() {
+    let mut f = Fix::new();
+    f.play("Acceleration Aura", None);
+    assert_eq!(f.g.players[0].mana, 8, "spent its own cost of 2, no bonus crystal yet");
+    assert_eq!(f.g.players[0].pending.len(), 1);
+    for _ in 0..3 {
+        f.g.begin_turn();
+        assert_eq!(f.g.players[0].mana, 11, "a temp crystal on top of the base 10");
+    }
+    assert_eq!(f.g.players[0].pending.len(), 0, "spent after three turns");
+    f.g.begin_turn();
+    assert_eq!(f.g.players[0].mana, 10, "no more bonus on the fourth turn");
+}
+
+#[test]
+fn sigil_of_the_seas_summons_a_naga_next_turn_only() {
+    let mut f = Fix::new();
+    f.play("Sigil of the Seas", None);
+    assert_eq!(f.g.players[0].board.len(), 0, "no immediate summon");
+    f.g.begin_turn();
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!(f.mine(0).card.name(), "Naga Monstrosity");
+    assert_eq!((f.mine(0).atk, f.mine(0).health()), (3, 3));
+    assert!(f.mine(0).has(Keywords::TAUNT));
+    f.g.begin_turn();
+    assert_eq!(f.g.players[0].board.len(), 1, "one-shot: no second Naga");
+}
+
+#[test]
+fn rotten_apple_heals_now_and_hurts_for_the_next_two_turns() {
+    let mut f = Fix::new().deck(&["Wisp", "Wisp", "Wisp"]);
+    f.g.players[0].hero_hp = 10;
+    f.play("Rotten Apple", None);
+    assert_eq!(f.g.players[0].hero_hp, 22, "healed 12 immediately, no damage yet");
+    f.g.begin_turn();
+    assert_eq!(f.g.players[0].hero_hp, 19, "3 damage on the first of the next two turns");
+    f.g.begin_turn();
+    assert_eq!(f.g.players[0].hero_hp, 16, "and the second");
+    f.g.begin_turn();
+    assert_eq!(f.g.players[0].hero_hp, 16, "spent after two turns");
+}
+
+#[test]
+fn cult_neophyte_taxes_the_opponents_spells_on_their_own_next_turn_only() {
+    let mut f = Fix::new();
+    f.play("Cult Neophyte", None);
+    assert_eq!(f.g.players[1].spell_tax_pending, 1);
+    assert_eq!(f.g.players[1].spell_tax_active, 0, "not active yet");
+
+    f.g.current = FOE;
+    f.g.begin_turn();
+    assert_eq!(f.g.players[1].spell_tax_active, 1, "active on the opponent's own next turn");
+    let fireball = by_name("Fireball").unwrap();
+    f.g.players[1].hand.push(HandCard::new(fireball));
+    let idx = f.g.players[1].hand.len() - 1;
+    assert_eq!(f.g.card_cost(FOE, idx), fireball.def().cost + 1);
+
+    f.g.current = ME;
+    f.g.begin_turn();
+    f.g.current = FOE;
+    f.g.begin_turn();
+    assert_eq!(f.g.players[1].spell_tax_active, 0, "expired the turn after");
+}
+
+#[test]
+fn ursol_casts_its_priciest_untargeted_hand_spell_once() {
+    let mut f = Fix::new().deck(&["Wisp", "Wisp"]);
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Wisp").unwrap())); // filler, not a spell
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Arcane Intellect").unwrap())); // draw 2
+    f.play("Ursol", None);
+    assert_eq!(
+        f.g.players[0].hand.len(),
+        3,
+        "the Wisp filler plus the two cards Arcane Intellect drew"
+    );
+    assert!(
+        !f.g.players[0].hand.iter().any(|hc| hc.card.name() == "Arcane Intellect"),
+        "the chosen spell left the hand"
+    );
+}
+
+#[test]
+fn soulrest_ceremony_buffs_and_rushes_then_kills_them_at_end_of_turn() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]); // 4/5
+    f.play("Soulrest Ceremony", None);
+    assert_eq!(f.mine(0).atk, 5, "+1 attack");
+    assert!(f.mine(0).has(Keywords::RUSH));
+    assert_eq!(f.g.players[0].board.len(), 1, "still alive mid-turn");
+    f.g.end_turn();
+    assert_eq!(f.g.players[0].board.len(), 0, "dies at the end of the turn");
+}

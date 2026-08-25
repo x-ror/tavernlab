@@ -20,7 +20,7 @@ use super::{CardId, DEFS, INFO, Keywords, Races, token};
 use crate::effects::Area;
 use crate::events::{Event, Trigger};
 use crate::inline::Inline;
-use crate::state::{Game, Side, Target};
+use crate::state::{Flags, Game, Pending, PendingKind, Side, Target};
 
 /// What an effect is told about the circumstances it fires in.
 #[derive(Clone, Copy, Debug)]
@@ -316,6 +316,8 @@ mod tokens {
     pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
     /// Imp Gang Stooge's "8/8 Demon with Taunt and Lifesteal".
     pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
+    /// Sigil of the Seas' "3/3 Naga with Taunt".
+    pub const NAGA_MONSTROSITY: CardId = token("CATA_528t");
 
     /// The three Dreadseeds. Cards that summon "a random Dormant Dreadseed"
     /// roll one of these.
@@ -1729,14 +1731,16 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         g.draw_cards(c.side, 1);
     }),
     spell("Soulrest Ceremony", T::None, |g, c| {
-        // "They die at the end of your turn" is a delayed effect the engine
-        // cannot express, so only the buff half is implemented — a strictly
-        // weaker card, never a stronger one.
         let mut hits: Inline<Target, 9> = Inline::new();
         g.collect_area(c.side, Area::FriendlyMinions, &mut hits);
         for t in hits.iter() {
-            g.buff_temp_atk(*t, 1);
+            g.buff(*t, 1, 0);
             g.grant(*t, Keywords::RUSH);
+            if let Target::Minion(s, i) = *t
+                && let Some(m) = g.player_mut(s).board.get_mut(i as usize)
+            {
+                m.flags.insert(Flags::DOOMED);
+            }
         }
     }),
     spell("Cosmic Manifestations", T::AnyCharacter, |g, c| {
@@ -2197,6 +2201,69 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.give_card(c.side.other(), hc.card);
         }
     }),
+
+    // ------------------------------------------------------- phase 2, G1/G2
+    // docs/RUST_CARDS_PLAN.md §4 phase 2.
+    spell("Acceleration Aura", T::None, |g, c| {
+        g.player_mut(c.side).pending.push(Pending {
+            kind: PendingKind::TempCrystal,
+            turns_left: 3,
+            amount: 1,
+            card: CardId(0),
+        });
+    }),
+    spell("Sigil of the Seas", T::None, |g, c| {
+        g.player_mut(c.side).pending.push(Pending {
+            kind: PendingKind::SummonToken,
+            turns_left: 1,
+            amount: 0,
+            card: tokens::NAGA_MONSTROSITY,
+        });
+    }),
+    spell("Rotten Apple", T::None, |g, c| {
+        g.heal_hero(c.side, 12);
+        g.player_mut(c.side).pending.push(Pending {
+            kind: PendingKind::HeroDamage,
+            turns_left: 2,
+            amount: 3,
+            card: CardId(0),
+        });
+    }),
+    battlecry("Cult Neophyte", T::None, |g, c| {
+        g.player_mut(c.side.other()).spell_tax_pending += 1;
+    }),
+    // Approximate: casts the chosen spell once, immediately, rather than
+    // also recasting it at the start of the next two turns -- weaker, and
+    // recorded in APPROXIMATE.
+    battlecry("Ursol", T::None, |g, c| {
+        let chosen = g
+            .player(c.side)
+            .hand
+            .iter()
+            .enumerate()
+            .filter(|(_, hc)| {
+                hc.card.def().kind() == super::Kind::Spell
+                    && behaviour_of(hc.card).and_then(|b| b.spell).is_some()
+            })
+            .max_by_key(|(_, hc)| hc.card.def().cost)
+            .map(|(i, hc)| (i, hc.card));
+        if let Some((idx, card)) = chosen
+            && let Some(f) = behaviour_of(card).and_then(|b| b.spell)
+        {
+            g.player_mut(c.side).hand.remove(idx);
+            f(
+                g,
+                &Ctx {
+                    card,
+                    side: c.side,
+                    target: None,
+                    source: None,
+                    outcast: false,
+                    dying: None,
+                },
+            );
+        }
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -2222,10 +2289,6 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Falric",
         "the corpse-doubling clause needs a per-player multiplier the engine          does not have; only the draw is implemented",
-    ),
-    (
-        "Soulrest Ceremony",
-        "\"they die at the end of your turn\" is a delayed effect the engine          cannot express yet; only the buff is implemented",
     ),
     (
         "Endbringer Umbra",

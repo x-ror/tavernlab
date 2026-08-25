@@ -15,8 +15,8 @@ use crate::events::Event;
 use crate::inline::Inline;
 use crate::rng::Rand;
 use crate::state::{
-    Flags, Game, HandCard, MAX_BOARD, MAX_HAND, MAX_MANA, Outcome, Permanent, Player, Side,
-    TURN_LIMIT, Target, Weapon,
+    Flags, Game, HandCard, MAX_BOARD, MAX_HAND, MAX_MANA, Outcome, Pending, PendingKind, Permanent,
+    Player, Side, TURN_LIMIT, Target, Weapon,
 };
 
 /// The most actions a position can offer.
@@ -190,6 +190,9 @@ impl Game {
         if hc.card.def().kind() == Kind::Minion && hc.card.def().races.any(Races::BEAST) {
             cost -= self.player(side).next_beast_discount;
         }
+        if hc.card.def().kind() == Kind::Spell {
+            cost += self.player(side).spell_tax_active;
+        }
         cost.max(0)
     }
 
@@ -210,6 +213,11 @@ impl Game {
         p.cards_played_turn = 0;
         p.spells_cast_turn = 0;
         p.schools_cast_turn = 0;
+        // A tax queued for this turn becomes active for it; this also clears
+        // last turn's, since the promotion always overwrites regardless of
+        // whether anything queued a new one.
+        p.spell_tax_active = p.spell_tax_pending;
+        p.spell_tax_pending = 0;
         for m in p.board.iter_mut() {
             m.attacks_done = 0;
             m.flags.remove(Flags::JUST_SUMMONED);
@@ -225,9 +233,36 @@ impl Game {
                 }
             }
         }
+        // Tick every effect queued against this player's own turns: each
+        // fires once here, and stays queued (with one fewer turn left) if it
+        // is not yet spent. Collected first and fired after `p` is dropped,
+        // since firing needs the whole `Game` (summoning, damaging a hero).
+        let mut fired: Inline<Pending, 4> = Inline::new();
+        let mut remaining: Inline<Pending, 4> = Inline::new();
+        for entry in p.pending.iter().copied() {
+            fired.push(entry);
+            if entry.turns_left > 1 {
+                remaining.push(Pending {
+                    turns_left: entry.turns_left - 1,
+                    ..entry
+                });
+            }
+        }
+        p.pending = remaining;
+
         self.deaths_this_turn = 0;
         self.draw(side, 1);
         self.board_dirty = true;
+        for entry in fired.iter().copied() {
+            match entry.kind {
+                PendingKind::TempCrystal => self.gain_temp_mana(side, entry.amount),
+                PendingKind::SummonToken => {
+                    self.summon(side, entry.card);
+                }
+                PendingKind::HeroDamage => self.damage_hero(side, entry.amount),
+                PendingKind::None => {}
+            }
+        }
         self.fire(Event::TurnStart { side });
     }
 
@@ -248,6 +283,9 @@ impl Game {
             // Take back exactly what "this turn only" gave.
             m.atk -= m.temp_atk;
             m.temp_atk = 0;
+            if m.flags.has(Flags::DOOMED) {
+                m.flags.insert(Flags::PENDING_DESTROY);
+            }
         }
         if p.hero_froze_this_turn {
             p.hero_froze_this_turn = false;
