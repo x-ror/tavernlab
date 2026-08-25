@@ -334,6 +334,8 @@ mod tokens {
     /// identical text and stats, so any one id summoned four times behaves
     /// exactly like one of each.
     pub const WICKERFANGS_LEG: CardId = token("CATA_139t");
+    pub const CHARGED_HAND_OF_ALAKIR: CardId = token("CATA_153t");
+    pub const SINESTRAS_WING: CardId = token("CATA_154t");
     pub const GORISHI_STINGER: CardId = token("TLC_630t");
     /// Brood Keeper's "2/2 Sword". A weapon, so it never shows up through
     /// `summonable_children()`, which only ever returns minions.
@@ -2804,6 +2806,72 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.buff(c.me(), 1, 1);
         }
     }),
+    // Al'Akir's own text has no template gaps at all -- Colossal's summon,
+    // Rush and Windfury are ordinary keywords, and "this minion's Attack" is
+    // a live read of its own current stats, not a printed number. Only its
+    // two Charged Hands are blocked (their own Herald-scaled buff comes
+    // through with the amount stripped); those get the vanilla-body
+    // treatment below, same as Wickerfang's Legs would if their own ability
+    // were not implementable. See APPROXIMATE.
+    battlecry("Al'Akir, Lord of Storms", T::None, |g, c| {
+        g.summon_token(c.side, tokens::CHARGED_HAND_OF_ALAKIR, 2);
+        let Some(slot) = c.source else { return };
+        let atk = g.player(c.side).board[slot as usize].atk;
+        // `add_random_to_hand` takes a plain `fn` pointer, which cannot
+        // capture `atk`; inlined the same way it is implemented internally.
+        let pool =
+            crate::cards::discover_pool(|d| d.kind() == super::Kind::Minion && d.cost == atk);
+        for _ in 0..2 {
+            if pool.is_empty() {
+                break;
+            }
+            let pick = g.rngs.effects.index(pool.len());
+            let before = g.player(c.side).hand.len();
+            if g.give_card(c.side, pool[pick])
+                && let Some(hc) = g.player_mut(c.side).hand.get_mut(before)
+            {
+                hc.cost_delta = 1 - hc.card.def().cost;
+            }
+        }
+    }),
+    // "Adjacent minions have +{0} Attack" -- the buff amount is stripped at
+    // every Herald tier, not just the higher ones, so there is no floor
+    // value to fall back on the way Soldier of Al'Akir's own Herald-1 number
+    // was. Plays as a plain vanilla body. This row exists only so
+    // `is_implemented` sees it.
+    c(
+        "Charged Hand of Al'Akir",
+        T::None,
+        None, None, None, None, None, None, None, None, None,
+    ),
+    // Unlike Al'Akir, Sinestra's own text has nothing left to implement
+    // besides the Colossal summon: "Your spells from other classes cast
+    // twice" is engine-level special-casing in `Game::play_card`
+    // (`double_spell`), a live board check by name, the same shape as
+    // Naralex's aura and Mug's Magic's discount above.
+    battlecry("Sinestra", T::None, |g, c| {
+        g.summon_token(c.side, tokens::SINESTRAS_WING, 2);
+    }),
+    // "It costs ({0}) less" is template-stripped at every Herald tier, same
+    // as Charged Hand of Al'Akir; the discover itself is not blocked, so
+    // only the discount is dropped, leaving the spell at full price.
+    trigger("Sinestra's Wing", |g, c| {
+        if let Event::MinionSummoned { side, slot, .. } = c.event
+            && side == c.side
+            && slot == c.slot
+        {
+            let class = g.player(c.side).class;
+            let pool = crate::cards::discover_pool(|d| {
+                d.kind() == super::Kind::Spell
+                    && d.class() != super::Class::Neutral
+                    && d.class() != class
+            });
+            if !pool.is_empty() {
+                let pick = g.rngs.effects.index(pool.len());
+                g.give_card(c.side, pool[pick]);
+            }
+        }
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -2901,6 +2969,14 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Wickerfang",
         "\"after one of Wickerfang's Legs gains stats, this gains them too\" is not implemented; the main body stays at its own printed 0/5 while the four Legs still grow on their own",
+    ),
+    (
+        "Al'Akir, Lord of Storms",
+        "the two Charged Hands play as plain vanilla bodies; \"Adjacent minions have +{0} Attack\" is template-stripped at every Herald tier, with no floor value to fall back on",
+    ),
+    (
+        "Sinestra",
+        "each Wing's own Discover fires at full price; \"It costs ({0}) less\" is template-stripped at every Herald tier, with no floor value to fall back on",
     ),
 ];
 

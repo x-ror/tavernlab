@@ -8,7 +8,7 @@
 //! Each test builds a fixed position, plays exactly one card, and states what
 //! should have changed.
 
-use tavernlab_core::cards::{Class, Keywords, behaviour_of, by_name};
+use tavernlab_core::cards::{Class, Keywords, Kind, behaviour_of, by_name};
 use tavernlab_core::game::{Action, Agent};
 use tavernlab_core::state::{Flags, Game, HandCard, MAX_HAND, Permanent, Side, Target};
 
@@ -3425,4 +3425,76 @@ fn wickerfang_summons_four_legs_that_grow_on_their_own() {
         f.g.players[0].board[0].atk, 0,
         "the main body does not inherit it -- the approximation this session made"
     );
+}
+
+#[test]
+fn alakir_summons_two_charged_hands_and_gets_two_matching_cost_minions() {
+    let mut f = Fix::new();
+    f.play("Al'Akir, Lord of Storms", None);
+    assert_eq!(
+        f.g.players[0].board.len(),
+        3,
+        "the body plus two Charged Hands"
+    );
+    for slot in 1..3 {
+        assert_eq!(f.mine(slot).card.name(), "Charged Hand of Al'Akir");
+    }
+    assert_eq!(
+        f.g.players[0].hand.len(),
+        2,
+        "two minions matching its Attack"
+    );
+    for hc in f.g.players[0].hand.iter() {
+        assert_eq!(
+            hc.card.def().cost,
+            2,
+            "matches Al'Akir's own printed Attack"
+        );
+        assert_eq!(
+            hc.card.def().cost + hc.cost_delta,
+            1,
+            "discounted to a flat 1"
+        );
+    }
+}
+
+#[test]
+fn sinestra_summons_two_wings_that_each_discover_an_off_class_spell() {
+    let mut f = Fix::new(); // Mage
+    f.play("Sinestra", None);
+    assert_eq!(f.g.players[0].board.len(), 3, "the body plus two Wings");
+    for slot in 1..3 {
+        assert_eq!(f.mine(slot).card.name(), "Sinestra's Wing");
+    }
+    assert_eq!(
+        f.g.players[0].hand.len(),
+        2,
+        "each Wing discovered an off-class spell"
+    );
+    for hc in f.g.players[0].hand.iter() {
+        let d = hc.card.def();
+        assert_eq!(d.kind(), Kind::Spell);
+        assert_ne!(d.class(), Class::Mage);
+        assert_ne!(d.class(), Class::Neutral);
+    }
+}
+
+#[test]
+fn sinestra_casts_a_spell_from_another_class_twice_but_not_her_own() {
+    let mut f = Fix::new().deck(&["Chillwind Yeti", "Chillwind Yeti"]); // Mage
+    f.g.players[0]
+        .board
+        .push(Permanent::summon(by_name("Sinestra").unwrap()));
+
+    f.g.players[0].armor = 0;
+    f.play("Shield Block", None); // a Warrior spell -- another class
+    assert_eq!(f.g.players[0].armor, 10, "doubled: 5 armor twice");
+    assert_eq!(f.g.players[0].hand.len(), 2, "doubled: drew twice");
+
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.g.players[0]
+        .board
+        .push(Permanent::summon(by_name("Sinestra").unwrap()));
+    f.play("Fireball", foe_minion(0)); // Mage's own spell -- not doubled
+    assert_eq!(f.theirs(0).health(), 1, "6 damage once, not twice");
 }

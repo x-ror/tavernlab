@@ -1035,6 +1035,16 @@ impl Game {
         let double_battlecry = def.kind() == Kind::Minion
             && self.player(side).hero_power.name() == "Zee's Might"
             && self.player(side).minions_played_total % 5 == 0;
+        // Sinestra: a spell from a class other than the caster's own casts
+        // twice. Read the same way, before either effect below resolves.
+        let double_spell = def.kind() == Kind::Spell
+            && def.class() != Class::Neutral
+            && def.class() != self.player(side).class
+            && self
+                .player(side)
+                .board
+                .iter()
+                .any(|m| m.card.name() == "Sinestra");
 
         if let Some(mode) = chosen {
             let ctx = Ctx {
@@ -1057,6 +1067,9 @@ impl Game {
                 self.countered = false;
                 if !countered {
                     (mode.effect)(self, &ctx);
+                    if double_spell {
+                        (mode.effect)(self, &ctx);
+                    }
                 }
             } else {
                 (mode.effect)(self, &ctx);
@@ -1088,6 +1101,9 @@ impl Game {
                     && !countered
                 {
                     f(self, &ctx);
+                    if double_spell {
+                        f(self, &ctx);
+                    }
                 }
             } else if let Some(f) = b.battlecry {
                 f(self, &ctx);
