@@ -330,6 +330,10 @@ mod tokens {
     pub const MUGS_MAGIC: CardId = token("JAIL_800hp1");
     pub const ZEES_MIGHT: CardId = token("JAIL_800hp2");
     pub const NESPIRAH_UNSHACKLED: CardId = token("CATA_527t2");
+    /// One of Wickerfang's four Legs (CATA_139t..t4); all four print
+    /// identical text and stats, so any one id summoned four times behaves
+    /// exactly like one of each.
+    pub const WICKERFANGS_LEG: CardId = token("CATA_139t");
     pub const GORISHI_STINGER: CardId = token("TLC_630t");
     /// Brood Keeper's "2/2 Sword". A weapon, so it never shows up through
     /// `summonable_children()`, which only ever returns minions.
@@ -2786,6 +2790,20 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             }
         }
     }),
+    // Colossal's own appendage-summon has no dedicated hook, so this reuses
+    // `battlecry` for it -- mechanically identical to a Battlecry, whatever
+    // the card calls it. "This gains them too" (the Legs' growth mirrored
+    // onto the main body) is not implemented: the body stays at its own
+    // printed 0/5 forever, weaker than the real card in every game, never
+    // stronger. See APPROXIMATE.
+    battlecry("Wickerfang", T::None, |g, c| {
+        g.summon_token(c.side, tokens::WICKERFANGS_LEG, 4);
+    }),
+    trigger("Wickerfang's Leg", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            g.buff(c.me(), 1, 1);
+        }
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -2879,6 +2897,10 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Mirrex, the Crystalline",
         "plays as its own plain 3/4 Beast/Elemental; \"is a copy of the last enemy minion played\" while in hand is not implemented -- whether that copies the minion's abilities or only its name is not resolvable from the corpus text alone",
+    ),
+    (
+        "Wickerfang",
+        "\"after one of Wickerfang's Legs gains stats, this gains them too\" is not implemented; the main body stays at its own printed 0/5 while the four Legs still grow on their own",
     ),
 ];
 
@@ -3089,9 +3111,11 @@ mod tests {
                 // corpus tags the first two as mechanics; Kindred exists only
                 // in the text, so that one is matched there.
                 let d = card.def();
-                // Battlecry, Combo, Kindred and "When summoned" all resolve
-                // as the card enters play. The corpus tags the first two as
-                // mechanics; the others exist only in the text.
+                // Battlecry, Combo, Kindred, "When summoned" and Colossal all
+                // resolve as the card enters play. The corpus tags the first
+                // two as mechanics; the others exist only in the text --
+                // Colossal has no `Keywords` constant of its own (G4 is not
+                // otherwise built), so it is matched the same way.
                 let text = card.info().text;
                 assert!(
                     d.keywords.has(Keywords::BATTLECRY)
@@ -3100,7 +3124,8 @@ mod tests {
                         // hook under a different printed name.
                         || d.keywords.has(Keywords::OUTCAST)
                         || text.contains("Kindred")
-                        || text.contains("When summoned"),
+                        || text.contains("When summoned")
+                        || text.contains("Colossal"),
                     "{} has a play effect the card text does not mention",
                     b.name
                 );

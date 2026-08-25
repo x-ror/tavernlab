@@ -3403,3 +3403,26 @@ fn irida_sinseeker_draws_two_from_the_void_each_turn() {
         "2 from the Void plus the guaranteed draw"
     );
 }
+
+#[test]
+fn wickerfang_summons_four_legs_that_grow_on_their_own() {
+    let mut f = Fix::new();
+    f.play("Wickerfang", None);
+    assert_eq!(f.g.players[0].board.len(), 5, "the body plus four Legs");
+    assert_eq!(f.mine(0).atk, 0, "the main body's own printed stats");
+    assert_eq!(f.mine(0).max_hp, 5);
+    for slot in 1..5 {
+        assert_eq!(f.mine(slot).card.name(), "Wickerfang's Leg");
+        assert_eq!((f.mine(slot).atk, f.mine(slot).max_hp), (0, 2));
+    }
+
+    f.g.end_turn();
+    assert_eq!(
+        f.g.players[0].board[1].atk, 1,
+        "a Leg grew on its own turn's end"
+    );
+    assert_eq!(
+        f.g.players[0].board[0].atk, 0,
+        "the main body does not inherit it -- the approximation this session made"
+    );
+}
