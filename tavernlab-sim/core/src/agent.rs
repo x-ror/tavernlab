@@ -132,7 +132,7 @@ impl Scripted {
 
             // Worth doing with leftover mana, never worth doing instead of
             // developing the board.
-            Action::HeroPower { target } => {
+            Action::HeroPower { target, .. } => {
                 let mut s = 5.0;
                 if let Some(Target::Minion(s_side, i)) = target {
                     // Only point damage at something it can finish.
@@ -347,6 +347,7 @@ mod tests {
         let a = Scripted::new(Style::Midrange);
         let own = Action::HeroPower {
             target: Some(Target::Minion(Side::Player0, 0)),
+            second: false,
         };
         assert!(a.score(&g, own) < a.score(&g, Action::EndTurn));
     }

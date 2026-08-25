@@ -359,6 +359,8 @@ mod tokens {
     pub const EGG_OF_KHELOS_4: CardId = token("DINO_410t4");
     pub const EGG_OF_KHELOS_5: CardId = token("DINO_410t5");
     pub const KHELOS: CardId = token("DINO_410t");
+    /// Blood Doctor Thal'ena's granted second Hero Power.
+    pub const VAMPYRS_KISS: CardId = token("JAIL_446hp");
 
     /// The three Dreadseeds. Cards that summon "a random Dormant Dreadseed"
     /// roll one of these.
@@ -2553,6 +2555,9 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         T::None,
         None, None, None, None, None, None, None, None, None,
     ),
+    battlecry("Blood Doctor Thal'ena", T::None, |g, c| {
+        g.player_mut(c.side).second_hero_power = Some(tokens::VAMPYRS_KISS);
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.

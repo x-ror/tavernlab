@@ -419,6 +419,11 @@ pub struct Player {
     pub played_races_last: Races,
     pub hero_power: CardId,
     pub hero_power_uses: u8,
+    /// A second, independent Hero Power granted on top of the class one
+    /// (Blood Doctor Thal'ena) -- both are usable the same turn, each once,
+    /// tracked separately.
+    pub second_hero_power: Option<CardId>,
+    pub second_hero_power_uses: u8,
     /// Extra cost on this player's own spells, active for the rest of this
     /// turn only (Cult Neophyte, set on the *target*). Promoted from
     /// `spell_tax_pending` at the start of the turn it applies to, and
@@ -473,6 +478,8 @@ impl Player {
             played_races_last: Races::NONE,
             hero_power,
             hero_power_uses: 0,
+            second_hero_power: None,
+            second_hero_power_uses: 0,
             spell_tax_active: 0,
             spell_tax_pending: 0,
             pending: Inline::new(),

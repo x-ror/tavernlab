@@ -2844,6 +2844,31 @@ fn reanimated_pterrordax_is_unplayable_without_enough_corpses() {
 }
 
 #[test]
+fn blood_doctor_thalena_grants_an_independent_second_hero_power() {
+    let mut f = Fix::new().board(ME, &["Wisp"]);
+    f.play("Blood Doctor Thal'ena", None);
+    assert_eq!(
+        f.g.players[0].second_hero_power,
+        Some(by_name("Vampyr's Kiss").unwrap())
+    );
+
+    // The class hero power (Fireblast, Mage) still works independently.
+    assert!(f.g.apply(Action::HeroPower {
+        target: Some(Target::Hero(FOE)),
+        second: false,
+    }));
+    assert_eq!(f.g.players[1].hero_hp, 29);
+
+    f.g.players[0].corpses = 3;
+    assert!(f.g.apply(Action::HeroPower {
+        target: my_minion(0),
+        second: true,
+    }));
+    assert_eq!(f.g.players[0].corpses, 0, "paid in Corpses, not Mana");
+    assert_eq!(f.mine(0).atk, 4, "+3 Attack from Vampyr's Kiss");
+}
+
+#[test]
 fn unshackle_soul_costs_one_after_playing_an_opponents_card() {
     let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
     let unshackle = by_name("Unshackle Soul").unwrap();

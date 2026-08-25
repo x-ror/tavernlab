@@ -49,6 +49,9 @@ pub enum Action {
     },
     HeroPower {
         target: Option<Target>,
+        /// Use the second Hero Power (Blood Doctor Thal'ena) rather than the
+        /// class one. Always `false` for a player with no second power.
+        second: bool,
     },
     /// Activate a Location in board slot `slot`.
     UseLocation {
@@ -256,6 +259,7 @@ impl Game {
         p.overload_next = 0;
         p.mana = (p.crystals - p.overload_now).max(0);
         p.hero_power_uses = 0;
+        p.second_hero_power_uses = 0;
         p.hero_attacks_done = 0;
         p.hero_bonus_atk = 0;
         p.cards_played_turn = 0;
@@ -621,14 +625,48 @@ impl Game {
         }
 
         // --- hero power
-        if me.hero_power_uses == 0 && me.mana >= me.hero_power.def().cost {
+        let affordable = |hp: CardId| {
+            if pays_with_corpses(hp) {
+                me.corpses >= hp.def().cost
+            } else {
+                me.mana >= hp.def().cost
+            }
+        };
+        if me.hero_power_uses == 0 && affordable(me.hero_power) {
             match hero_power_target(me.hero_power) {
                 HpTarget::None => {
-                    out.push(Action::HeroPower { target: None });
+                    out.push(Action::HeroPower {
+                        target: None,
+                        second: false,
+                    });
                 }
                 HpTarget::Any => {
                     for t in self.targetable(true) {
-                        out.push(Action::HeroPower { target: Some(t) });
+                        out.push(Action::HeroPower {
+                            target: Some(t),
+                            second: false,
+                        });
+                    }
+                }
+            }
+        }
+        if let Some(hp2) = me.second_hero_power
+            && me.second_hero_power_uses == 0
+            && affordable(hp2)
+        {
+            match hero_power_target(hp2) {
+                HpTarget::None => {
+                    out.push(Action::HeroPower {
+                        target: None,
+                        second: true,
+                    });
+                }
+                HpTarget::Any => {
+                    for t in self.targetable(true) {
+                        out.push(Action::HeroPower {
+                            target: Some(t),
+                            second: true,
+                        });
                     }
                 }
             }
@@ -707,7 +745,7 @@ impl Game {
             } => self.play_card(hand as usize, target, position, choice),
             Action::Attack { from, target } => self.attack_with(Some(from as usize), target),
             Action::HeroAttack { target } => self.attack_with(None, target),
-            Action::HeroPower { target } => self.use_hero_power(target),
+            Action::HeroPower { target, second } => self.use_hero_power(target, second),
             Action::UseLocation { slot, target } => self.use_location(slot as usize, target),
             Action::Prepare { hand } => self.prepare_card(hand as usize),
             Action::EndTurn => true,
@@ -1510,20 +1548,47 @@ impl Game {
 
     // ---------------------------------------------------------- hero power
 
-    fn use_hero_power(&mut self, target: Option<Target>) -> bool {
+    fn use_hero_power(&mut self, target: Option<Target>, second: bool) -> bool {
         let side = self.current;
         let me = self.player(side);
-        let hp = me.hero_power;
+        let Some(hp) = (if second {
+            me.second_hero_power
+        } else {
+            Some(me.hero_power)
+        }) else {
+            return false;
+        };
         let cost = hp.def().cost;
-        if me.hero_power_uses > 0 || me.mana < cost {
+        let uses = if second {
+            me.second_hero_power_uses
+        } else {
+            me.hero_power_uses
+        };
+        if uses > 0 {
+            return false;
+        }
+        let corpse_paid = pays_with_corpses(hp);
+        if corpse_paid {
+            if me.corpses < cost {
+                return false;
+            }
+        } else if me.mana < cost {
             return false;
         }
         if hero_power_target(hp) == HpTarget::Any && target.is_none() {
             return false;
         }
+        if corpse_paid {
+            self.spend_corpses(side, cost);
+        } else {
+            self.player_mut(side).mana -= cost;
+        }
         let p = self.player_mut(side);
-        p.mana -= cost;
-        p.hero_power_uses += 1;
+        if second {
+            p.second_hero_power_uses += 1;
+        } else {
+            p.hero_power_uses += 1;
+        }
 
         let foe = side.other();
         match hp.info().name {
@@ -1565,6 +1630,11 @@ impl Game {
                     self.summon(side, c);
                 }
                 self.damage_hero(side, 1);
+            }
+            "Vampyr's Kiss" => {
+                if let Some(t) = target {
+                    self.buff(t, 3, 0);
+                }
             }
             _ => {}
         }
@@ -1669,10 +1739,11 @@ fn hero_power_target(hp: CardId) -> HpTarget {
 }
 
 /// Whether `card` is paid for with Corpses instead of Mana (Reanimated
-/// Pterrordax). The amount is the card's own printed cost, same number,
-/// different resource, so nothing else needs to know "how many".
+/// Pterrordax; Blood Doctor Thal'ena's granted second Hero Power, Vampyr's
+/// Kiss). The amount is the card's own printed cost, same number, different
+/// resource, so nothing else needs to know "how many".
 fn pays_with_corpses(card: CardId) -> bool {
-    card.name() == "Reanimated Pterrordax"
+    matches!(card.name(), "Reanimated Pterrordax" | "Vampyr's Kiss")
 }
 
 /// The basic hero power for a class.

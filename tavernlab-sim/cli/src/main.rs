@@ -311,9 +311,10 @@ fn describe(g: &Game, a: tavernlab_core::game::Action) -> String {
                 .unwrap_or("?");
             format!("prepare {c}")
         }
-        HeroPower { target } => {
+        HeroPower { target, second } => {
             format!(
-                "hero power{}",
+                "hero power{}{}",
+                if second { " (2nd)" } else { "" },
                 target
                     .map(|t| format!(" -> {}", name(t)))
                     .unwrap_or_default()
