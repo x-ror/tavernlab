@@ -15,8 +15,8 @@ use crate::events::Event;
 use crate::inline::Inline;
 use crate::rng::Rand;
 use crate::state::{
-    Flags, Game, HandCard, MAX_BOARD, MAX_HAND, MAX_MANA, Marks, Outcome, Pending, PendingKind,
-    Permanent, Player, Side, TURN_LIMIT, Target, Weapon,
+    Flags, Game, HandCard, MAX_BOARD, MAX_DECK, MAX_HAND, MAX_MANA, Marks, Outcome, Pending,
+    PendingKind, Permanent, Player, Side, TURN_LIMIT, Target, Weapon,
 };
 
 /// The most actions a position can offer.
@@ -122,10 +122,50 @@ impl Game {
             self.mulligan(side, n, agents[side.index()]);
         }
 
+        self.fire_start_of_game();
+
         // The Coin goes to whoever is on the draw.
         if let Some(coin) = by_name("The Coin") {
             let p = self.player_mut(first.other());
             p.hand.push(HandCard::new(coin));
+        }
+    }
+
+    /// Fire every Start of Game effect, for every copy in a player's opening
+    /// hand or deck.
+    ///
+    /// Both sides are snapshotted before any of them run, so an effect that
+    /// moves a card into the opponent's deck (King Llane) cannot cause it to
+    /// be discovered and fired a second time by that opponent's own scan.
+    fn fire_start_of_game(&mut self) {
+        let mut queued: Inline<(Side, CardId), { 2 * (MAX_HAND + MAX_DECK) }> = Inline::new();
+        for side in [Side::Player0, Side::Player1] {
+            for hc in self.player(side).hand.iter() {
+                if behaviour_of(hc.card).and_then(|b| b.start_of_game).is_some() {
+                    queued.push((side, hc.card));
+                }
+            }
+            for &card in self.player(side).deck.iter() {
+                if behaviour_of(card).and_then(|b| b.start_of_game).is_some() {
+                    queued.push((side, card));
+                }
+            }
+        }
+        for (side, card) in queued.iter().copied() {
+            if let Some(f) = behaviour_of(card).and_then(|b| b.start_of_game) {
+                f(
+                    self,
+                    &Ctx {
+                        card,
+                        side,
+                        target: None,
+                        source: None,
+                        outcast: false,
+                        dying: None,
+                        marks: Marks::NONE,
+                    },
+                );
+            }
         }
     }
 
@@ -1319,7 +1359,7 @@ impl Game {
         }
     }
 
-    fn check_over(&mut self) {
+    pub(crate) fn check_over(&mut self) {
         if self.outcome.is_some() {
             return;
         }

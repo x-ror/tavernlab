@@ -970,6 +970,15 @@ impl Game {
         self.player_mut(side).deck.insert(0, card)
     }
 
+    /// Shuffle `side`'s deck in place -- for a card that adds copies to it
+    /// and must not leave them all sitting on top, drawn before anything
+    /// already there.
+    pub fn shuffle_deck(&mut self, side: Side) {
+        let mut deck = self.player(side).deck;
+        self.rngs.library[side.index()].shuffle(deck.as_mut_slice());
+        self.player_mut(side).deck = deck;
+    }
+
     /// Shuffle a card into `side`'s deck at a random position. Distinct from
     /// [`Game::put_on_bottom`]: "shuffle into your deck" can land anywhere,
     /// not always last.

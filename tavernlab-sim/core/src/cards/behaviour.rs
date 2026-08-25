@@ -20,7 +20,7 @@ use super::{CardId, DEFS, INFO, Keywords, Races, token};
 use crate::effects::Area;
 use crate::events::{Event, Trigger};
 use crate::inline::Inline;
-use crate::state::{Flags, Game, Marks, Pending, PendingKind, Side, Target};
+use crate::state::{Flags, Game, MAX_DECK, Marks, Pending, PendingKind, Side, Target};
 
 /// What an effect is told about the circumstances it fires in.
 #[derive(Clone, Copy, Debug)]
@@ -175,6 +175,11 @@ pub struct Behaviour {
     /// `battlecry`, and each mode brings its own target requirement — the two
     /// halves of a Choose One rarely want the same thing pointed at.
     pub choose: Option<&'static [Mode]>,
+    /// Fires once per game, for every copy found in a player's opening hand
+    /// or deck, after both mulligans and before the Coin is handed out (see
+    /// `Game::start`). No target, no board slot -- a Start of Game card need
+    /// not even be on the board yet.
+    pub start_of_game: Option<Effect>,
 }
 
 /// A dynamic cost adjustment: `(game, controller, hand index) -> mana delta`.
@@ -229,6 +234,7 @@ const fn c(
     secret: Option<Secret>,
     choose: Option<&'static [Mode]>,
     cost_delta: Option<CostFn>,
+    start_of_game: Option<Effect>,
 ) -> Behaviour {
     Behaviour {
         name,
@@ -241,17 +247,18 @@ const fn c(
         secret,
         choose,
         cost_delta,
+        start_of_game,
     }
 }
 
 const fn spell(name: &'static str, target: TargetSpec, f: Effect) -> Behaviour {
-    c(name, target, Some(f), None, None, None, None, None, None, None)
+    c(name, target, Some(f), None, None, None, None, None, None, None, None)
 }
 const fn battlecry(name: &'static str, target: TargetSpec, f: Effect) -> Behaviour {
-    c(name, target, None, Some(f), None, None, None, None, None, None)
+    c(name, target, None, Some(f), None, None, None, None, None, None, None)
 }
 const fn deathrattle(name: &'static str, f: Effect) -> Behaviour {
-    c(name, TargetSpec::None, None, None, Some(f), None, None, None, None, None)
+    c(name, TargetSpec::None, None, None, Some(f), None, None, None, None, None, None)
 }
 /// A Choose One card.
 const fn choose(name: &'static str, modes: &'static [Mode]) -> Behaviour {
@@ -266,19 +273,24 @@ const fn choose(name: &'static str, modes: &'static [Mode]) -> Behaviour {
         None,
         Some(modes),
         None,
+        None,
     )
 }
 /// A secret.
 const fn secret(name: &'static str, f: Secret) -> Behaviour {
-    c(name, TargetSpec::None, None, None, None, None, None, Some(f), None, None)
+    c(name, TargetSpec::None, None, None, None, None, None, Some(f), None, None, None)
 }
 /// A card whose only behaviour is a continuous effect on other minions.
 const fn aura(name: &'static str, f: Aura) -> Behaviour {
-    c(name, TargetSpec::None, None, None, None, None, Some(f), None, None, None)
+    c(name, TargetSpec::None, None, None, None, None, Some(f), None, None, None, None)
 }
 /// A card whose only behaviour is reacting to events.
 const fn trigger(name: &'static str, f: Trigger) -> Behaviour {
-    c(name, TargetSpec::None, None, None, None, Some(f), None, None, None, None)
+    c(name, TargetSpec::None, None, None, None, Some(f), None, None, None, None, None)
+}
+/// A card whose only behaviour fires once at the start of the game.
+const fn start_of_game(name: &'static str, f: Effect) -> Behaviour {
+    c(name, TargetSpec::None, None, None, None, None, None, None, None, None, Some(f))
 }
 /// Every token this table names, resolved at compile time.
 ///
@@ -1098,6 +1110,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         None,
         None,
         None,
+        None,
     ),
     battlecry("The Curator", T::None, |g, c| {
         g.draw_matching(c.side, |d| d.races.any(Races::BEAST));
@@ -1345,6 +1358,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         None, None, None, None, None, None,
         // "Costs (1) less for each card in your hand" — itself excluded.
         Some(|g, side, _i| -(g.hand_size(side) - 1).max(0)),
+        None,
     ),
     c(
         "Prescient Slitherdrake",
@@ -1361,12 +1375,14 @@ pub static BEHAVIOURS: &[Behaviour] = &[
                 .count();
             if others > 0 { -3 } else { 0 }
         }),
+        None,
     ),
     c(
         "Pterrorwing Ravager",
         T::None,
         None, None, None, None, None, None, None,
         Some(|g, side, _i| if g.kindred(side, Races::DRAGON) { -2 } else { 0 }),
+        None,
     ),
 
     // ------------------------------------------------------ small mechanics
@@ -1533,6 +1549,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         // "Costs (1) less for each minion that died this turn" — read live, so
         // it tracks a board wipe that happened moments ago.
         Some(|g, _side, _i| -(g.deaths_this_turn as i16)),
+        None,
     ),
 
     // -------------------------------------------------------------- herald
@@ -1546,7 +1563,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         None,
         Some(|g, c| g.herald(c.side)),
         Some(|g, c| g.heal_hero(c.side, 3)),
-        None, None, None, None, None,
+        None, None, None, None, None, None,
     ),
     deathrattle("Maniacal Follower", |g, c| g.herald(c.side)),
     spell("Rite of Twilight", T::None, |g, c| {
@@ -1642,6 +1659,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             let outcast = i == 0 || i + 1 == n;
             if outcast { 1 - 3 } else { 0 }
         }),
+        None,
     ),
     battlecry("Medivh the Hallowed", T::None, |g, c| {
         // "Silence and destroy all other minions" — itself excluded.
@@ -1715,7 +1733,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
                 }
             }
         }),
-        None, None, None, None, None, None, None,
+        None, None, None, None, None, None, None, None,
     ),
     spell("Wound Prey", T::AnyCharacter, |g, c| {
         g.spell_damage(c.side, c.target, 1);
@@ -1773,7 +1791,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
                 g.player_mut(c.side).hand.remove(idx);
             }
         }),
-        None, None, None, None, None,
+        None, None, None, None, None, None,
     ),
     spell("Ebb and Flow", T::AnyCharacter, |g, c| {
         g.spell_damage(c.side, c.target, 3);
@@ -1805,6 +1823,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
                 0
             }
         }),
+        None,
     ),
     spell("Cosmic Manifestations", T::AnyCharacter, |g, c| {
         for _ in 0..1 + c.outcast as u8 {
@@ -2102,7 +2121,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
                 m.growth = m.growth.saturating_add(1);
             }
         }),
-        None, None, None, None,
+        None, None, None, None, None,
     ),
     deathrattle("Soothsayer", |g, c| {
         g.heal_hero(c.side, 6);
@@ -2134,7 +2153,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.spell_damage_area(c.side, Area::EnemyMinions, 1);
             g.draw_cards(c.side, 1);
         }),
-        None, None, None, None, None,
+        None, None, None, None, None, None,
     ),
     battlecry("Agent of the Old Ones", T::None, |g, c| {
         let worst = g
@@ -2329,6 +2348,57 @@ pub static BEHAVIOURS: &[Behaviour] = &[
                     marks: Marks::NONE,
                 },
             );
+        }
+    }),
+
+    // -------------------------------------------------------- phase 3, G5
+    // Start of Game: docs/RUST_CARDS_PLAN.md §4 phase 4 (G5).
+    start_of_game("Chainbreaker Hogger", |g, c| {
+        let mut extra: Inline<CardId, MAX_DECK> = Inline::new();
+        for &card in g.player(c.side).deck.iter() {
+            if card != c.card && card.def().rarity() == super::Rarity::Legendary {
+                extra.push(card);
+            }
+        }
+        for card in extra.iter() {
+            g.player_mut(c.side).deck.push(*card);
+        }
+        g.shuffle_deck(c.side);
+    }),
+    // King Llane plants itself in the *opponent's* deck at Start of Game, so
+    // Garona Halforcen's "if your opponent is holding King Llane" can ever
+    // be true; its battlecry then returns it to whichever deck it is drawn
+    // from, which by then is normally the opponent's.
+    c(
+        "King Llane",
+        T::None,
+        None,
+        Some(|g, c| {
+            g.draw_cards(c.side, 1);
+            g.player_mut(c.side).deck.push(c.card);
+            g.shuffle_deck(c.side);
+        }),
+        None, None, None, None, None, None,
+        Some(|g, c| {
+            let foe = c.side.other();
+            if let Some(idx) = g.player(c.side).deck.position(&c.card) {
+                g.player_mut(c.side).deck.remove(idx);
+                g.player_mut(foe).deck.push(c.card);
+                g.shuffle_deck(foe);
+            }
+        }),
+    ),
+    battlecry("Garona Halforcen", T::None, |g, c| {
+        let foe = c.side.other();
+        if let Some(idx) = g
+            .player(foe)
+            .hand
+            .iter()
+            .position(|hc| hc.card.name() == "King Llane")
+        {
+            g.player_mut(foe).hand.remove(idx);
+            g.player_mut(foe).hero_hp /= 2;
+            g.check_over();
         }
     }),
 ];

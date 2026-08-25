@@ -2608,6 +2608,85 @@ fn mind_sweeper_deals_damage_after_playing_an_opponents_card() {
 }
 
 #[test]
+fn chainbreaker_hogger_duplicates_other_legendaries_at_start_of_game() {
+    use tavernlab_core::agent::{Scripted, Style};
+    use tavernlab_core::cards::Rarity;
+
+    let hogger = by_name("Chainbreaker Hogger").unwrap();
+    let leg = tavernlab_core::cards::all()
+        .find(|c| c.def().rarity() == Rarity::Legendary && c.def().collectible && *c != hogger)
+        .expect("the corpus has another Legendary");
+    let filler = by_name("Wisp").unwrap();
+    let mut deck = vec![hogger, leg];
+    deck.resize(30, filler);
+
+    let mut g = Game::new((Class::Warrior, &deck), (Class::Warrior, &deck), 1).unwrap();
+    let mut a = Scripted::new(Style::Midrange);
+    let mut b = Scripted::new(Style::Midrange);
+    let mut agents: [&mut dyn Agent; 2] = [&mut a, &mut b];
+    g.start(Side::Player0, &mut agents);
+
+    let count = g.players[0].deck.iter().filter(|&&c| c == leg).count()
+        + g.players[0].hand.iter().filter(|hc| hc.card == leg).count();
+    assert_eq!(count, 2, "the other Legendary should now appear twice total");
+}
+
+#[test]
+fn king_llane_hides_in_the_opponents_deck_at_start_of_game() {
+    use tavernlab_core::agent::{Scripted, Style};
+
+    let llane = by_name("King Llane").unwrap();
+    let filler = by_name("Wisp").unwrap();
+    let mut deck = vec![llane];
+    deck.resize(30, filler);
+    let empty_deck = vec![filler; 30];
+
+    let mut g = Game::new((Class::Rogue, &deck), (Class::Mage, &empty_deck), 1).unwrap();
+    let mut a = Scripted::new(Style::Midrange);
+    let mut b = Scripted::new(Style::Midrange);
+    let mut agents: [&mut dyn Agent; 2] = [&mut a, &mut b];
+    g.start(Side::Player0, &mut agents);
+
+    let mine = g.players[0].deck.iter().filter(|&&c| c == llane).count()
+        + g.players[0].hand.iter().filter(|hc| hc.card == llane).count();
+    let theirs = g.players[1].deck.iter().filter(|&&c| c == llane).count()
+        + g.players[1].hand.iter().filter(|hc| hc.card == llane).count();
+    assert_eq!(mine, 0, "no longer anywhere in its owner's zones");
+    assert_eq!(theirs, 1, "planted in the opponent's deck instead");
+}
+
+#[test]
+fn king_llane_battlecry_draws_and_shuffles_itself_back() {
+    let mut f = Fix::new().deck(&["Wisp"]);
+    f.play("King Llane", None);
+    assert_eq!(f.g.players[0].hand.len(), 1, "drew the Wisp");
+    assert!(
+        f.g.players[0].deck.iter().any(|&c| c.name() == "King Llane"),
+        "shuffled itself back into the deck it was played from"
+    );
+}
+
+#[test]
+fn garona_halforcen_destroys_king_llane_and_halves_health_if_opponent_holds_it() {
+    let mut f = Fix::new();
+    f.g.players[1]
+        .hand
+        .push(HandCard::new(by_name("King Llane").unwrap()));
+    f.g.players[1].hero_hp = 21;
+    f.play("Garona Halforcen", None);
+    assert!(!f.g.players[1].hand.iter().any(|hc| hc.card.name() == "King Llane"));
+    assert_eq!(f.g.players[1].hero_hp, 10, "halved, rounding down");
+}
+
+#[test]
+fn garona_halforcen_does_nothing_without_king_llane() {
+    let mut f = Fix::new();
+    f.g.players[1].hero_hp = 21;
+    f.play("Garona Halforcen", None);
+    assert_eq!(f.g.players[1].hero_hp, 21);
+}
+
+#[test]
 fn unshackle_soul_costs_one_after_playing_an_opponents_card() {
     let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
     let unshackle = by_name("Unshackle Soul").unwrap();
