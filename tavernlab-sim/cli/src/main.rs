@@ -1,0 +1,409 @@
+//! `tavernsim` — the batch simulator.
+//!
+//! Commands:
+//!
+//! ```text
+//! tavernsim bench [games] [threads]   throughput against a fixed mirror match
+//! tavernsim matrix [games]            every class against every class
+//! tavernsim demo [seed]               one game, turn by turn
+//! tavernsim coverage                  how much of the card pool is implemented
+//! ```
+
+use std::time::Instant;
+
+use tavernlab_core::agent::{Scripted, Style};
+use tavernlab_core::batch::{Contender, play_batch, play_batch_parallel, seeds};
+use tavernlab_core::cards::{Class, Formats, PLAYABLE_CLASSES};
+use tavernlab_core::deck::curve_deck;
+use tavernlab_core::game::Agent;
+use tavernlab_core::inline::Inline;
+use tavernlab_core::state::{Game, Outcome, Side};
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cmd = args.first().map(String::as_str).unwrap_or("bench");
+    let num = |i: usize, d: usize| args.get(i).and_then(|s| s.parse().ok()).unwrap_or(d);
+
+    match cmd {
+        "bench" => bench(num(1, 20_000), num(2, default_threads())),
+        "matrix" => matrix(num(1, 200)),
+        "demo" => demo(num(1, 1) as u64),
+        "coverage" => coverage(),
+        "implemented" => list_implemented(match args.get(1).map(String::as_str) {
+            Some("wild") => Formats::WILD,
+            _ => Formats::STANDARD,
+        }),
+        other => {
+            eprintln!("unknown command {other:?}");
+            eprintln!("usage: tavernsim [bench|matrix|demo|coverage] [args]");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn default_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
+
+fn bench(games: usize, threads: usize) {
+    let deck = curve_deck(Class::Mage, Formats::STANDARD)
+        .expect("Mage has enough implemented cards for a deck");
+    let c = Contender {
+        class: Class::Mage,
+        cards: &deck,
+        style: Style::Midrange,
+    };
+    let s = seeds(1, games);
+
+    // A short warm-up so the first measurement is not paying for page faults
+    // and branch predictors that have never seen this code.
+    play_batch(c, c, &seeds(999, 200));
+
+    // Both runs play the same games, so the two rates are directly comparable
+    // and the speedup is a real ratio rather than an artefact of sample size.
+    let t0 = Instant::now();
+    let single = play_batch(c, c, &s);
+    let serial_secs = t0.elapsed().as_secs_f64();
+    let serial_rate = single.total() as f64 / serial_secs;
+    println!(
+        " 1 thread   {:>8} games  {:>7.3} s  {:>10.0} games/s",
+        single.total(),
+        serial_secs,
+        serial_rate
+    );
+
+    let t0 = Instant::now();
+    let par = play_batch_parallel(c, c, &s, threads);
+    let par_secs = t0.elapsed().as_secs_f64();
+    let par_rate = par.total() as f64 / par_secs;
+    println!(
+        "{threads:>2} threads   {:>8} games  {:>7.3} s  {:>10.0} games/s   ({:.1}× one thread)",
+        par.total(),
+        par_secs,
+        par_rate,
+        par_rate / serial_rate
+    );
+
+    assert_eq!(
+        single, par,
+        "threading changed the result; the run is not deterministic"
+    );
+    println!(
+        "\nmirror win rate {:.3} for player 0 over {} games ({} draws)",
+        par.rate(Side::Player0),
+        par.total(),
+        par.draws
+    );
+    println!("average game length {:.1} turns", par.avg_turns());
+    println!("serial and parallel results identical: {}", single == par);
+}
+
+fn matrix(per_pair: usize) {
+    let decks: Vec<(Class, Vec<_>)> = PLAYABLE_CLASSES
+        .iter()
+        .filter_map(|&c| curve_deck(c, Formats::STANDARD).map(|d| (c, d)))
+        .collect();
+    let skipped: Vec<Class> = PLAYABLE_CLASSES
+        .iter()
+        .copied()
+        .filter(|c| curve_deck(*c, Formats::STANDARD).is_none())
+        .collect();
+    if !skipped.is_empty() {
+        // Never silently drop a class from a matrix: a missing row reads as
+        // "not measured", and it should be obvious which ones were.
+        println!(
+            "skipping {} class(es) with too few implemented cards: {}\n",
+            skipped.len(),
+            skipped
+                .iter()
+                .map(|c| format!("{c:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    let s = seeds(7, per_pair);
+    let threads = default_threads();
+
+    println!(
+        "{} classes, {per_pair} games per ordered pair\n",
+        decks.len()
+    );
+    print!("{:<14}", "");
+    for (c, _) in &decks {
+        print!("{:>6}", short(*c));
+    }
+    println!("{:>8}", "avg");
+
+    let t0 = Instant::now();
+    let mut total = 0u32;
+    for (ca, da) in &decks {
+        print!("{:<14}", format!("{ca:?}"));
+        let mut sum = 0.0;
+        let mut n = 0;
+        for (cb, db) in &decks {
+            let a = Contender {
+                class: *ca,
+                cards: da,
+                style: Style::Midrange,
+            };
+            let b = Contender {
+                class: *cb,
+                cards: db,
+                style: Style::Midrange,
+            };
+            let r = play_batch_parallel(a, b, &s, threads);
+            total += r.total();
+            let rate = r.rate(Side::Player0);
+            print!("{:>6.2}", rate);
+            if ca != cb {
+                sum += rate;
+                n += 1;
+            }
+        }
+        println!("{:>8.3}", if n > 0 { sum / n as f64 } else { 0.0 });
+    }
+    let dt = t0.elapsed().as_secs_f64();
+    println!(
+        "\n{total} games in {dt:.2} s  ({:.0} games/s)",
+        total as f64 / dt
+    );
+}
+
+fn short(c: Class) -> &'static str {
+    match c {
+        Class::DeathKnight => "DK",
+        Class::DemonHunter => "DH",
+        Class::Druid => "DRU",
+        Class::Hunter => "HUN",
+        Class::Mage => "MAG",
+        Class::Paladin => "PAL",
+        Class::Priest => "PRI",
+        Class::Rogue => "ROG",
+        Class::Shaman => "SHA",
+        Class::Warlock => "WRL",
+        Class::Warrior => "WAR",
+        _ => "?",
+    }
+}
+
+fn demo(seed: u64) {
+    let deck = curve_deck(Class::Mage, Formats::STANDARD)
+        .expect("Mage has enough implemented cards for a deck");
+    let mut g = Game::new((Class::Mage, &deck), (Class::Mage, &deck), seed).expect("valid classes");
+    let mut a = Scripted::new(Style::Midrange);
+    let mut b = Scripted::new(Style::Control);
+    let mut agents: [&mut dyn Agent; 2] = [&mut a, &mut b];
+
+    g.start(Side::Player0, &mut agents);
+    println!("seed {seed}\n");
+    let mut legal = Inline::new();
+    while !g.is_over() && g.turn < 40 {
+        g.turn += 1;
+        g.begin_turn();
+        if g.is_over() {
+            break;
+        }
+        let side = g.current;
+        println!(
+            "turn {:>2}  P{}  {} mana   hero {}/{} vs {}/{}",
+            g.turn,
+            side.index(),
+            g.me().mana,
+            g.me().hero_hp,
+            g.me().armor,
+            g.them().hero_hp,
+            g.them().armor
+        );
+        for _ in 0..64 {
+            if g.is_over() {
+                break;
+            }
+            g.legal_actions(&mut legal);
+            let pick = agents[side.index()].choose(&g, legal.as_slice());
+            if pick == tavernlab_core::game::Action::EndTurn {
+                break;
+            }
+            println!("        {}", describe(&g, pick));
+            if !g.apply(pick) {
+                break;
+            }
+        }
+        let board = |s: Side| {
+            g.player(s)
+                .board
+                .iter()
+                .map(|m| format!("{} {}/{}", m.card.name(), m.atk, m.health()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        println!("        board P0: [{}]", board(Side::Player0));
+        println!("        board P1: [{}]", board(Side::Player1));
+        if g.is_over() {
+            break;
+        }
+        g.end_turn();
+        g.current = g.current.other();
+    }
+    match g.outcome {
+        Some(Outcome::Win(s)) => println!("\nplayer {} wins on turn {}", s.index(), g.turn),
+        Some(Outcome::Draw) => println!("\ndraw on turn {}", g.turn),
+        None => println!("\nstopped after {} turns", g.turn),
+    }
+}
+
+fn describe(g: &Game, a: tavernlab_core::game::Action) -> String {
+    use tavernlab_core::game::Action::*;
+    use tavernlab_core::state::Target;
+    let name = |t: Target| match t {
+        Target::Hero(s) => format!("hero P{}", s.index()),
+        Target::Minion(s, i) => g
+            .player(s)
+            .board
+            .get(i as usize)
+            .map(|m| format!("{} (P{})", m.card.name(), s.index()))
+            .unwrap_or_else(|| "?".into()),
+    };
+    match a {
+        Play { hand, .. } => {
+            let c = g
+                .me()
+                .hand
+                .get(hand as usize)
+                .map(|h| h.card.name())
+                .unwrap_or("?");
+            format!("play {c}")
+        }
+        Attack { from, target } => {
+            let m = g
+                .me()
+                .board
+                .get(from as usize)
+                .map(|m| m.card.name())
+                .unwrap_or("?");
+            format!("attack {} -> {}", m, name(target))
+        }
+        HeroAttack { target } => format!("hero attack -> {}", name(target)),
+        UseLocation { slot, target } => {
+            let l = g
+                .me()
+                .board
+                .get(slot as usize)
+                .map(|m| m.card.name())
+                .unwrap_or("?");
+            format!(
+                "use {l}{}",
+                target
+                    .map(|t| format!(" -> {}", name(t)))
+                    .unwrap_or_default()
+            )
+        }
+        Prepare { hand } => {
+            let c = g
+                .me()
+                .hand
+                .get(hand as usize)
+                .map(|h| h.card.name())
+                .unwrap_or("?");
+            format!("prepare {c}")
+        }
+        HeroPower { target } => {
+            format!(
+                "hero power{}",
+                target
+                    .map(|t| format!(" -> {}", name(t)))
+                    .unwrap_or_default()
+            )
+        }
+        EndTurn => "end turn".into(),
+    }
+}
+
+/// How much of the card pool the engine can actually play.
+///
+/// Printed rather than inferred from a passing test suite: the number that
+/// matters for a simulation is what fraction of a real deck is understood, and
+/// it should be visible without reading source.
+fn coverage() {
+    use tavernlab_core::cards::{Kind, all, is_approximate, is_implemented};
+    use tavernlab_core::deck::{implemented_pool, pool};
+
+    println!("{:<14}{:>7}{:>7}{:>7}   deck", "class", "pool", "impl", "%");
+    for c in PLAYABLE_CLASSES {
+        let p = pool(c, Formats::STANDARD).len();
+        let i = implemented_pool(c, Formats::STANDARD).len();
+        let buildable = if curve_deck(c, Formats::STANDARD).is_some() {
+            "yes"
+        } else {
+            "no"
+        };
+        println!(
+            "{:<14}{p:>7}{i:>7}{:>6.0}%   {buildable}",
+            format!("{c:?}"),
+            100.0 * i as f64 / p.max(1) as f64
+        );
+    }
+
+    {
+        use tavernlab_core::cards::APPROXIMATE;
+        println!("
+{} card(s) implemented only in part:", APPROXIMATE.len());
+        for (name, note) in APPROXIMATE {
+            println!("  {name} — {note}");
+        }
+    }
+
+    for (label, fmt) in [("Standard", Formats::STANDARD), ("Wild", Formats::WILD)] {
+        let deckable: Vec<_> = all()
+            .filter(|c| {
+                let d = c.def();
+                d.collectible && d.deckable() && d.formats.has(fmt)
+            })
+            .collect();
+        let imp = deckable.iter().filter(|c| is_implemented(**c)).count();
+        let approx = deckable.iter().filter(|c| is_approximate(**c)).count();
+        println!(
+            "\n{label}: {imp} of {} deckable cards ({:.1}%){}",
+            deckable.len(),
+            100.0 * imp as f64 / deckable.len().max(1) as f64,
+            if approx > 0 {
+                format!(" — {approx} of them approximate")
+            } else {
+                String::new()
+            }
+        );
+        for k in [Kind::Minion, Kind::Spell, Kind::Weapon, Kind::Location] {
+            let of_kind: Vec<_> = deckable.iter().filter(|c| c.def().kind() == k).collect();
+            let i = of_kind.iter().filter(|c| is_implemented(***c)).count();
+            println!(
+                "  {:<9}{i:>6} / {:<6}{:>5.0}%",
+                format!("{k:?}"),
+                of_kind.len(),
+                100.0 * i as f64 / of_kind.len().max(1) as f64
+            );
+        }
+    }
+}
+
+/// Every card the engine can play in `fmt`, one name per line.
+///
+/// Exists so coverage can be diffed against another implementation rather than
+/// compared as two summary percentages that may not mean the same thing. The
+/// format is a parameter because a Wild deck list checked against the Standard
+/// answer reads every rotated-out vanilla body as unimplemented.
+fn list_implemented(fmt: Formats) {
+    use tavernlab_core::cards::{all, is_implemented};
+    let mut names: Vec<&str> = all()
+        .filter(|c| {
+            let d = c.def();
+            d.collectible && d.deckable() && d.formats.has(fmt) && is_implemented(*c)
+        })
+        .map(|c| c.name())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    for n in names {
+        println!("{n}");
+    }
+}

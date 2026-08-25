@@ -1,0 +1,13 @@
+[package]
+name = "tavernlab-json"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Minimal dependency-free JSON reader for TavernLab tooling"
+
+# No dependencies, deliberately: Smart App Control blocks the compiled output of
+# any crate's `build.rs`, which rules out serde on this machine.
+[dependencies]
+
+[lib]
+doctest = false

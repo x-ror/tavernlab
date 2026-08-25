@@ -1,0 +1,22 @@
+[package]
+name = "tavernlab-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Hearthstone rules kernel for TavernLab"
+
+# Deliberately no dependencies.
+#
+# Two reasons, and both point the same way. Smart App Control is enforced on
+# this machine and blocks the compiled output of any crate's `build.rs`
+# (os error 4551), which rules out serde and anything else with a build script.
+# And the card database is baked into the binary as generated Rust rather than
+# parsed from JSON at startup, so there is nothing left for a serialisation
+# crate to do.
+[dependencies]
+
+[lib]
+# Smart App Control also blocks `rustdoc.exe`, which aborts `cargo test` at the
+# doctest stage even when every real test passes. No doc comment here carries a
+# runnable example. Re-enable if the policy is ever relaxed.
+doctest = false

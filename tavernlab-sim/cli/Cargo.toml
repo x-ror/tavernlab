@@ -1,0 +1,13 @@
+[package]
+name = "tavernsim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tavernlab-core = { workspace = true }
+
+[[bin]]
+name = "tavernsim"
+path = "src/main.rs"
+doctest = false

@@ -1,0 +1,15 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Build-time tooling: card table generation"
+publish = false
+
+[dependencies]
+tavernlab-json = { workspace = true }
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+doctest = false
