@@ -56,23 +56,31 @@ HEADERS = {
 }
 
 # GameTag names treated as "mechanics" (mirrors HearthstoneJSON's extraction).
+#
+# Several of these are enum *aliases* of one another -- GameTag["MAGNETIC"] and
+# GameTag["MODULAR"] are the same member -- so only the canonical spelling is
+# listed. Listing both would put the same mechanic on a card twice. Consumers
+# that know a keyword under the other name map it on their side; the tavernlab
+# engine keeps that mapping in `xtask`'s MECHANIC_ALIASES.
 MECHANICS_TAGS = [
-    "ADAPT", "ADJACENT_BUFF", "AI_MUST_PLAY", "APPEAR_FUNCTIONALLY_DEAD",
-    "AURA", "AUTOATTACK", "AVENGE", "BATTLECRY", "CANT_ATTACK",
+    "ADAPT", "ADJACENT_BUFF", "AFFECTED_BY_SPELL_POWER", "AI_MUST_PLAY",
+    "APPEAR_FUNCTIONALLY_DEAD", "AURA", "AUTOATTACK", "AVENGE", "BATTLECRY",
+    "CANT_ATTACK", "CANT_BE_DESTROYED", "CANT_BE_FATIGUED",
     "CANT_BE_SILENCED", "CANT_BE_TARGETED_BY_HERO_POWERS",
     "CANT_BE_TARGETED_BY_SPELLS", "CHARGE", "CHOOSE_ONE", "COLOSSAL",
     "COMBO", "CORRUPT", "COUNTER", "DEATHRATTLE", "DEATH_KNIGHT",
     "DISCOVER", "DIVINE_SHIELD", "DREDGE", "ECHO", "ELUSIVE", "ENRAGED",
-    "EVIL_GLOW", "EXCAVATE", "FINALE", "FORGE", "FORGETFUL", "FREEZE",
-    "GEARS", "HEROPOWER_DAMAGE", "IMMUNE", "INSPIRE", "JADE_GOLEM",
+    "EVIL_GLOW", "EXCAVATE", "FINALE", "FORGE", "FORGETFUL", "FRENZY",
+    "FREEZE", "GEARS", "GIGANTIFY", "HEROPOWER_DAMAGE", "HONORABLE_KILL",
+    "IMMUNE", "INFUSE", "INSPIRE", "JADE_GOLEM",
     "LIFESTEAL", "MANATHIRST", "MINIATURIZE", "MODULAR", "MORPH",
     "OUTCAST", "OVERHEAL", "OVERKILL", "OVERLOAD", "POISONOUS", "QUEST",
     "QUICKDRAW", "REBORN", "RECEIVES_DOUBLE_SPELLDAMAGE_BONUS", "RITUAL",
     "RUSH", "SECRET", "SIDEQUEST", "SILENCE", "SPARE_PART", "SPELLBURST",
-    "SPELLPOWER", "START_OF_GAME", "STEALTH", "SUMMONED",
-    "TAG_ONE_TURN_EFFECT", "TAUNT", "TITAN", "TOPDECK", "TRADEABLE",
-    "TRIGGER_VISUAL", "TWINSPELL", "UNTOUCHABLE", "VENOMOUS", "WINDFURY",
-    "ImmuneToSpellpower", "InvisibleDeathrattle",
+    "SPELLPOWER", "STARSHIP", "STARSHIP_PIECE", "START_OF_GAME", "STEALTH",
+    "SUMMONED", "TAG_ONE_TURN_EFFECT", "TAUNT", "TITAN", "TOPDECK",
+    "TRADEABLE", "TRIGGER_VISUAL", "TWINSPELL", "UNTOUCHABLE", "VENOMOUS",
+    "WINDFURY", "ImmuneToSpellpower", "InvisibleDeathrattle",
 ]
 
 # Resolve names -> GameTag enum members (skip names missing in this lib version)

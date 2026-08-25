@@ -25,6 +25,21 @@ before. Legality is not decided here — the corpus carries `set`, and
 
 The corpus needs the tokens, hero powers and enchantments the live API does
 not serve, so build the dump with --include-carddefs-only.
+
+Beyond the fields the old HearthstoneJSON mirror had, each entry carries what
+the merged dump knows and the mirror did not. All of them are written only
+where they say something, so an absent key means "nothing here":
+
+    sd       Spell Damage as a number, not parsed out of the card text
+    ovl      Overload, likewise
+    ref      mechanics the card grants or mentions, as opposed to has
+    kw       the live API's own keyword list -- a fallback for `nodefs`
+             cards, never a second opinion on the ones CardDefs describes
+    child    dbf ids of the tokens the card creates
+    arrow    what the targeting arrow says, e.g. "Deal 3 damage."
+    classes  every class of a multi-class card
+    nodefs   the API served this card but CardDefs has never seen it, so
+             everything CardDefs would contribute is missing
 """
 import argparse
 import json
@@ -86,6 +101,60 @@ def entry(c):
     # `engine.py` destroys a weapon the moment its durability hits zero.
     if e["type"] in ("LOCATION", "WEAPON") and not e["dur"]:
         e["dur"] = e["hp"]
+
+    # ---- what the merged dump knows and the old mirror did not ----------
+    # Written only when they say something. A key that is absent means
+    # "nothing here", so 16 000 empty lists stay out of the file and every
+    # consumer already treats a missing key that way.
+
+    # Spell Damage and Overload as numbers. Reading them off the card text
+    # instead -- which is what the corpus forced downstream -- also matches
+    # the cards that *hand out* the keyword: "give a spell in your hand
+    # Spell Damage +1" turned the minion itself into a permanent +1. The tag
+    # is the card's own value, so it wins wherever the source has one.
+    if c.get("spellDamage"):
+        e["sd"] = c["spellDamage"]
+    if c.get("overload"):
+        e["ovl"] = c["overload"]
+
+    # Mechanics the card grants or merely mentions, kept apart from the ones
+    # it has. Without the split "Give a minion Taunt" reads as a Taunt minion.
+    if c.get("referencedMechanics"):
+        e["ref"] = c["referencedMechanics"]
+
+    # The live API's own keyword list. Deliberately NOT merged into `mech`:
+    # the API also tags a card with keywords it only references, so this is
+    # the fallback for cards CardDefs has never heard of, not a second
+    # opinion on the ones it describes. Numeric ids the merge could not name
+    # are dropped -- a consumer can do nothing with a bare 320.
+    kw = [k for k in (c.get("keywords") or []) if isinstance(k, str)]
+    if kw:
+        e["kw"] = kw
+
+    # dbf ids of the tokens this card creates. The live API is the only
+    # source for them, and they are what lets "Summon two 2/2 Treants" be
+    # data instead of a token id typed into the engine by hand.
+    if c.get("childIds"):
+        e["child"] = c["childIds"]
+
+    # What the targeting arrow says -- "Deal 3 damage.", "Destroy a friendly
+    # minion." The effect and its legal target in one string, for the 1253
+    # cards that carry one.
+    if c.get("targetingArrowText"):
+        e["arrow"] = clean_text(c["targetingArrowText"])
+
+    # Multi-class cards. `cls` alone cannot say "Druid and Hunter", and that
+    # decides which decks may hold the card.
+    if len(c.get("classes") or []) > 1:
+        e["classes"] = c["classes"]
+
+    # Set when the live API served this card but the local CardDefs snapshot
+    # has never heard of it. Everything CardDefs contributes is then missing,
+    # so a consumer must not read the empty `mech` as "this card has no
+    # keywords" -- 29 collectible Standard minions are in exactly that state
+    # today, and every one of them would otherwise look vanilla.
+    if "carddefs" not in (c.get("sources") or ["carddefs"]):
+        e["nodefs"] = True
     return e
 
 
