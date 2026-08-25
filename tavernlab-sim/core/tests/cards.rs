@@ -2816,6 +2816,34 @@ fn the_egg_of_khelos_hatches_through_all_five_stages() {
 }
 
 #[test]
+fn reanimated_pterrordax_costs_corpses_not_mana() {
+    let mut f = Fix::new();
+    f.g.players[0].mana = 0;
+    f.g.players[0].corpses = 5;
+    f.play("Reanimated Pterrordax", None);
+    assert_eq!(f.g.players[0].corpses, 0, "spent 5 corpses");
+    assert_eq!(f.g.players[0].mana, 0, "no mana spent");
+    assert_eq!(f.g.players[0].board.len(), 1);
+}
+
+#[test]
+fn reanimated_pterrordax_is_unplayable_without_enough_corpses() {
+    let mut f = Fix::new();
+    f.g.players[0].corpses = 4; // one short of the 5 it needs
+    let card = by_name("Reanimated Pterrordax").unwrap();
+    f.g.players[0].hand.push(HandCard::new(card));
+    let idx = f.g.players[0].hand.len() as u8 - 1;
+    let ok = f.g.apply(Action::Play {
+        hand: idx,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    });
+    assert!(!ok, "not enough corpses");
+    assert_eq!(f.g.players[0].corpses, 4, "nothing spent on the failed attempt");
+}
+
+#[test]
 fn unshackle_soul_costs_one_after_playing_an_opponents_card() {
     let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
     let unshackle = by_name("Unshackle Soul").unwrap();

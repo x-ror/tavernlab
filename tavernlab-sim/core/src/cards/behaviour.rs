@@ -2542,6 +2542,17 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         };
         g.summon_token(c.side, next, 1);
     }),
+    // Rush and Lifesteal are ordinary keywords; "Costs Corpses instead of
+    // Mana" is not a mechanic the generator's TEXT_UNDERSTOOD pass
+    // recognises, so this card would otherwise read as unimplemented even
+    // though `Game::pays_with_corpses` already gives it real behaviour.
+    // Every hook stays None on purpose -- this row exists only so
+    // `is_implemented` sees it.
+    c(
+        "Reanimated Pterrordax",
+        T::None,
+        None, None, None, None, None, None, None, None, None,
+    ),
 ];
 
 /// Cards implemented only in part, with what is missing.

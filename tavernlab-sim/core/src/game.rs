@@ -223,6 +223,11 @@ impl Game {
         let Some(hc) = self.player(side).hand.get(hand_idx) else {
             return 0;
         };
+        if pays_with_corpses(hc.card) {
+            // Free in Mana terms; legal_actions and play_card separately
+            // gate and spend the same number in Corpses instead.
+            return 0;
+        }
         let mut cost = hc.card.def().cost + hc.cost_delta;
         if let Some(f) = behaviour_of(hc.card).and_then(|b| b.cost_delta) {
             cost += f(self, side, hand_idx);
@@ -410,6 +415,9 @@ impl Game {
             }
             let d = c.card.def();
             if self.card_cost(side, i) > me.mana {
+                continue;
+            }
+            if pays_with_corpses(c.card) && me.corpses < d.cost {
                 continue;
             }
             let needs_board = matches!(d.kind(), Kind::Minion | Kind::Location);
@@ -764,6 +772,13 @@ impl Game {
         // before the card leaves it. A one-card hand is both ends at once.
         let hand_len = self.player(side).hand.len();
         let outcast = hand_idx == 0 || hand_idx + 1 == hand_len;
+
+        // Everything above is pure validation; this is the last check before
+        // any state changes, so a card paid for in Corpses cannot spend them
+        // and then fail some later legality check.
+        if pays_with_corpses(hc.card) && !self.spend_corpses(side, def.cost) {
+            return false;
+        }
 
         let p = self.player_mut(side);
         p.mana -= cost;
@@ -1651,6 +1666,13 @@ fn hero_power_target(hp: CardId) -> HpTarget {
         "Fireblast" | "Lesser Heal" => HpTarget::Any,
         _ => HpTarget::None,
     }
+}
+
+/// Whether `card` is paid for with Corpses instead of Mana (Reanimated
+/// Pterrordax). The amount is the card's own printed cost, same number,
+/// different resource, so nothing else needs to know "how many".
+fn pays_with_corpses(card: CardId) -> bool {
+    card.name() == "Reanimated Pterrordax"
 }
 
 /// The basic hero power for a class.
