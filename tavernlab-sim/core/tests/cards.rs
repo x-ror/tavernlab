@@ -3498,3 +3498,18 @@ fn sinestra_casts_a_spell_from_another_class_twice_but_not_her_own() {
     f.play("Fireball", foe_minion(0)); // Mage's own spell -- not doubled
     assert_eq!(f.theirs(0).health(), 1, "6 damage once, not twice");
 }
+
+#[test]
+fn ultraxion_heralds_and_reduces_deathwings_cost_if_in_hand() {
+    let mut f = Fix::new();
+    let deathwing = by_name("Deathwing, Worldbreaker").unwrap();
+    f.g.players[0].hand.push(HandCard::new(deathwing));
+    f.play("Ultraxion", None);
+    assert_eq!(f.g.players[0].herald, 1, "Heralded once");
+    let hc = f.g.players[0]
+        .hand
+        .iter()
+        .find(|hc| hc.card == deathwing)
+        .expect("Deathwing is still in hand");
+    assert_eq!(hc.cost_delta, -1);
+}

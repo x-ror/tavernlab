@@ -2872,6 +2872,25 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             }
         }
     }),
+    // No template gaps here either -- Deathwing itself remains unimplemented
+    // (its own battlecry is what is template-stripped), but that does not
+    // block this card's own slot. `Game::herald` already existed, built for
+    // exactly this: its own doc comment names Deathwing's cost reduction as
+    // the reason classes with no Soldier still advance the counter. Only
+    // reaches Deathwing in hand -- a deck-side CardId carries no cost_delta
+    // to persist the reduction on, so a copy still undrawn simply does not
+    // get it, weaker rather than guessed at.
+    battlecry("Ultraxion", T::None, |g, c| {
+        g.herald(c.side);
+        if let Some(idx) = g
+            .player(c.side)
+            .hand
+            .iter()
+            .position(|hc| hc.card.name() == "Deathwing, Worldbreaker")
+        {
+            g.player_mut(c.side).hand[idx].cost_delta -= 1;
+        }
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -2977,6 +2996,10 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Sinestra",
         "each Wing's own Discover fires at full price; \"It costs ({0}) less\" is template-stripped at every Herald tier, with no floor value to fall back on",
+    ),
+    (
+        "Ultraxion",
+        "\"Reduce Deathwing's Cost\" only reaches a copy currently in hand; a deck-side CardId has no cost_delta to persist the reduction on, so a copy still undrawn does not get it",
     ),
 ];
 
