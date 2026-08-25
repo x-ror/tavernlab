@@ -2346,3 +2346,68 @@ fn dark_bribe_draws_three_and_gives_the_cheapest_to_the_opponent() {
     assert_eq!(f.g.players[1].hand.len(), 1);
     assert_eq!(f.g.players[1].hand[0].card.name(), "Wisp");
 }
+
+// -------------------------------------------------------------------- G12
+
+#[test]
+fn imp_gang_stooge_deathrattle_puts_two_demons_on_the_bottom_of_the_deck() {
+    let mut f = Fix::new().board(ME, &["Imp Gang Stooge"]);
+    f.g.destroy(Target::Minion(ME, 0));
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].deck.len(), 2);
+    for card in f.g.players[0].deck.iter() {
+        assert_eq!(card.name(), "Grandmother Imp");
+        assert_eq!((card.def().atk, card.def().hp), (8, 8));
+        assert!(card.def().keywords.has(Keywords::TAUNT));
+        assert!(card.def().keywords.has(Keywords::LIFESTEAL));
+    }
+}
+
+#[test]
+fn annihilation_destroys_all_minions_and_summons_demons_from_the_bottom_three() {
+    let mut f = Fix::new()
+        .board(ME, &["Bloodfen Raptor"])
+        .board(FOE, &["Chillwind Yeti"])
+        // Bottom three (index 0 first): only Voidwalker is a Demon.
+        .deck(&["Voidwalker", "Wisp", "Chillwind Yeti"]);
+    f.play("Annihilation", None);
+    assert_eq!(f.their_board(), 0, "the enemy Yeti died too");
+    assert_eq!(f.g.players[0].board.len(), 1, "the Raptor died, Voidwalker was summoned");
+    assert_eq!(f.mine(0).card.name(), "Voidwalker");
+    assert_eq!(f.g.players[0].deck.len(), 2, "Voidwalker left the deck, the other two stayed");
+}
+
+#[test]
+fn cosmic_manifestations_deals_damage_once_when_not_outcast() {
+    let mut f = Fix::new();
+    let filler = by_name("Wisp").unwrap();
+    let cosmic = by_name("Cosmic Manifestations").unwrap();
+    f.g.players[0].hand.push(HandCard::new(filler));
+    f.g.players[0].hand.push(HandCard::new(cosmic)); // the middle of three: not Outcast
+    f.g.players[0].hand.push(HandCard::new(filler));
+    let ok = f.g.apply(Action::Play {
+        hand: 1,
+        target: Some(Target::Hero(FOE)),
+        position: u8::MAX,
+        choice: u8::MAX,
+    });
+    assert!(ok);
+    assert_eq!(f.g.players[1].hero_hp, 28, "2 damage, once");
+    assert_eq!(f.g.players[0].deck.len(), 1, "one Demon Hunter spell shuffled in");
+    assert_eq!(
+        f.g.players[0].deck[0].def().class(),
+        tavernlab_core::cards::Class::DemonHunter
+    );
+}
+
+#[test]
+fn cosmic_manifestations_outcast_does_it_twice() {
+    // A one-card hand is Outcast on both ends at once.
+    let mut f = Fix::new();
+    f.play("Cosmic Manifestations", Some(Target::Hero(FOE)));
+    assert_eq!(f.g.players[1].hero_hp, 26, "2 damage, twice");
+    assert_eq!(f.g.players[0].deck.len(), 2, "a Demon Hunter spell shuffled in, twice");
+    for card in f.g.players[0].deck.iter() {
+        assert_eq!(card.def().class(), tavernlab_core::cards::Class::DemonHunter);
+    }
+}

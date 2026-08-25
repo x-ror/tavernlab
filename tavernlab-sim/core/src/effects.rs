@@ -962,6 +962,36 @@ impl Game {
         true
     }
 
+    /// Put a card at the bottom of `side`'s deck -- the last card they will
+    /// draw. The deck's "top" is the end of the array (drawing pops), so the
+    /// bottom is index 0.
+    pub fn put_on_bottom(&mut self, side: Side, card: CardId) -> bool {
+        self.player_mut(side).deck.insert(0, card)
+    }
+
+    /// Shuffle a card into `side`'s deck at a random position. Distinct from
+    /// [`Game::put_on_bottom`]: "shuffle into your deck" can land anywhere,
+    /// not always last.
+    pub fn shuffle_into_deck(&mut self, side: Side, card: CardId) -> bool {
+        let len = self.player(side).deck.len();
+        let at = self.rngs.effects.index(len + 1);
+        self.player_mut(side).deck.insert(at, card)
+    }
+
+    /// Shuffle a random implemented card matching `pred` into `side`'s deck.
+    pub fn shuffle_random_into_deck(
+        &mut self,
+        side: Side,
+        pred: fn(&crate::cards::CardDef) -> bool,
+    ) -> bool {
+        let pool = crate::cards::discover_pool(pred);
+        if pool.is_empty() {
+            return false;
+        }
+        let pick = self.rngs.effects.index(pool.len());
+        self.shuffle_into_deck(side, pool[pick])
+    }
+
     /// Give every minion in an area attack for this turn — negative to debuff.
     pub fn temp_atk_area(&mut self, side: Side, area: Area, n: i16) {
         let mut hits: Inline<Target, { MAX_BOARD * 2 + 2 }> = Inline::new();

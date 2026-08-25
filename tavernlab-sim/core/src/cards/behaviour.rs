@@ -314,6 +314,8 @@ mod tokens {
     /// Twilight Egg's Whelp. Its base stats are overwritten to match however
     /// many of the Egg's controller's turns it survived; see the deathrattle.
     pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
+    /// Imp Gang Stooge's "8/8 Demon with Taunt and Lifesteal".
+    pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
 
     /// The three Dreadseeds. Cards that summon "a random Dormant Dreadseed"
     /// roll one of these.
@@ -1738,7 +1740,12 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         }
     }),
     spell("Cosmic Manifestations", T::AnyCharacter, |g, c| {
-        g.spell_damage(c.side, c.target, 2);
+        for _ in 0..1 + c.outcast as u8 {
+            g.spell_damage(c.side, c.target, 2);
+            g.shuffle_random_into_deck(c.side, |d| {
+                d.kind() == super::Kind::Spell && d.class() == super::Class::DemonHunter
+            });
+        }
     }),
     trigger("Briarspawn Drake", |g, c| {
         // "At the end of your turn, attack a random enemy minion."
@@ -2111,6 +2118,32 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.summon_token(ctx.side, tokens::INVADING_FELBAT, 1);
         }
     }),
+    deathrattle("Imp Gang Stooge", |g, c| {
+        for _ in 0..2 {
+            g.put_on_bottom(c.side, tokens::GRANDMOTHER_IMP);
+        }
+    }),
+    spell("Annihilation", T::None, |g, c| {
+        let mut all: Inline<Target, 16> = Inline::new();
+        g.collect_area(c.side, Area::AllMinions, &mut all);
+        for t in all.iter() {
+            g.destroy(*t);
+        }
+        g.sweep_deaths();
+        let bottom = g.player(c.side).deck.len().min(3);
+        let mut demon_idx: Inline<u8, 3> = Inline::new();
+        for i in 0..bottom {
+            let card = g.player(c.side).deck[i];
+            if card.def().kind() == super::Kind::Minion && card.def().races.any(Races::DEMON) {
+                demon_idx.push(i as u8);
+            }
+        }
+        for &i in demon_idx.iter().rev() {
+            if let Some(card) = g.player_mut(c.side).deck.remove(i as usize) {
+                g.summon(c.side, card);
+            }
+        }
+    }),
     // warrior
     battlecry("Brood Keeper", T::None, |g, c| {
         if g.holding_race(c.side, Races::DRAGON) {
@@ -2201,10 +2234,6 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Soldier of Al'Akir",
         "its aura scales with the Herald count, which the aura signature          cannot read; fixed at the Herald-1 value",
-    ),
-    (
-        "Cosmic Manifestations",
-        "the shuffle-into-deck half needs deck insertion; only the damage is          implemented",
     ),
     (
         "Hardlight Protector",
