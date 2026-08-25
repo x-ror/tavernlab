@@ -455,6 +455,16 @@ pub struct Player {
     pub deck: Inline<CardId, MAX_DECK>,
     pub board: Inline<Permanent, MAX_BOARD>,
     pub secrets: Inline<CardId, MAX_SECRETS>,
+    /// The hand this player kept after mulligan, captured once before Start
+    /// of Game runs (The Fins Beyond Time). Plain card identities, not
+    /// `HandCard`s: nothing has a cost delta, a Prepare lock or a mark yet
+    /// at the moment this is taken.
+    pub starting_hand: Inline<CardId, MAX_HAND>,
+    /// The real hand, stashed while it is temporarily replaced by fresh
+    /// copies of `starting_hand` (The Fins Beyond Time). `Some` only for the
+    /// rest of the turn the swap happened on; restored and cleared at that
+    /// same turn's end.
+    pub swapped_hand: Option<Inline<HandCard, MAX_HAND>>,
 }
 
 impl Player {
@@ -498,6 +508,8 @@ impl Player {
             deck: deck.iter().copied().collect(),
             board: Inline::new(),
             secrets: Inline::new(),
+            starting_hand: Inline::new(),
+            swapped_hand: None,
         }
     }
 

@@ -125,6 +125,13 @@ impl Game {
             self.mulligan(side, n, agents[side.index()]);
         }
 
+        // Captured before Start of Game runs, so an effect that changes a
+        // hand this turn (King Llane) is not mistaken for part of it.
+        for side in [Side::Player0, Side::Player1] {
+            let p = self.player_mut(side);
+            p.starting_hand = p.hand.iter().map(|hc| hc.card).collect();
+        }
+
         self.fire_start_of_game();
 
         // The Coin goes to whoever is on the draw.
@@ -352,6 +359,12 @@ impl Game {
         p.played_races_turn = Races::NONE;
         p.next_spell_discount = 0;
         p.next_beast_discount = 0;
+        // The Fins Beyond Time: swap back whatever hand this turn started
+        // with, discarding the temporary starting-hand copies and anything
+        // drawn into them since.
+        if let Some(saved) = p.swapped_hand.take() {
+            p.hand = saved;
+        }
         self.sweep_deaths();
     }
 

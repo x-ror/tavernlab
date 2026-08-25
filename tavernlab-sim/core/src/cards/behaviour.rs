@@ -20,7 +20,7 @@ use super::{CardId, DEFS, INFO, Keywords, Races, token};
 use crate::effects::Area;
 use crate::events::{Event, Trigger};
 use crate::inline::Inline;
-use crate::state::{Flags, Game, MAX_DECK, Marks, Pending, PendingKind, Side, Target};
+use crate::state::{Flags, Game, HandCard, MAX_DECK, Marks, Pending, PendingKind, Side, Target};
 
 /// What an effect is told about the circumstances it fires in.
 #[derive(Clone, Copy, Debug)]
@@ -2641,6 +2641,18 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         {
             g.buff(Target::Minion(side, slot), 1, 1);
         }
+    }),
+    // The current hand -- already missing this very card, removed by `play`
+    // before the battlecry runs -- is stashed and restored whole in
+    // `Game::end_turn`; nothing here needs to know what turn it is.
+    battlecry("The Fins Beyond Time", T::None, |g, c| {
+        let p = g.player_mut(c.side);
+        p.swapped_hand = Some(p.hand);
+        p.hand = p
+            .starting_hand
+            .iter()
+            .map(|&card| HandCard::new(card))
+            .collect();
     }),
 ];
 

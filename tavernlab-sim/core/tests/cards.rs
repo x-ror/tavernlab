@@ -3062,3 +3062,34 @@ fn dreambound_raptor_gives_a_fixed_bonus_but_not_to_itself() {
     assert_eq!(f.mine(0).atk, 2, "the Raptor itself is unaffected");
     assert_eq!(f.mine(0).max_hp, 1);
 }
+
+#[test]
+fn the_fins_beyond_time_swaps_to_the_starting_hand_and_back() {
+    let wisp = by_name("Wisp").unwrap();
+    let raptor = by_name("Bloodfen Raptor").unwrap();
+    let mut f = Fix::new();
+    f.g.players[0].starting_hand.push(wisp);
+    f.g.players[0].starting_hand.push(wisp);
+    f.g.players[0].hand.push(HandCard::new(raptor));
+
+    f.play("The Fins Beyond Time", None);
+    assert_eq!(f.g.players[0].hand.len(), 2, "now the two Wisps");
+    assert!(f.g.players[0].hand.iter().all(|hc| hc.card == wisp));
+    let stash = f.g.players[0]
+        .swapped_hand
+        .expect("the real hand was stashed");
+    assert_eq!(
+        stash.len(),
+        1,
+        "just the Raptor -- Fins had already left hand"
+    );
+    assert_eq!(stash[0].card, raptor);
+
+    f.g.end_turn();
+    assert_eq!(f.g.players[0].hand.len(), 1, "swapped back");
+    assert_eq!(f.g.players[0].hand[0].card, raptor);
+    assert!(
+        f.g.players[0].swapped_hand.is_none(),
+        "cleared once restored"
+    );
+}
