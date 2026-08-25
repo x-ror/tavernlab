@@ -3625,3 +3625,19 @@ fn fleeing_terrorguard_deathrattle_returns_broxigar_to_the_opponent() {
     assert_eq!(f.g.players[0].hand.len(), 1);
     assert_eq!(f.g.players[0].hand[0].card.name(), "Broxigar");
 }
+
+#[test]
+fn commander_beatrix_plays_with_its_printed_taunt() {
+    let mut f = Fix::new();
+    f.play("Commander Beatrix", None);
+    assert!(f.mine(0).has(Keywords::TAUNT));
+}
+
+#[test]
+fn azalina_soulsever_draws_until_the_hand_is_full() {
+    let mut f = Fix::new().deck(&[
+        "Wisp", "Wisp", "Wisp", "Wisp", "Wisp", "Wisp", "Wisp", "Wisp", "Wisp", "Wisp",
+    ]);
+    f.play("Azalina Soulsever", None);
+    assert_eq!(f.g.players[0].hand.len(), MAX_HAND);
+}

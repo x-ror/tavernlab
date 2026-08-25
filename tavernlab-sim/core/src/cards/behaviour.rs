@@ -20,7 +20,9 @@ use super::{CardId, DEFS, INFO, Keywords, Races, token};
 use crate::effects::Area;
 use crate::events::{Event, Trigger};
 use crate::inline::Inline;
-use crate::state::{Flags, Game, HandCard, MAX_DECK, Marks, Pending, PendingKind, Side, Target};
+use crate::state::{
+    Flags, Game, HandCard, MAX_DECK, MAX_HAND, Marks, Pending, PendingKind, Side, Target,
+};
 
 /// What an effect is told about the circumstances it fires in.
 #[derive(Clone, Copy, Debug)]
@@ -2992,6 +2994,22 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     deathrattle("Fleeing Terrorguard", |g, c| {
         g.give_card(c.side.other(), tokens::BROXIGAR);
     }),
+    // "Ten copies join your deck" happens while building the deck, before a
+    // `Game` exists at all -- outside this engine's scope regardless of
+    // what this row does. Taunt is the printed keyword, auto-handled; the
+    // Start of Game hook is a no-op so `is_implemented` sees the keyword it
+    // declares.
+    start_of_game("Commander Beatrix", |_, _| {}),
+    // Likewise the deck-construction half ("starting Health is 40", "20
+    // cards plus 20 copied from your enemy") happens before a `Game`
+    // exists. Only the Battlecry is a real in-game action, and it is fully
+    // concrete.
+    battlecry("Azalina Soulsever", T::None, |g, c| {
+        let have = g.player(c.side).hand.len();
+        if have < MAX_HAND {
+            g.draw_cards(c.side, MAX_HAND - have);
+        }
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -3105,6 +3123,14 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Atiesh the Greatstaff",
         "\"Costs (0) if you control Medivh\" is unreachable -- Medivh is a Hero card, and Hero cards are not implemented -- so this always costs its printed 10; and only the damage half of the spell-doubling is implemented, not the healing half, since this engine's heal/heal_hero have no spell-specific wrapper the way spell_damage does for combat damage",
+    ),
+    (
+        "Commander Beatrix",
+        "\"Ten copies join your deck\" is a deck-construction-time effect, outside this engine's scope -- plays with only its printed Taunt and whatever thirty cards it was actually given",
+    ),
+    (
+        "Azalina Soulsever",
+        "\"Your starting Health is 40\" and \"your deck is 20 cards, plus 20 copied from your enemy\" are both deck-construction/game-setup effects, outside this engine's scope; only the Battlecry (draw until your hand is full) is implemented",
     ),
 ];
 
