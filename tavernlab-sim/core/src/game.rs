@@ -15,8 +15,8 @@ use crate::events::Event;
 use crate::inline::Inline;
 use crate::rng::Rand;
 use crate::state::{
-    Flags, Game, HandCard, MAX_BOARD, MAX_HAND, MAX_MANA, Outcome, Pending, PendingKind, Permanent,
-    Player, Side, TURN_LIMIT, Target, Weapon,
+    Flags, Game, HandCard, MAX_BOARD, MAX_HAND, MAX_MANA, Marks, Outcome, Pending, PendingKind,
+    Permanent, Player, Side, TURN_LIMIT, Target, Weapon,
 };
 
 /// The most actions a position can offer.
@@ -704,6 +704,18 @@ impl Game {
         if def.overload > 0 {
             p.overload_next += def.overload as i16;
         }
+        // "While holding this" marks, applied to whatever is left in hand —
+        // the card just played has already been removed above.
+        if def.kind() == Kind::Minion {
+            for other in p.hand.iter_mut() {
+                other.marks.insert(Marks::PLAYED_MINION);
+            }
+        }
+        if def.class() != Class::Neutral && def.class() != p.class {
+            for other in p.hand.iter_mut() {
+                other.marks.insert(Marks::PLAYED_OPPONENT_CARD);
+            }
+        }
 
         // A secret is set, not cast: it goes to its own zone and waits.
         if def.kind() == Kind::Spell && def.keywords.has(Keywords::SECRET) {
@@ -751,6 +763,7 @@ impl Game {
                 source: slot,
                 outcast,
                 dying: None,
+                marks: hc.marks,
             };
             if def.kind() == Kind::Spell {
                 self.countered = false;
@@ -774,6 +787,7 @@ impl Game {
                 source: slot,
                 outcast,
                 dying: None,
+                marks: hc.marks,
             };
             if def.kind() == Kind::Spell {
                 // Counterspell gets its chance before the spell resolves.
@@ -1245,6 +1259,7 @@ impl Game {
                             source: Some(slot),
                             outcast: false,
                             dying: Some(body),
+                            marks: Marks::NONE,
                         },
                     );
                 }
@@ -1292,6 +1307,7 @@ impl Game {
                     source: Some(crate::events::WEAPON_SLOT),
                     outcast: false,
                     dying: None,
+                    marks: Marks::NONE,
                 },
             );
         }
@@ -1424,6 +1440,7 @@ impl Game {
                 source: Some(slot as u8),
                 outcast: false,
                 dying: None,
+                marks: Marks::NONE,
             },
         );
         self.board_dirty = true;

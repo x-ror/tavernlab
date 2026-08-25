@@ -278,6 +278,36 @@ impl Weapon {
 
 // ----------------------------------------------------------- hand cards
 
+/// What has happened while one specific card sat in hand -- "while holding
+/// this" text, which two copies of the same card can answer differently.
+/// Cleared along with the rest of [`HandCard`] the moment it leaves hand.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Marks(pub u8);
+
+impl Marks {
+    pub const NONE: Marks = Marks(0);
+    /// A minion was played while this card sat in hand (Ebb and Flow).
+    pub const PLAYED_MINION: Marks = Marks(1 << 0);
+    /// A card of the opponent's class was played while this card sat in
+    /// hand. Only possible by having picked one up somehow -- a deck cannot
+    /// contain them otherwise -- so "played a copy of an opponent's card"
+    /// reduces to "played a card that is not Neutral and not mine" (Mind
+    /// Sweeper, Unshackle Soul).
+    pub const PLAYED_OPPONENT_CARD: Marks = Marks(1 << 1);
+    /// This exact card was drawn by Platysaur's battlecry, so its
+    /// deathrattle knows which card in hand to discard.
+    pub const DRAWN_BY_PLATYSAUR: Marks = Marks(1 << 2);
+
+    #[inline]
+    pub const fn has(self, m: Marks) -> bool {
+        self.0 & m.0 != 0
+    }
+    #[inline]
+    pub fn insert(&mut self, m: Marks) {
+        self.0 |= m.0;
+    }
+}
+
 /// A card in hand, with the per-copy state that makes two copies differ.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct HandCard {
@@ -287,6 +317,7 @@ pub struct HandCard {
     /// Turn number on which this card became unplayable (Prepare), or
     /// `u16::MAX` for never.
     pub locked_turn: u16,
+    pub marks: Marks,
 }
 
 impl HandCard {
@@ -295,6 +326,7 @@ impl HandCard {
             card,
             cost_delta: 0,
             locked_turn: u16::MAX,
+            marks: Marks::NONE,
         }
     }
 }
@@ -619,7 +651,8 @@ mod tests {
             HandCard {
                 card: CardId(0),
                 cost_delta: 0,
-                locked_turn: 0
+                locked_turn: 0,
+                marks: Marks::NONE,
             }
         );
         assert_eq!(

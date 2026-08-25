@@ -20,7 +20,7 @@ use super::{CardId, DEFS, INFO, Keywords, Races, token};
 use crate::effects::Area;
 use crate::events::{Event, Trigger};
 use crate::inline::Inline;
-use crate::state::{Flags, Game, Pending, PendingKind, Side, Target};
+use crate::state::{Flags, Game, Marks, Pending, PendingKind, Side, Target};
 
 /// What an effect is told about the circumstances it fires in.
 #[derive(Clone, Copy, Debug)]
@@ -51,6 +51,12 @@ pub struct Ctx {
     /// `Game::sweep_deaths`), so anything it wants to know about itself has
     /// to arrive here instead. `None` for every other hook.
     pub dying: Option<crate::state::Permanent>,
+    /// What happened while this card sat in hand, snapshotted the moment it
+    /// left hand to be played -- by the time a spell or battlecry effect
+    /// runs, the card itself is already gone from `Player::hand`. See
+    /// `crate::state::Marks`. `Marks::NONE` everywhere but a spell or
+    /// battlecry Ctx.
+    pub marks: crate::state::Marks,
 }
 
 /// A card effect. A `fn` pointer rather than a boxed closure, so the table is
@@ -1743,6 +1749,63 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             }
         }
     }),
+    // "While holding this" -- Marks, set on whatever is left in hand when a
+    // triggering card is played (Game::play_card), read back on cast since
+    // the card itself is gone from hand by then (Ctx::marks).
+    c(
+        "Platysaur",
+        T::None,
+        None,
+        Some(|g, c| {
+            let before = g.player(c.side).hand.len();
+            g.draw_cards(c.side, 1);
+            if let Some(hc) = g.player_mut(c.side).hand.get_mut(before) {
+                hc.marks.insert(Marks::DRAWN_BY_PLATYSAUR);
+            }
+        }),
+        Some(|g, c| {
+            if let Some(idx) = g
+                .player(c.side)
+                .hand
+                .iter()
+                .position(|hc| hc.marks.has(Marks::DRAWN_BY_PLATYSAUR))
+            {
+                g.player_mut(c.side).hand.remove(idx);
+            }
+        }),
+        None, None, None, None, None,
+    ),
+    spell("Ebb and Flow", T::AnyCharacter, |g, c| {
+        g.spell_damage(c.side, c.target, 3);
+        if c.marks.has(Marks::PLAYED_MINION) {
+            g.gain_armor(c.side, 5);
+        }
+    }),
+    battlecry("Mind Sweeper", T::None, |g, c| {
+        if c.marks.has(Marks::PLAYED_OPPONENT_CARD) {
+            g.damage_area(c.side, Area::EnemyMinions, 2);
+        }
+    }),
+    c(
+        "Unshackle Soul",
+        T::AnyMinion,
+        Some(|g, c| {
+            if let Some(t) = c.target {
+                g.destroy(t);
+            }
+        }),
+        None, None, None, None, None, None,
+        Some(|g, side, idx| {
+            let Some(hc) = g.player(side).hand.get(idx) else {
+                return 0;
+            };
+            if hc.marks.has(Marks::PLAYED_OPPONENT_CARD) {
+                -(hc.card.def().cost - 1)
+            } else {
+                0
+            }
+        }),
+    ),
     spell("Cosmic Manifestations", T::AnyCharacter, |g, c| {
         for _ in 0..1 + c.outcast as u8 {
             g.spell_damage(c.side, c.target, 2);
@@ -2260,6 +2323,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
                     source: None,
                     outcast: false,
                     dying: None,
+                    marks: Marks::NONE,
                 },
             );
         }

@@ -911,6 +911,7 @@ impl Game {
                     source: Some(slot),
                     outcast: false,
                     dying: None,
+                    marks: crate::state::Marks::NONE,
                 },
             );
         }
@@ -1027,6 +1028,7 @@ impl Game {
                         source: Some(slot as u8),
                         outcast: false,
                         dying: Some(m),
+                        marks: crate::state::Marks::NONE,
                     },
                 );
                 fired += 1;

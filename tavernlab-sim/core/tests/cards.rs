@@ -2510,3 +2510,116 @@ fn soulrest_ceremony_buffs_and_rushes_then_kills_them_at_end_of_turn() {
     f.g.end_turn();
     assert_eq!(f.g.players[0].board.len(), 0, "dies at the end of the turn");
 }
+
+#[test]
+fn platysaur_battlecry_draws_and_marks_the_drawn_card() {
+    let mut f = Fix::new().deck(&["Wisp"]);
+    f.play("Platysaur", None);
+    assert_eq!(f.g.players[0].hand.len(), 1, "the drawn Wisp");
+    assert!(
+        f.g.players[0].hand[0]
+            .marks
+            .has(tavernlab_core::state::Marks::DRAWN_BY_PLATYSAUR)
+    );
+}
+
+#[test]
+fn platysaur_deathrattle_discards_only_the_card_it_drew() {
+    let mut f = Fix::new().deck(&["Wisp"]);
+    f.play("Platysaur", None); // battlecry draws and marks the Wisp
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Chillwind Yeti").unwrap())); // unmarked
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "Platysaur")
+        .unwrap();
+    f.g.destroy(Target::Minion(ME, slot as u8));
+    f.g.sweep_deaths();
+    let names: Vec<&str> = f.g.players[0].hand.iter().map(|hc| hc.card.name()).collect();
+    assert_eq!(names, vec!["Chillwind Yeti"], "only the marked Wisp was discarded");
+}
+
+#[test]
+fn ebb_and_flow_needs_a_minion_played_first_for_the_armor() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Ebb and Flow", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 4, "3 damage");
+    assert_eq!(f.g.players[0].armor, 0, "no minion played yet");
+}
+
+#[test]
+fn ebb_and_flow_gains_armor_after_a_minion_was_played_while_held() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Ebb and Flow").unwrap()));
+    f.play("Wisp", None); // a minion, played while Ebb and Flow sits in hand
+    let idx = f.g.players[0]
+        .hand
+        .iter()
+        .position(|hc| hc.card.name() == "Ebb and Flow")
+        .unwrap();
+    let ok = f.g.apply(Action::Play {
+        hand: idx as u8,
+        target: foe_minion(0),
+        position: u8::MAX,
+        choice: u8::MAX,
+    });
+    assert!(ok);
+    assert_eq!(f.g.players[0].armor, 5);
+}
+
+#[test]
+fn mind_sweeper_needs_an_opponents_card_played_while_held() {
+    let mut f = Fix::new().board(FOE, &["Wisp", "Wisp"]);
+    f.play("Mind Sweeper", None);
+    assert_eq!(f.their_board(), 2, "no opponent's card played yet, no damage");
+}
+
+#[test]
+fn mind_sweeper_deals_damage_after_playing_an_opponents_card() {
+    let mut f = Fix::new().board(FOE, &["Wisp", "Wisp"]);
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Mind Sweeper").unwrap()));
+    f.play("Voidwalker", None); // a Warlock card in a Mage's hand: picked up somehow
+    let idx = f.g.players[0]
+        .hand
+        .iter()
+        .position(|hc| hc.card.name() == "Mind Sweeper")
+        .unwrap();
+    f.g.apply(Action::Play {
+        hand: idx as u8,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    });
+    assert_eq!(f.their_board(), 0, "both 1-health Wisps die to the 2 damage");
+}
+
+#[test]
+fn unshackle_soul_costs_one_after_playing_an_opponents_card() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    let unshackle = by_name("Unshackle Soul").unwrap();
+    f.g.players[0].hand.push(HandCard::new(unshackle));
+    let before_idx = f.g.players[0].hand.len() - 1;
+    assert_eq!(f.g.card_cost(ME, before_idx), unshackle.def().cost, "full price so far");
+
+    f.play("Voidwalker", None); // a Warlock card in a Mage's hand: picked up somehow
+    let idx = f.g.players[0]
+        .hand
+        .iter()
+        .position(|hc| hc.card.name() == "Unshackle Soul")
+        .unwrap();
+    assert_eq!(f.g.card_cost(ME, idx), 1);
+    let ok = f.g.apply(Action::Play {
+        hand: idx as u8,
+        target: foe_minion(0),
+        position: u8::MAX,
+        choice: u8::MAX,
+    });
+    assert!(ok);
+    assert_eq!(f.their_board(), 0);
+}
