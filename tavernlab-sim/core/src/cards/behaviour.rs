@@ -323,6 +323,8 @@ mod tokens {
     pub const TLC_903T: CardId = token("TLC_903t");
     pub const FLAME_ELEMENTAL: CardId = token("UNG_809t1");
     pub const ARCANE_MISSILES: CardId = token("EX1_277");
+    pub const MUGS_MAGIC: CardId = token("JAIL_800hp1");
+    pub const ZEES_MIGHT: CardId = token("JAIL_800hp2");
     pub const GORISHI_STINGER: CardId = token("TLC_630t");
     /// Brood Keeper's "2/2 Sword". A weapon, so it never shows up through
     /// `summonable_children()`, which only ever returns minions.
@@ -2405,6 +2407,30 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.player_mut(c.side).deck.push(*card);
         }
         g.shuffle_deck(c.side);
+    }),
+    // Both halves check the *deck* specifically, matching "while building
+    // your deck" framing: a deck with no other minions gets Mug's Magic, one
+    // with no spells gets Zee's Might, each read back later by name from
+    // `hero_power` -- see `Game::card_cost`/`play_card`/`legal_actions`. A
+    // deck satisfying both (extremely degenerate) ends up with Zee's Might,
+    // since it is checked second; not a real deckbuilding choice either way.
+    start_of_game("Mug'Zee", |g, c| {
+        let deck = g.player(c.side).deck;
+        // "No *other* minions": Mug'Zee itself may still be sitting in the
+        // deck (this fires for a copy kept in hand too, and Start of Game
+        // scans deck and hand alike), and must not disqualify itself.
+        if deck
+            .iter()
+            .all(|&card| card == c.card || card.def().kind() != super::Kind::Minion)
+        {
+            g.player_mut(c.side).hero_power = tokens::MUGS_MAGIC;
+        }
+        if deck
+            .iter()
+            .all(|&card| card.def().kind() != super::Kind::Spell)
+        {
+            g.player_mut(c.side).hero_power = tokens::ZEES_MIGHT;
+        }
     }),
     // King Llane plants itself in the *opponent's* deck at Start of Game, so
     // Garona Halforcen's "if your opponent is holding King Llane" can ever

@@ -465,6 +465,14 @@ pub struct Player {
     /// rest of the turn the swap happened on; restored and cleared at that
     /// same turn's end.
     pub swapped_hand: Option<Inline<HandCard, MAX_HAND>>,
+    /// Minions played from hand, total across the whole game, never reset
+    /// (Zee's Might: every fifth one triggers its own Battlecry twice).
+    pub minions_played_total: u8,
+    /// Whether this player's first minion this turn has already had Mug's
+    /// Magic's discount applied. Reset every turn; the card itself is what
+    /// gates *whether* the discount exists at all (Passive Hero Power, Turn
+    /// 3+), so this only needs to say "not yet this turn".
+    pub first_minion_discounted_turn: bool,
 }
 
 impl Player {
@@ -510,6 +518,8 @@ impl Player {
             secrets: Inline::new(),
             starting_hand: Inline::new(),
             swapped_hand: None,
+            minions_played_total: 0,
+            first_minion_discounted_turn: false,
         }
     }
 

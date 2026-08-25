@@ -3093,3 +3093,77 @@ fn the_fins_beyond_time_swaps_to_the_starting_hand_and_back() {
         "cleared once restored"
     );
 }
+
+#[test]
+fn mugzee_grants_zees_might_with_no_spells_in_deck() {
+    use tavernlab_core::agent::{Scripted, Style};
+
+    let mugzee = by_name("Mug'Zee").unwrap();
+    let wisp = by_name("Wisp").unwrap();
+    let mut deck = vec![mugzee];
+    deck.resize(30, wisp);
+
+    let mut g = Game::new((Class::Shaman, &deck), (Class::Shaman, &deck), 1).unwrap();
+    let mut a = Scripted::new(Style::Midrange);
+    let mut b = Scripted::new(Style::Midrange);
+    let mut agents: [&mut dyn Agent; 2] = [&mut a, &mut b];
+    g.start(Side::Player0, &mut agents);
+
+    assert_eq!(g.players[0].hero_power.name(), "Zee's Might");
+}
+
+#[test]
+fn mugzee_grants_mugs_magic_with_no_other_minions_in_deck() {
+    use tavernlab_core::agent::{Scripted, Style};
+
+    let mugzee = by_name("Mug'Zee").unwrap();
+    let bolt = by_name("Lightning Bolt").unwrap();
+    let mut deck = vec![mugzee];
+    deck.resize(30, bolt);
+
+    let mut g = Game::new((Class::Shaman, &deck), (Class::Shaman, &deck), 1).unwrap();
+    let mut a = Scripted::new(Style::Midrange);
+    let mut b = Scripted::new(Style::Midrange);
+    let mut agents: [&mut dyn Agent; 2] = [&mut a, &mut b];
+    g.start(Side::Player0, &mut agents);
+
+    assert_eq!(g.players[0].hero_power.name(), "Mug's Magic");
+}
+
+#[test]
+fn mugs_magic_discounts_only_the_first_minion_each_turn_from_turn_three() {
+    let yeti = by_name("Chillwind Yeti").unwrap();
+    let mut f = Fix::new();
+    f.g.players[0].hero_power = by_name("Mug's Magic").unwrap();
+    f.g.players[0].hand.push(HandCard::new(yeti));
+
+    f.g.turn = 2;
+    assert_eq!(f.g.card_cost(ME, 0), 4, "not yet turn 3");
+
+    f.g.turn = 3;
+    assert_eq!(
+        f.g.card_cost(ME, 0),
+        2,
+        "the first minion is discounted from turn 3"
+    );
+
+    f.play("Wisp", None); // a different minion, played first, spends the discount
+    assert_eq!(
+        f.g.card_cost(ME, 0),
+        4,
+        "the discount is already spent this turn"
+    );
+}
+
+#[test]
+fn zees_might_doubles_the_battlecry_of_every_fifth_minion_played() {
+    let mut f = Fix::new().deck(&["Wisp", "Wisp"]);
+    f.g.players[0].hero_power = by_name("Zee's Might").unwrap();
+    f.g.players[0].minions_played_total = 4;
+    f.play("Novice Engineer", None); // battlecry: draw a card
+    assert_eq!(
+        f.g.players[0].hand.len(),
+        2,
+        "the 5th minion's battlecry fired twice"
+    );
+}

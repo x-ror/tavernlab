@@ -248,6 +248,17 @@ impl Game {
         if hc.card.def().kind() == Kind::Minion && hc.card.def().races.any(Races::BEAST) {
             cost -= self.player(side).next_beast_discount;
         }
+        // Mug's Magic (Mug'Zee's Passive Hero Power): the first minion each
+        // turn costs 2 less, from turn 3 on. Checked by name rather than a
+        // stored flag, the same way `hero_power_target` reads the equipped
+        // power -- "which power" already lives in `hero_power`.
+        if hc.card.def().kind() == Kind::Minion
+            && self.turn >= 3
+            && !self.player(side).first_minion_discounted_turn
+            && self.player(side).hero_power.name() == "Mug's Magic"
+        {
+            cost -= 2;
+        }
         if hc.card.def().kind() == Kind::Spell {
             cost += self.player(side).spell_tax_active;
         }
@@ -273,6 +284,7 @@ impl Game {
         p.cards_played_turn = 0;
         p.spells_cast_turn = 0;
         p.schools_cast_turn = 0;
+        p.first_minion_discounted_turn = false;
         // A tax queued for this turn becomes active for it; this also clears
         // last turn's, since the promotion always overwrites regardless of
         // whether anything queued a new one.
@@ -646,7 +658,10 @@ impl Game {
                 me.mana >= hp.def().cost
             }
         };
-        if me.hero_power_uses == 0 && affordable(me.hero_power) {
+        if me.hero_power_uses == 0
+            && affordable(me.hero_power)
+            && !is_passive_hero_power(me.hero_power)
+        {
             match hero_power_target(me.hero_power) {
                 HpTarget::None => {
                     out.push(Action::HeroPower {
@@ -850,6 +865,11 @@ impl Game {
                 // The discount is spent by the first Beast that uses it.
                 p.next_beast_discount = 0;
             }
+            p.minions_played_total = p.minions_played_total.saturating_add(1);
+            // Spent by the first minion regardless of whether Mug's Magic was
+            // even equipped yet -- matching how `next_beast_discount` above
+            // clears unconditionally too.
+            p.first_minion_discounted_turn = true;
         }
         if def.overload > 0 {
             p.overload_next += def.overload as i16;
@@ -931,6 +951,13 @@ impl Game {
             self.fire_weapon_deathrattle(side, old);
         }
 
+        // Zee's Might (Mug'Zee's other Passive Hero Power): every fifth
+        // minion played triggers its own Battlecry a second time. Read once,
+        // before either effect below can change the board under it.
+        let double_battlecry = def.kind() == Kind::Minion
+            && self.player(side).hero_power.name() == "Zee's Might"
+            && self.player(side).minions_played_total % 5 == 0;
+
         if let Some(mode) = chosen {
             let ctx = Ctx {
                 card: hc.card,
@@ -954,6 +981,9 @@ impl Game {
                 }
             } else {
                 (mode.effect)(self, &ctx);
+                if double_battlecry {
+                    (mode.effect)(self, &ctx);
+                }
             }
         } else if let Some(b) = beh {
             let ctx = Ctx {
@@ -981,6 +1011,9 @@ impl Game {
                 }
             } else if let Some(f) = b.battlecry {
                 f(self, &ctx);
+                if double_battlecry {
+                    f(self, &ctx);
+                }
             }
         }
         self.sweep_deaths();
@@ -1796,6 +1829,15 @@ impl Game {
 /// resource, so nothing else needs to know "how many".
 fn pays_with_corpses(card: CardId) -> bool {
     matches!(card.name(), "Reanimated Pterrordax" | "Vampyr's Kiss")
+}
+
+/// A Hero Power with no `Action::HeroPower` to take at all (Mug'Zee's
+/// Passives: Mug's Magic discounts a minion automatically, Zee's Might
+/// doubles a Battlecry automatically). Both apply themselves from inside
+/// `card_cost`/`play_card` by reading `hero_power` directly, so this only
+/// needs to keep `legal_actions` from offering a button that does nothing.
+fn is_passive_hero_power(card: CardId) -> bool {
+    matches!(card.name(), "Mug's Magic" | "Zee's Might")
 }
 
 /// The basic hero power for a class.
