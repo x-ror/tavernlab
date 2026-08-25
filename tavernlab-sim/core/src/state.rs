@@ -114,6 +114,12 @@ pub struct Permanent {
     /// their controller's turns they have lived through, so a deathrattle can
     /// scale by it. Zero for every card that does not use it.
     pub growth: u8,
+    /// Set while this permanent is under borrowed control (Cursed Chains),
+    /// to the side it should return to. Travels with the permanent itself
+    /// through any board reordering, so returning it needs no search by
+    /// name or id -- which could not tell two copies of the same card
+    /// apart -- only a scan for this flag.
+    pub stolen_from: Option<Side>,
 }
 
 impl Default for CardId {
@@ -147,6 +153,7 @@ impl Permanent {
             cooldown: 0,
             spell_damage: d.spell_damage,
             growth: 0,
+            stolen_from: None,
         };
         if p.dormant > 0 {
             p.flags.insert(Flags::DORMANT);

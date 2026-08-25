@@ -2767,6 +2767,13 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         T::None,
         None, None, None, None, None, None, None, None, None,
     ),
+    // Control returns via `Game::end_turn`, keyed off `Permanent::stolen_from`
+    // rather than card identity -- see that field's own comment for why.
+    spell("Cursed Chains", T::EnemyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.take_control(t, c.side);
+        }
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.

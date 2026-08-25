@@ -854,6 +854,33 @@ impl Game {
         self.summon(side, m.card)
     }
 
+    /// Move a minion to `new_side`'s board, marking it so `Game::end_turn`
+    /// returns it once that side's own turn ends (Cursed Chains). Fresh to
+    /// this board the same way a summon is: it cannot attack this turn.
+    ///
+    /// Checked before anything moves, not after: leaving the permanent to
+    /// vanish because the new board turned out to be full would be worse
+    /// than the spell simply failing.
+    pub fn take_control(&mut self, target: Target, new_side: Side) -> bool {
+        let Target::Minion(old_side, slot) = target else {
+            return false;
+        };
+        if old_side == new_side || self.player(new_side).board.is_full() {
+            return false;
+        }
+        let Some(mut m) = self.player(old_side).board.get(slot as usize).copied() else {
+            return false;
+        };
+        self.player_mut(old_side).board.remove(slot as usize);
+        m.stolen_from = Some(old_side);
+        m.flags.insert(Flags::JUST_SUMMONED);
+        m.attacks_done = 0;
+        self.player_mut(new_side).board.push(m);
+        self.board_dirty = true;
+        self.recompute_auras();
+        true
+    }
+
     /// The scale a Soldier summoned right now would carry: 1, 2 or 4.
     pub fn herald_scale(&self, side: Side) -> i16 {
         match self.player(side).herald {

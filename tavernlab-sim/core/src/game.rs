@@ -405,6 +405,36 @@ impl Game {
         if let Some(saved) = p.swapped_hand.take() {
             p.hand = saved;
         }
+        // Cursed Chains: any minion stolen from `side` returns now that
+        // side's own turn has ended, wherever it currently sits on the
+        // thief's board -- found by the flag on the permanent itself, not
+        // by card identity, so two copies of the same card are never
+        // confused with each other.
+        let thief = side.other();
+        let mut returning: Inline<Permanent, MAX_BOARD> = Inline::new();
+        let mut i = 0;
+        while i < self.player(thief).board.len() {
+            if self.player(thief).board[i].stolen_from == Some(side) {
+                if let Some(mut m) = self.player_mut(thief).board.remove(i) {
+                    m.stolen_from = None;
+                    returning.push(m);
+                }
+            } else {
+                i += 1;
+            }
+        }
+        if !returning.is_empty() {
+            for m in returning.iter().copied() {
+                // A full board loses the return rather than the minion: if
+                // there is nowhere to put it, it simply stays with the
+                // thief instead of vanishing outright.
+                if !self.player_mut(side).board.push(m) {
+                    self.player_mut(thief).board.push(m);
+                }
+            }
+            self.board_dirty = true;
+            self.recompute_auras();
+        }
         self.sweep_deaths();
     }
 

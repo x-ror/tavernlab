@@ -3338,3 +3338,39 @@ fn mirrex_plays_as_its_own_plain_body() {
     assert_eq!(f.mine(0).atk, 3);
     assert_eq!(f.mine(0).max_hp, 4);
 }
+
+#[test]
+fn cursed_chains_takes_control_until_the_original_owners_turn_ends() {
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti"]);
+    f.play("Cursed Chains", foe_minion(0));
+    assert_eq!(f.g.players[0].board.len(), 1, "now on my board");
+    assert_eq!(f.g.players[1].board.len(), 0);
+    assert!(!f.mine(0).can_attack(), "can't attack this turn");
+
+    f.g.end_turn(); // my turn ends -- not the original owner's
+    assert_eq!(f.g.players[0].board.len(), 1, "still mine, unreturned");
+
+    f.g.current = Side::Player1;
+    f.g.end_turn(); // the original owner's turn ends
+    assert_eq!(f.g.players[0].board.len(), 0, "returned");
+    assert_eq!(f.g.players[1].board.len(), 1);
+}
+
+#[test]
+fn cursed_chains_returns_the_exact_stolen_instance_not_a_same_named_double() {
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti", "Chillwind Yeti"]);
+    f.g.players[1].board[0].damage = 3; // distinguishes the two identical copies
+    f.play("Cursed Chains", foe_minion(0)); // steals the damaged one specifically
+    f.g.current = Side::Player1;
+    f.g.end_turn();
+    assert_eq!(f.g.players[1].board.len(), 2);
+    let damaged = f.g.players[1]
+        .board
+        .iter()
+        .filter(|m| m.damage == 3)
+        .count();
+    assert_eq!(
+        damaged, 1,
+        "the exact stolen instance returned, not the double"
+    );
+}
