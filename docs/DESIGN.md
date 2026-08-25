@@ -75,7 +75,7 @@ These are taken as given so design is not blocked. Conflicts with reality go to 
 | Rules engine v2 | `hs2/engine.py` (1062 lines) | `Game`, `Player`, `CardDef`, `CardInst`, `Minion`, `Weapon`, `Location`, `HeroPowerState`. Mechanics listed in README. **No `clone()`, no `legal_actions()`, no undo, no replay driver, no `eid`.** `Player.listeners` / `turn_start_fx` store **closures** over live `Player`/`CardInst` (see `impls.py` Warptooth, Irida, Godfrey, Mug'Zee, Soul Immolation, …). `Game` is not slotted and grows ephemeral `_current_inst` / `_outcast` in `play_card`. |
 | Hand-written cards | `hs2/impls.py` (2859 lines, 249 `BEHAVIORS`) | Policy: fully implemented or excluded. **27 `notes=` literals** in source; after `post_build` ~32 `CardDef`s carry `notes` (token/skin copies); **26 unique card names** with documented simplifications. |
 | Autogen | `hs2/autogen.py` (15 `SEG_PATTERNS`) | Whole-text compiler; partial matches stay unimplemented. |
-| Card corpus | `hs2/standard_cards.json` (~5010 entries, ~1.58 MB) | Built by `hs2/build_data.py` from HearthstoneJSON. ~1181 Standard collectible (excl. hero skins). |
+| Card corpus | `hs2/standard_cards.json` (~5010 entries, ~1.58 MB) | Built by `hs2/build_data.py` from the merged dump of `scripts/build_cards.py` (Blizzard card-library API + official CardDefs.xml). ~1181 Standard collectible (excl. hero skins). |
 | Coverage | `carddata.build_defs()` | **258 unique collectible names implemented** (~22% of Standard collectible): ~186 hand-written + ~72 autogen. 12/12 meta decks load. |
 | Scripted AI | `hs2/ai.py` (`Agent.take_turn`) | Greedy: lethal → location → best card → hero power → attacks → prepare. Archetypes `aggro`/`midrange`/`control`. Combo engines systematically underplayed (README). |
 | Lethal | `hs2/lethal.py` (`find_lethal`, `execute`) | Face race + bounded taunt clear (`≤2` taunts, `≤9` swings) + burn knapsack (`n≤12`, `ai_hint=="dmg"`) + 5 named hero powers. Wired into `Agent.try_lethal`. |
@@ -1372,7 +1372,8 @@ PR 8 is **narrow**: `lethal_ok` overlay only. `Game.__init__` only — **do not 
 
 ```mermaid
 flowchart LR
-  HSJSON[HearthstoneJSON cards.json] --> BD[hs2/build_data.py]
+  BLIZ[Blizzard card API + CardDefs.xml] --> BC[scripts/build_cards.py]
+  BC --> BD[hs2/build_data.py]
   BD --> STD[standard_cards.json]
   STD --> DEF[carddata.build_defs]
   DEF --> AG[autogen.try_compile]
@@ -1446,7 +1447,7 @@ If clone exceeds 200 µs, profile before reaching for Rust. Likely fix: copy `__
 |---|---|---|---|---|---|
 | **Hearthstone Power.log / Zone.log** | Games | Read-only files | Intended client logs; HSDT-class | **Import on demand (MVP)**; live tail v1 | **Must** (import) / Should (tail) |
 | **User deckstring** | Own list | Paste (existing) | User’s data | On demand | **Must** |
-| **HearthstoneJSON** `cards.json` / `cards.collectible.json` | Card corpus | HTTPS download to cache, then `hs2/build_data.py` | Public project, designed for this | On app start if ETag changed; else 24 h | **Must** |
+| **Blizzard card-library API** + **CardDefs.xml** | Card corpus | `scripts/build_cards.py` merges both, then `hs2/build_data.py` | Official Blizzard data; API needs no auth, CardDefs ships in `hearthstone-data` | Manual, by hand (never at runtime) | **Must** |
 | **Local `meta_decks_2026.json`** | Gauntlet | `update_meta.py --add/--file` | User-provided lists | Manual (MVP); UI wrapper v1 | **Must** |
 | **Blizzard Game Data API** | Official card metadata | OAuth client credentials | Official; free developer account; **optional** | Weekly if configured | Could (not required) |
 | **Vicious Syndicate reports** | Archetype names, MU tables | Manual paste or fetch **if** robots.txt + reuse policy allow | **Speculative** — check license each season | Weekly | Could |

@@ -119,7 +119,7 @@ def is_legal(card, fmt):
 
 
 def entry_is_legal(entry, fmt):
-    """`is_legal` for a raw HearthstoneJSON dict."""
+    """`is_legal` for a raw card dict, as the corpus builder sees it."""
     return (entry.get("type") in DECK_TYPES
             and entry.get("set") in sets_for(fmt))
 

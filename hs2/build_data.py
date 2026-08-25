@@ -1,4 +1,12 @@
-"""Build the engine's card corpus from HearthstoneJSON `cards.json`.
+"""Build the engine's card corpus from a merged card dump.
+
+The dump comes from `scripts/build_cards.py`, which joins Blizzard's live
+card-library API with the official CardDefs.xml. It replaced the third-party
+HearthstoneJSON mirror this script used to read, so the download lives there
+now — one deliberate fetch, by hand, and the app itself never talks to the
+network:
+
+    python3 scripts/build_cards.py --include-carddefs-only --out cards_merged.json
 
 Two files, because Standard is a strict subset of Wild and duplicating
 1179 entries into a second file helps nobody:
@@ -11,13 +19,12 @@ checkout that never built the Wild delta behaves exactly as it did
 before. Legality is not decided here — the corpus carries `set`, and
 `hs2/formats.py` turns that into an answer per format.
 
-    python3 hs2/build_data.py cards.json                    # Standard
-    python3 hs2/build_data.py cards.json --format wild      # Wild delta
-    python3 hs2/build_data.py cards.json --format both
+    python3 hs2/build_data.py cards_merged.json                 # Standard
+    python3 hs2/build_data.py cards_merged.json --format wild   # Wild delta
+    python3 hs2/build_data.py cards_merged.json --format both
 
-Fetch the source once, deliberately, the way `scripts/fetch_art.py` does:
-
-    python3 hs2/build_data.py --fetch --format both
+The corpus needs the tokens, hero powers and enchantments the live API does
+not serve, so build the dump with --include-carddefs-only.
 """
 import argparse
 import json
@@ -30,7 +37,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from hs2 import formats  # noqa: E402  (needs the path above)
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-HSJSON_URL = "https://api.hearthstonejson.com/v1/latest/enUS/cards.json"
 
 STANDARD_PATH = os.path.join(_HERE, "standard_cards.json")
 WILD_PATH = os.path.join(_HERE, "wild_cards.json")
@@ -57,13 +63,17 @@ def entry(c):
         "dbf": c["dbfId"],
         "name": c["name"],
         "type": c["type"],
-        "cls": c.get("cardClass", "NEUTRAL"),
+        # `or`, not a .get default: the source may carry the key with a null
+        # value for cards that have no class at all.
+        "cls": c.get("cardClass") or "NEUTRAL",
         "cost": c.get("cost", 0),
         "atk": c.get("attack", 0),
         "hp": c.get("health", 0),
         "dur": c.get("durability", 0),
         "armor": c.get("armor", 0),
-        "races": c.get("races", []),
+        # `minionType` is what scripts/build_cards.py calls it; `races` is the
+        # HearthstoneJSON spelling that older dumps use.
+        "races": c.get("races") or c.get("minionType") or [],
         "school": c.get("spellSchool"),
         "mech": c.get("mechanics", []),
         "text": clean_text(c.get("text")),
@@ -71,8 +81,10 @@ def entry(c):
         "rarity": c.get("rarity"),
         "set": c.get("set"),
     }
-    # LOCATION durability is stored in "health" by HSJSON
-    if e["type"] == "LOCATION" and not e["dur"]:
+    # LOCATION and WEAPON durability is stored in "health" upstream. Without
+    # the weapon half of this every weapon lands in the corpus with dur 0, and
+    # `engine.py` destroys a weapon the moment its durability hits zero.
+    if e["type"] in ("LOCATION", "WEAPON") and not e["dur"]:
         e["dur"] = e["hp"]
     return e
 
@@ -102,35 +114,19 @@ def build_wild_delta(cards, standard):
             if _wanted(c, formats.WILD_SETS) and c["id"] not in standard}
 
 
-def fetch(url=HSJSON_URL):
-    """One deliberate download of the public card corpus.
-
-    Same rule as `scripts/fetch_art.py`: this runs once, by hand, and the
-    app itself never talks to the network.
-    """
-    import urllib.request
-    req = urllib.request.Request(
-        url, headers={"User-Agent": "TavernLab (card corpus build)"})
-    with urllib.request.urlopen(req, timeout=120) as r:
-        return json.loads(r.read())
-
-
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("src", nargs="?", default="cards.json",
-                    help="HearthstoneJSON cards.json (or use --fetch)")
+    ap.add_argument("src", nargs="?", default="cards_merged.json",
+                    help="merged dump from scripts/build_cards.py")
     ap.add_argument("--format", choices=("standard", "wild", "both"),
                     default="standard")
-    ap.add_argument("--fetch", action="store_true",
-                    help=f"download {HSJSON_URL} instead of reading a file")
     args = ap.parse_args(argv)
 
-    if args.fetch:
-        print(f"downloading {HSJSON_URL} …")
-        cards = fetch()
-    else:
-        cards = json.load(open(args.src, encoding="utf-8"))
+    with open(args.src, encoding="utf-8") as fh:
+        cards = json.load(fh)
+    if isinstance(cards, dict):
+        cards = cards["cards"]      # --wrap output carries meta around the array
 
     if args.format in ("standard", "both"):
         standard = build_standard(cards)

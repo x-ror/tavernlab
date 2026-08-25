@@ -78,7 +78,8 @@ def add_deck(data, name, code, fmt):
     entry, unknown, unimpl = decode_to_entry(code, fmt)
     if unknown:
         print(f"  ✗ {name}: невідомі dbf {unknown} — оновіть датасет "
-              "(python3 hs2/build_data.py cards.json)")
+              "(python3 scripts/build_cards.py --include-carddefs-only && "
+              "python3 hs2/build_data.py cards_merged.json)")
         return False
     if unimpl:
         print(f"  ⚠ {name}: НЕРЕАЛІЗОВАНІ карти ({len(unimpl)}):")
