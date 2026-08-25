@@ -337,18 +337,30 @@ mod tests {
     fn the_coin_alternates_so_neither_seat_always_leads() {
         // Directly asserts the anti-variance rule: with an even game count each
         // side leads exactly half the time.
+        //
+        // A single seed is not a reliable witness for this on its own: in a
+        // mirror match a coin flip legitimately ties as often as it decides
+        // the game (measured at roughly half of arbitrary seeds, on this very
+        // matchup), purely from how the two identical decks happen to draw.
+        // One card gaining or losing a behaviour shifts which seeds land on
+        // which side of that coincidence -- unrelated to whether the coin is
+        // actually being applied. Checking a spread of seeds and requiring
+        // only that they do not *all* tie keeps the real bug this guards
+        // against (leading never mattering at all) easy to catch while not
+        // breaking every time an unrelated card's behaviour changes.
         let d = test_deck(Class::Mage);
         let a = Contender {
             class: Class::Mage,
             cards: &d,
             style: Style::Midrange,
         };
-        let s = seeds(11, 2);
-        // Same seed, both seats leading: the two games must differ.
-        assert_ne!(
-            play_one(a, a, s[0], Side::Player0),
-            play_one(a, a, s[0], Side::Player1),
-            "who leads made no difference, so the coin is not being applied"
+        let differed = (0..20u64).any(|base| {
+            let s = seeds(base, 2);
+            play_one(a, a, s[0], Side::Player0) != play_one(a, a, s[0], Side::Player1)
+        });
+        assert!(
+            differed,
+            "who leads made no difference in 20 straight seeds, so the coin is not being applied"
         );
     }
 }

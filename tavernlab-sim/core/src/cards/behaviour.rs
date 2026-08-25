@@ -2630,6 +2630,18 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     spell("Nightmare Fuel", T::None, |g, c| {
         g.discover_from_opponent_deck(c.side, |d| d.kind() == super::Kind::Minion);
     }),
+    // The random Bonus Effect pool (stat buffs and keyword grants) is fixed
+    // to always +1/+1 -- the plainest entry in that pool. "Not itself": the
+    // same exclusion Warden Maiev's identical "after you play a minion"
+    // wording uses above.
+    trigger("Dreambound Raptor", |g, c| {
+        if let Event::MinionSummoned { side, slot, .. } = c.event
+            && side == c.side
+            && slot != c.slot
+        {
+            g.buff(Target::Minion(side, slot), 1, 1);
+        }
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -2707,6 +2719,10 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Nightmare Fuel",
         "the Combo bonus (the discovered minion arrives with a Dark Gift, G11) is not implemented; the base Discover always fires without it",
+    ),
+    (
+        "Dreambound Raptor",
+        "the random Bonus Effect pool is fixed to a single always +1/+1, rather than a random draw from the full set of stat and keyword grants",
     ),
 ];
 

@@ -3052,3 +3052,13 @@ fn nightmare_fuel_discovers_a_minion_copy_from_the_opponents_deck() {
         "the opponent keeps their copy"
     );
 }
+
+#[test]
+fn dreambound_raptor_gives_a_fixed_bonus_but_not_to_itself() {
+    let mut f = Fix::new().board(ME, &["Dreambound Raptor"]);
+    f.play("Chillwind Yeti", None);
+    assert_eq!(f.mine(1).atk, 5, "4/5 Yeti plus the fixed +1/+1");
+    assert_eq!(f.mine(1).max_hp, 6);
+    assert_eq!(f.mine(0).atk, 2, "the Raptor itself is unaffected");
+    assert_eq!(f.mine(0).max_hp, 1);
+}
