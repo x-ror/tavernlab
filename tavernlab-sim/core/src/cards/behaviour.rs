@@ -336,6 +336,11 @@ mod tokens {
     pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
     /// Sigil of the Seas' "3/3 Naga with Taunt".
     pub const NAGA_MONSTROSITY: CardId = token("CATA_528t");
+    /// Emergency Surgery's "3/1 Undead with Lifesteal".
+    pub const NECRONURSE: CardId = token("JAIL_454t");
+    /// Spire of Solitude's "a Demon". Its base 1/1 is overwritten to match
+    /// the caster's hand size; see the Location's activation.
+    pub const SHIVARRA_INFILTRATOR: CardId = token("JAIL_511t");
 
     /// The three Dreadseeds. Cards that summon "a random Dormant Dreadseed"
     /// roll one of these.
@@ -2399,6 +2404,41 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.player_mut(foe).hand.remove(idx);
             g.player_mut(foe).hero_hp /= 2;
             g.check_over();
+        }
+    }),
+
+    // -------------------------------------------------------- phase 4, G7
+    // Forced attack: docs/RUST_CARDS_PLAN.md §4 phase 4 (G7).
+    spell("Emergency Surgery", T::EnemyMinion, |g, c| {
+        let Some(target) = c.target else { return };
+        for _ in 0..4 {
+            if g.summon_token(c.side, tokens::NECRONURSE, 1) == 0 {
+                break;
+            }
+            let alive = matches!(target, Target::Minion(s, i)
+                if g.player(s).board.get(i as usize).is_some_and(|m| m.active()));
+            if !alive {
+                break;
+            }
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.forced_attack((c.side, slot), target);
+            if g.is_over() {
+                return;
+            }
+        }
+    }),
+    spell("Spire of Solitude", T::None, |g, c| {
+        let n = g.player(c.side).hand.len() as i16;
+        if g.summon_token(c.side, tokens::SHIVARRA_INFILTRATOR, 1) > 0
+            && let Some(last) = g.player(c.side).board.len().checked_sub(1)
+        {
+            let slot = last as u8;
+            let t = Target::Minion(c.side, slot);
+            g.set_attack(t, n);
+            g.set_health(t, n);
+            if let Some(target) = g.random_minion(c.side.other()) {
+                g.forced_attack((c.side, slot), target);
+            }
         }
     }),
 ];

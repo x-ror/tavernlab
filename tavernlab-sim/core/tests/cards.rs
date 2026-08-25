@@ -2687,6 +2687,45 @@ fn garona_halforcen_does_nothing_without_king_llane() {
 }
 
 #[test]
+fn emergency_surgery_summons_four_lifesteal_undead_that_attack_the_target() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[1].board[0].atk = 0; // isolate: no counter-damage back
+    f.g.players[1].board[0].max_hp = 20;
+    f.g.players[0].hero_hp = 10;
+    f.play("Emergency Surgery", foe_minion(0));
+    assert_eq!(f.g.players[0].board.len(), 4, "four Necronurses");
+    assert!(f.g.players[0].board.iter().all(|m| m.card.name() == "Necronurse"));
+    assert_eq!(f.theirs(0).damage, 12, "4 x 3 damage");
+    assert_eq!(f.g.players[0].hero_hp, 22, "4 x 3 Lifesteal");
+}
+
+#[test]
+fn spire_of_solitude_summons_a_demon_sized_by_hand_and_attacks_a_random_enemy() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.g.players[1].board[0].atk = 0; // isolate: no counter-damage back
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Wisp").unwrap()));
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("Spire of Solitude", None);
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "Spire of Solitude")
+        .unwrap() as u8;
+    f.g.apply(Action::UseLocation { slot, target: None });
+    let demon = f.g.players[0]
+        .board
+        .iter()
+        .find(|m| m.card.name() == "Shivarra Infiltrator")
+        .expect("the Demon should have been summoned");
+    assert_eq!((demon.atk, demon.health()), (2, 2), "sized to the 2-card hand");
+    assert_eq!(f.theirs(0).damage, 2, "attacked the only enemy minion");
+}
+
+#[test]
 fn unshackle_soul_costs_one_after_playing_an_opponents_card() {
     let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
     let unshackle = by_name("Unshackle Soul").unwrap();

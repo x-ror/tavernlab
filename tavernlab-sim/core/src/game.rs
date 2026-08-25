@@ -1135,6 +1135,60 @@ impl Game {
         }
     }
 
+    /// Force the minion at `attacker` to deal its current attack to
+    /// `defender` and take the defender's attack back, ignoring Taunt,
+    /// summoning sickness, and whether it has already attacked -- for a card
+    /// that assigns the target itself (Emergency Surgery, Spire of
+    /// Solitude) rather than letting the normal action space choose it.
+    ///
+    /// A deliberate simplification against `attack_with`: no secrets fire,
+    /// and there is no weapon durability to spend, since the attacker here
+    /// is always a minion, never a hero.
+    pub fn forced_attack(&mut self, attacker: (Side, u8), defender: Target) {
+        let Some(m) = self
+            .player(attacker.0)
+            .board
+            .get(attacker.1 as usize)
+            .copied()
+        else {
+            return;
+        };
+        if !m.is_minion() || m.atk <= 0 {
+            return;
+        }
+        let attacker_t = Target::Minion(attacker.0, attacker.1);
+        let defender_side = match defender {
+            Target::Hero(s) => s,
+            Target::Minion(s, _) => s,
+        };
+        let (counter, counter_poison, counter_lifesteal) = match defender {
+            Target::Hero(_) => (0, false, false),
+            Target::Minion(s, i) => match self.player(s).board.get(i as usize) {
+                Some(d) => (d.atk, d.has(Keywords::POISONOUS), d.has(Keywords::LIFESTEAL)),
+                None => return,
+            },
+        };
+
+        let dealt = self.deal_damage(defender, m.atk);
+        if dealt && m.has(Keywords::POISONOUS) {
+            self.poison(defender);
+        }
+        if dealt && m.has(Keywords::LIFESTEAL) && m.atk > 0 {
+            self.heal_hero(attacker.0, m.atk);
+        }
+        if counter > 0 {
+            let hit = self.deal_damage(attacker_t, counter);
+            if hit && counter_poison {
+                self.poison(attacker_t);
+            }
+            if hit && counter_lifesteal {
+                self.heal_hero(defender_side, counter);
+            }
+        }
+        self.board_dirty = true;
+        self.sweep_deaths();
+    }
+
     // -------------------------------------------------- damage and healing
 
     /// Deal `amount` damage. Returns whether damage actually landed, which is
