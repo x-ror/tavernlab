@@ -184,6 +184,18 @@ impl Game {
         if self.trigger_depth >= MAX_TRIGGER_DEPTH || self.is_over() {
             return;
         }
+        // Warptooth reacts from hand or deck, not from a board slot, so it
+        // cannot use the reactor mechanism below at all -- this is the one
+        // deliberate exception to "no ad-hoc hooks" this module otherwise
+        // holds to. See `Game::tick_warptooth`.
+        if let Event::Damaged { target, .. } = event {
+            let side = match target {
+                Target::Hero(s) | Target::Minion(s, _) => s,
+            };
+            if side == self.current {
+                self.tick_warptooth(side);
+            }
+        }
         // Sample as (side, slot, card) rather than holding a reference: the
         // effects below take `&mut self`.
         let mut reactors: Inline<(Side, u8, CardId), { MAX_BOARD * 2 + 6 }> = Inline::new();

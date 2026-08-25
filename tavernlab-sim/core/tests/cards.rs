@@ -2920,6 +2920,52 @@ fn shaladrassil_corrupts_them_after_a_higher_cost_card_was_played_while_held() {
 }
 
 #[test]
+fn warptooth_summons_itself_from_hand_after_four_friendly_damage_instances() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]); // 4/5
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Warptooth").unwrap()));
+    for _ in 0..4 {
+        f.g.deal_damage(Target::Minion(ME, 0), 1);
+    }
+    assert!(
+        !f.g.players[0].hand.iter().any(|hc| hc.card.name() == "Warptooth"),
+        "left the hand"
+    );
+    assert!(
+        f.g.players[0].board.iter().any(|m| m.card.name() == "Warptooth"),
+        "summoned onto the board"
+    );
+}
+
+#[test]
+fn warptooth_summons_itself_from_the_deck_too() {
+    let mut f = Fix::new();
+    f.g.players[0].deck.push(by_name("Warptooth").unwrap());
+    for _ in 0..4 {
+        f.g.deal_damage(Target::Hero(ME), 1);
+    }
+    assert!(
+        !f.g.players[0].deck.iter().any(|&c| c.name() == "Warptooth"),
+        "left the deck"
+    );
+    assert!(f.g.players[0].board.iter().any(|m| m.card.name() == "Warptooth"));
+}
+
+#[test]
+fn warptooth_does_not_count_damage_to_the_opponent() {
+    let mut f = Fix::new();
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Warptooth").unwrap()));
+    for _ in 0..4 {
+        f.g.deal_damage(Target::Hero(FOE), 3);
+    }
+    assert_eq!(f.g.players[0].friendly_damaged_turn, 0);
+    assert!(f.g.players[0].hand.iter().any(|hc| hc.card.name() == "Warptooth"));
+}
+
+#[test]
 fn unshackle_soul_costs_one_after_playing_an_opponents_card() {
     let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
     let unshackle = by_name("Unshackle Soul").unwrap();

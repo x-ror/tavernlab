@@ -2582,6 +2582,15 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.give_token(c.side, if corrupt { corrupted } else { normal });
         }
     }),
+    // Charge is an ordinary keyword; the rest of the text -- reacting from
+    // hand or deck rather than the board -- is engine-level special-casing
+    // in Game::fire/tick_warptooth, which no hook here could express. This
+    // row exists only so `is_implemented` sees it.
+    c(
+        "Warptooth",
+        T::None,
+        None, None, None, None, None, None, None, None, None,
+    ),
 ];
 
 /// Cards implemented only in part, with what is missing.

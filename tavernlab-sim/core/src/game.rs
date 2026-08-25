@@ -260,6 +260,7 @@ impl Game {
         p.mana = (p.crystals - p.overload_now).max(0);
         p.hero_power_uses = 0;
         p.second_hero_power_uses = 0;
+        p.friendly_damaged_turn = 0;
         p.hero_attacks_done = 0;
         p.hero_bonus_atk = 0;
         p.cards_played_turn = 0;
@@ -1740,6 +1741,39 @@ fn hero_power_target(hp: CardId) -> HpTarget {
     match hp.info().name {
         "Fireblast" | "Lesser Heal" => HpTarget::Any,
         _ => HpTarget::None,
+    }
+}
+
+impl Game {
+    /// Count one more of `side`'s own characters taking damage this turn,
+    /// and if that makes four, summon Warptooth from wherever it is sitting
+    /// -- hand or deck -- if it is anywhere to be found. A card no longer in
+    /// either zone (already on the board, or never drawn from a deck that
+    /// does not run it) is simply not found, so this needs no separate
+    /// "already summoned" flag.
+    pub(crate) fn tick_warptooth(&mut self, side: Side) {
+        let p = self.player_mut(side);
+        p.friendly_damaged_turn = p.friendly_damaged_turn.saturating_add(1);
+        if p.friendly_damaged_turn != 4 {
+            return;
+        }
+        let Some(warptooth) = by_name("Warptooth") else {
+            return;
+        };
+        if let Some(idx) = self
+            .player(side)
+            .hand
+            .iter()
+            .position(|hc| hc.card == warptooth)
+        {
+            self.player_mut(side).hand.remove(idx);
+            self.summon(side, warptooth);
+            return;
+        }
+        if let Some(idx) = self.player(side).deck.position(&warptooth) {
+            self.player_mut(side).deck.remove(idx);
+            self.summon(side, warptooth);
+        }
     }
 }
 

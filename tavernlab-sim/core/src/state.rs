@@ -438,6 +438,10 @@ pub struct Player {
     /// Effects queued against this player's own future turns; see
     /// [`Pending`].
     pub pending: Inline<Pending, 4>,
+    /// Friendly characters damaged so far this turn (Warptooth), counting
+    /// instances, not distinct characters -- the same one hit twice counts
+    /// twice.
+    pub friendly_damaged_turn: u8,
     /// The active Quest, as (card, progress). A Quest's own printed number
     /// is not stored here, since its `trigger` already knows it -- this is
     /// only ever read back by the same card that wrote it.
@@ -486,6 +490,7 @@ impl Player {
             spell_tax_active: 0,
             spell_tax_pending: 0,
             pending: Inline::new(),
+            friendly_damaged_turn: 0,
             quest: None,
             sidequest: None,
             weapon: None,
