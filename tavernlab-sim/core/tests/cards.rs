@@ -3304,3 +3304,29 @@ fn naralex_discounts_the_first_dragon_each_turn_to_one() {
         "already spent this turn"
     );
 }
+
+#[test]
+fn shadow_of_demise_transforms_into_the_next_spell_cast() {
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti"]);
+    let shadow = by_name("Shadow of Demise").unwrap();
+    f.g.players[0].hand.push(HandCard::new(shadow));
+    f.play("Fireball", foe_minion(0));
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    let hc = f.g.players[0].hand[0];
+    assert_eq!(
+        hc.card.name(),
+        "Fireball",
+        "Shadow of Demise became the spell that was cast"
+    );
+    assert_eq!(
+        hc.cost_delta, 0,
+        "a fresh copy, not carrying any prior state"
+    );
+}
+
+#[test]
+fn shadow_of_demise_does_nothing_cast_in_its_original_form() {
+    let mut f = Fix::new();
+    f.play("Shadow of Demise", None);
+    assert_eq!(f.g.players[0].hand.len(), 0);
+}

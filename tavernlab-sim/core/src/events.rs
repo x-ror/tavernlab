@@ -184,10 +184,11 @@ impl Game {
         if self.trigger_depth >= MAX_TRIGGER_DEPTH || self.is_over() {
             return;
         }
-        // Warptooth reacts from hand or deck, not from a board slot, so it
-        // cannot use the reactor mechanism below at all -- this is the one
-        // deliberate exception to "no ad-hoc hooks" this module otherwise
-        // holds to. See `Game::tick_warptooth`.
+        // Warptooth reacts from hand or deck, not from a board slot, and
+        // Shadow of Demise reacts from hand alone -- neither can use the
+        // reactor mechanism below at all. These are the deliberate
+        // exceptions to "no ad-hoc hooks" this module otherwise holds to.
+        // See `Game::tick_warptooth` and `Game::tick_shadow_of_demise`.
         if let Event::Damaged { target, .. } = event {
             let side = match target {
                 Target::Hero(s) | Target::Minion(s, _) => s,
@@ -195,6 +196,9 @@ impl Game {
             if side == self.current {
                 self.tick_warptooth(side);
             }
+        }
+        if let Event::SpellCast { side, card } = event {
+            self.tick_shadow_of_demise(side, card);
         }
         // Sample as (side, slot, card) rather than holding a reference: the
         // effects below take `&mut self`.

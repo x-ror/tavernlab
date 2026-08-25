@@ -2750,6 +2750,12 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         T::None,
         None, None, None, None, None, None, None, None, None,
     ),
+    // Reacts from hand alone -- engine-level special-casing in
+    // `Game::fire`/`Game::tick_shadow_of_demise`, which no hook here could
+    // express. Its own "spell" is a no-op: casting the original,
+    // untransformed card spends its printed 0 Mana for nothing, exactly as
+    // the real card does before it has ever been transformed.
+    spell("Shadow of Demise", T::None, |_, _| {}),
 ];
 
 /// Cards implemented only in part, with what is missing.

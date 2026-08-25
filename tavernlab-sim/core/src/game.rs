@@ -1887,6 +1887,21 @@ impl Game {
             self.summon(side, warptooth);
         }
     }
+
+    /// Every copy of Shadow of Demise in `side`'s hand becomes a fresh copy
+    /// of `cast`, whatever spell they were a moment ago. A full reset
+    /// (`HandCard::new`), not just swapping `card`: a cost delta, a Prepare
+    /// lock or a mark belonged to the old identity, not the new one.
+    pub(crate) fn tick_shadow_of_demise(&mut self, side: Side, cast: CardId) {
+        let Some(shadow) = by_name("Shadow of Demise") else {
+            return;
+        };
+        for hc in self.player_mut(side).hand.iter_mut() {
+            if hc.card == shadow {
+                *hc = HandCard::new(cast);
+            }
+        }
+    }
 }
 
 /// Whether `card` is paid for with Corpses instead of Mana (Reanimated
