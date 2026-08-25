@@ -303,7 +303,7 @@ mod tests {
         let report = resolve_slots(&[
             ("Fireball", 2),
             ("Not A Real Card", 1),
-            ("Naralex, Herald of the Flights", 1), // a real card, not yet implemented
+            ("Deathwing, Worldbreaker", 1), // a real card, not yet implemented
         ]);
         assert_eq!(report.ok, 2);
         assert_eq!(report.total, 4);
@@ -311,7 +311,7 @@ mod tests {
             report.missing,
             vec![
                 ("Not A Real Card".to_string(), 1),
-                ("Naralex, Herald of the Flights".to_string(), 1),
+                ("Deathwing, Worldbreaker".to_string(), 1),
             ]
         );
     }

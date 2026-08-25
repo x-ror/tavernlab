@@ -2736,13 +2736,20 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             if !added {
                 break;
             }
-            if discount
-                && let Some(hc) = g.player_mut(c.side).hand.get_mut(before)
-            {
+            if discount && let Some(hc) = g.player_mut(c.side).hand.get_mut(before) {
                 hc.cost_delta = 1 - hc.card.def().cost;
             }
         }
     }),
+    // The aura is engine-level special-casing in `Game::card_cost`/`play_card`
+    // -- a live board check by name, not a stored flag, since Naralex can
+    // leave play mid-turn and take the discount with it. This row exists
+    // only so `is_implemented` sees it.
+    c(
+        "Naralex, Herald of the Flights",
+        T::None,
+        None, None, None, None, None, None, None, None, None,
+    ),
 ];
 
 /// Cards implemented only in part, with what is missing.

@@ -3287,3 +3287,20 @@ fn merithra_discounts_the_dragons_to_one_after_spending_25_mana_while_held() {
         );
     }
 }
+
+#[test]
+fn naralex_discounts_the_first_dragon_each_turn_to_one() {
+    let mut f = Fix::new().board(ME, &["Naralex, Herald of the Flights"]);
+    let whelp = by_name("Twilight Whelp").unwrap();
+    f.g.players[0].hand.push(HandCard::new(whelp));
+    assert_eq!(f.g.card_cost(ME, 0), 1, "discounted to a flat 1");
+
+    f.play("Twilight Whelp", None);
+    f.g.players[0].hand.push(HandCard::new(whelp));
+    let idx = f.g.players[0].hand.len() - 1;
+    assert_eq!(
+        f.g.card_cost(ME, idx),
+        whelp.def().cost,
+        "already spent this turn"
+    );
+}

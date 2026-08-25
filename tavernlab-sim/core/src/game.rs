@@ -260,6 +260,21 @@ impl Game {
         {
             cost -= 2;
         }
+        // Naralex, Herald of the Flights: the first Dragon each turn costs a
+        // flat 1, not "1 less" -- checked live against the board, since
+        // Naralex can leave play mid-turn and take the discount with it,
+        // unlike Mug's Magic above which lives on the Hero Power slot.
+        if hc.card.def().kind() == Kind::Minion
+            && hc.card.def().races.any(Races::DRAGON)
+            && !self.player(side).dragon_discounted_turn
+            && self
+                .player(side)
+                .board
+                .iter()
+                .any(|m| m.card.name() == "Naralex, Herald of the Flights")
+        {
+            cost = 1;
+        }
         if hc.card.def().kind() == Kind::Spell {
             cost += self.player(side).spell_tax_active;
         }
@@ -286,6 +301,7 @@ impl Game {
         p.spells_cast_turn = 0;
         p.schools_cast_turn = 0;
         p.first_minion_discounted_turn = false;
+        p.dragon_discounted_turn = false;
         // A tax queued for this turn becomes active for it; this also clears
         // last turn's, since the promotion always overwrites regardless of
         // whether anything queued a new one.
@@ -882,6 +898,13 @@ impl Game {
             // even equipped yet -- matching how `next_beast_discount` above
             // clears unconditionally too.
             p.first_minion_discounted_turn = true;
+            if def.races.any(Races::DRAGON)
+                && p.board
+                    .iter()
+                    .any(|m| m.card.name() == "Naralex, Herald of the Flights")
+            {
+                p.dragon_discounted_turn = true;
+            }
         }
         if def.overload > 0 {
             p.overload_next += def.overload as i16;

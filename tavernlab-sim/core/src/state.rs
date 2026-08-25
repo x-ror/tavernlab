@@ -483,6 +483,11 @@ pub struct Player {
     /// Game fires (it need never be played, only kept). While set,
     /// `Game::give_card` queues an overdraw here instead of burning it.
     pub godfrey_active: bool,
+    /// Whether this player's first Dragon this turn has already had Naralex,
+    /// Herald of the Flights' discount applied. Reset every turn; whether
+    /// the discount exists at all is a live board check (is Naralex still
+    /// out?) in `Game::card_cost`, not a flag, since it can leave play.
+    pub dragon_discounted_turn: bool,
     /// Cards Godfrey caught on their way to being burned, waiting for hand
     /// space; returned one at a time, discounted by 1, at this player's own
     /// `begin_turn`. Capped rather than unbounded: a game overdrawing more
@@ -539,6 +544,7 @@ impl Player {
             first_minion_discounted_turn: false,
             godfrey_active: false,
             overdrawn: Inline::new(),
+            dragon_discounted_turn: false,
         }
     }
 
