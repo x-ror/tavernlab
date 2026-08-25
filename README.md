@@ -3,7 +3,7 @@
 Симулятор Hearthstone.
 
 - **`hs2/`** — **Standard-сезон 2026** ("Escape from Violet Hold"):
-  дата-шар з hearthstonejson (усі 1153 колекційні Standard-карти + токени),
+  дата-шар з офіційних джерел Blizzard (усі 1153 колекційні Standard-карти + токени),
   автокомпілятор простих текстів, і повністю реалізовані вручну **всі 190
   карт з 12 топ-легенд колод** дек-трекерів (деккоди декодуються нативно).
 
@@ -44,8 +44,9 @@ battlecry/deathrattle/тригери, combo, choose-one, outcast, spell schools,
 вирішується, яка карта де легальна.
 
 ```bash
-python3 hs2/build_data.py --fetch --format both   # обидва корпуси
-python3 hs2/build_data.py cards.json --format wild
+python3 scripts/build_cards.py --include-carddefs-only    # злитий дамп карт
+python3 hs2/build_data.py cards_merged.json --format both # обидва корпуси
+python3 hs2/build_data.py cards_merged.json --format wild
 ```
 
 Корпус лежить у двох файлах, бо Standard — строга підмножина Wild:
@@ -136,7 +137,7 @@ casual / friendly / arena — див. `TODO` у `hs2/formats.py`.
 
 ```bash
 # Standard 2026
-python3 hs2/build_data.py cards.json   # датасет з hearthstonejson
+python3 hs2/build_data.py cards_merged.json  # датасет (див. scripts/build_cards.py)
 python3 scripts/run2_optimize.py 200   # 22 моїх колоди + оптимізація
 python3 scripts/run2_final.py          # матриці 10k ігор -> results2.json
 
