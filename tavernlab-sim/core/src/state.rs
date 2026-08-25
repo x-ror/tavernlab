@@ -379,6 +379,9 @@ pub struct Player {
     /// Frozen during its own controller's turn, so it does not thaw at the
     /// end of it.
     pub hero_froze_this_turn: bool,
+    /// Absorbs the next instance of damage to this hero, the same way a
+    /// minion's Divine Shield does (Hardlight Protector).
+    pub hero_divine_shield: bool,
     pub mana: i16,
     /// Mana crystals owned, capped at [`MAX_MANA`].
     pub crystals: i16,
@@ -444,6 +447,7 @@ impl Player {
             hero_attacks_done: 0,
             hero_frozen: false,
             hero_froze_this_turn: false,
+            hero_divine_shield: false,
             mana: 0,
             crystals: 0,
             overload_now: 0,

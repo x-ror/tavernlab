@@ -2111,12 +2111,20 @@ fn soothsayer_deathrattle_heals_and_summons_a_six_cost_minion() {
 }
 
 #[test]
-fn hardlight_protector_heals_the_hero_and_keeps_its_own_divine_shield() {
+fn hardlight_protector_heals_and_gives_its_hero_a_divine_shield() {
     let mut f = Fix::new();
     f.g.players[0].hero_hp = 20;
     f.play("Hardlight Protector", None);
     assert_eq!(f.g.players[0].hero_hp, 23);
     assert!(f.mine(0).has(Keywords::DIVINE_SHIELD), "the minion's own printed keyword");
+    assert!(f.g.players[0].hero_divine_shield);
+
+    assert!(!f.g.damage_hero(ME, 5), "the shield absorbs the hit");
+    assert_eq!(f.g.players[0].hero_hp, 23, "no damage taken");
+    assert!(!f.g.players[0].hero_divine_shield, "and pops");
+
+    assert!(f.g.damage_hero(ME, 5), "no shield left the second time");
+    assert_eq!(f.g.players[0].hero_hp, 18);
 }
 
 #[test]

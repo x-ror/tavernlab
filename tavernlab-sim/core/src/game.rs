@@ -259,7 +259,9 @@ impl Game {
                 PendingKind::SummonToken => {
                     self.summon(side, entry.card);
                 }
-                PendingKind::HeroDamage => self.damage_hero(side, entry.amount),
+                PendingKind::HeroDamage => {
+                    self.damage_hero(side, entry.amount);
+                }
                 PendingKind::None => {}
             }
         }
@@ -1102,10 +1104,7 @@ impl Game {
             return false;
         }
         match target {
-            Target::Hero(s) => {
-                self.damage_hero(s, amount);
-                true
-            }
+            Target::Hero(s) => self.damage_hero(s, amount),
             Target::Minion(s, i) => {
                 let Some(m) = self.player_mut(s).board.get_mut(i as usize) else {
                     return false;
@@ -1124,12 +1123,18 @@ impl Game {
         }
     }
 
-    /// Damage a hero, spending armor first.
-    pub fn damage_hero(&mut self, side: Side, amount: i16) {
+    /// Damage a hero, spending armor first. Returns whether damage actually
+    /// landed, matching [`Game::deal_damage`] — a hero Divine Shield pop is
+    /// not a hit, the same way a minion's is not.
+    pub fn damage_hero(&mut self, side: Side, amount: i16) -> bool {
         if amount <= 0 {
-            return;
+            return false;
         }
         let p = self.player_mut(side);
+        if p.hero_divine_shield {
+            p.hero_divine_shield = false;
+            return false;
+        }
         let absorbed = amount.min(p.armor);
         p.armor -= absorbed;
         p.hero_hp -= amount - absorbed;
@@ -1138,6 +1143,7 @@ impl Game {
             target: Target::Hero(side),
             amount,
         });
+        true
     }
 
     pub fn heal_hero(&mut self, side: Side, amount: i16) {
@@ -1351,7 +1357,9 @@ impl Game {
                     self.deal_damage(t, 1);
                 }
             }
-            "Steady Shot" => self.damage_hero(foe, 2),
+            "Steady Shot" => {
+                self.damage_hero(foe, 2);
+            }
             "Life Tap" => {
                 self.damage_hero(side, 2);
                 if !self.is_over() {

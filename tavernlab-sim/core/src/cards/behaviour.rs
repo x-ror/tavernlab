@@ -2110,7 +2110,10 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     }),
     // Divine Shield is the minion's own printed keyword and needs no code;
     // only the hero-facing half of the battlecry is implemented here.
-    battlecry("Hardlight Protector", T::None, |g, c| g.heal_hero(c.side, 3)),
+    battlecry("Hardlight Protector", T::None, |g, c| {
+        g.heal_hero(c.side, 3);
+        g.player_mut(c.side).hero_divine_shield = true;
+    }),
     // priest
     spell("Intertwined Fate", T::None, |g, c| {
         g.discover_from_deck(c.side, |_| true);
@@ -2361,10 +2364,6 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Soldier of Al'Akir",
         "its aura scales with the Herald count, which the aura signature          cannot read; fixed at the Herald-1 value",
-    ),
-    (
-        "Hardlight Protector",
-        "the hero does not gain Divine Shield -- that needs a hero_divine_shield          field (G8); the minion's own printed Divine Shield and the heal are          both implemented",
     ),
     (
         "Cursed Catacombs",
