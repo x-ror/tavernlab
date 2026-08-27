@@ -6293,3 +6293,216 @@ fn surging_tempest_reads_the_crystals_locked_now() {
     assert_eq!(f.g.players[0].overload_now, 1);
     assert_eq!(f.mine(0).atk, 2);
 }
+
+// ------------------------------------------------ "… that died this game"
+// The graveyard, then the cards that read it.
+
+/// Kill the minion in `slot` on my board and let the sweep record it.
+fn bury(f: &mut Fix, slot: usize) {
+    f.g.players[0].board[slot].damage = f.g.players[0].board[slot].max_hp;
+    f.g.sweep_deaths();
+}
+
+#[test]
+fn the_graveyard_records_what_died_in_the_order_it_died() {
+    let mut f = Fix::new().board(ME, &["Wisp", "Chillwind Yeti"]);
+    bury(&mut f, 0);
+    bury(&mut f, 0);
+    let names: Vec<&str> = f.g.players[0]
+        .graveyard
+        .iter()
+        .map(|c| c.name())
+        .collect();
+    assert_eq!(names, vec!["Wisp", "Chillwind Yeti"]);
+    assert_eq!(f.g.players[0].deaths, 2);
+    assert_eq!(f.g.players[1].graveyard.len(), 0, "each side keeps its own");
+}
+
+#[test]
+fn a_dying_minion_is_already_buried_when_its_own_deathrattle_runs() {
+    // Ysondre counts her own death, which only works if the record is written
+    // before the rattle fires.
+    let mut f = Fix::new().board(ME, &["Ysondre"]);
+    bury(&mut f, 0);
+    assert_eq!(f.g.players[0].board.len(), 1, "one Dragon for one death");
+    assert!(f.mine(0).races().any(Races::DRAGON));
+}
+
+#[test]
+fn ysondre_scales_with_how_often_she_has_died() {
+    let mut f = Fix::new().board(ME, &["Ysondre", "Ysondre"]);
+    bury(&mut f, 0);
+    // One Dragon arrived; kill the second Ysondre, which is now slot 0 or 1.
+    let at = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "Ysondre")
+        .expect("the second one is still there");
+    let before = f.g.players[0].board.len();
+    bury(&mut f, at);
+    assert_eq!(
+        f.g.players[0].board.len(),
+        before - 1 + 2,
+        "she died twice, so two Dragons"
+    );
+}
+
+#[test]
+fn the_graveyard_is_capped_and_the_count_is_not() {
+    use tavernlab_core::state::GRAVEYARD;
+    let mut f = Fix::new();
+    for _ in 0..(GRAVEYARD + 5) {
+        f = f.board(ME, &["Wisp"]);
+        bury(&mut f, 0);
+    }
+    assert_eq!(f.g.players[0].graveyard.len(), GRAVEYARD, "the pool stops");
+    assert_eq!(
+        f.g.players[0].deaths as usize,
+        GRAVEYARD + 5,
+        "the count does not"
+    );
+}
+
+#[test]
+fn calia_menethil_brings_back_the_biggest_thing_you_lost() {
+    let mut f = Fix::new().board(ME, &["Boulderfist Ogre", "Wisp", "Chillwind Yeti"]);
+    bury(&mut f, 0);
+    bury(&mut f, 0);
+    bury(&mut f, 0);
+    f.play("Calia Menethil", None);
+    let back: Vec<&str> = f.g.players[0]
+        .board
+        .iter()
+        .map(|m| m.card.name())
+        .collect();
+    assert!(back.contains(&"Boulderfist Ogre"), "{back:?}");
+}
+
+#[test]
+fn calia_menethil_on_an_empty_graveyard_is_just_a_body() {
+    let mut f = Fix::new();
+    f.play("Calia Menethil", None);
+    assert_eq!(f.g.players[0].board.len(), 1);
+}
+
+#[test]
+fn memoriam_manifest_only_looks_at_undead() {
+    let mut f = Fix::new().board(ME, &["Boulderfist Ogre", "Nerubian Swarmguard"]);
+    bury(&mut f, 0); // a 6-cost that is not Undead
+    bury(&mut f, 0); // a 4-cost Undead
+    f.play("Memoriam Manifest", None);
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!(f.mine(0).card.name(), "Nerubian Swarmguard");
+}
+
+#[test]
+fn resuscitate_brings_back_one_of_each_cost_with_reborn() {
+    let mut f = Fix::new().board(ME, &["Wisp", "Amani Berserker", "Tauren Warrior"]);
+    for _ in 0..3 {
+        bury(&mut f, 0);
+    }
+    // Wisp costs 0 and matches nothing; the 2 and the 3 come back.
+    f.play("Resuscitate", None);
+    let costs: Vec<i16> = f.g.players[0]
+        .board
+        .iter()
+        .map(|m| m.card.def().cost)
+        .collect();
+    assert_eq!(costs, vec![2, 3]);
+    assert!(f.g.players[0].board.iter().all(|m| m.has(Keywords::REBORN)));
+}
+
+#[test]
+fn merithra_brings_back_one_of_each_big_thing() {
+    let mut f = Fix::new().board(ME, &["Deathwing", "Deathwing", "Boulderfist Ogre"]);
+    for _ in 0..3 {
+        bury(&mut f, 0);
+    }
+    f.play("Merithra", None);
+    let back: Vec<&str> = f.g.players[0]
+        .board
+        .iter()
+        .map(|m| m.card.name())
+        .collect();
+    assert_eq!(
+        back.iter().filter(|n| **n == "Deathwing").count(),
+        1,
+        "two died, one comes back: {back:?}"
+    );
+    assert!(!back.contains(&"Boulderfist Ogre"), "a 6-cost is not (8) or more");
+}
+
+#[test]
+fn undeath_sentence_fires_a_rattle_from_the_graveyard() {
+    let mut f = Fix::new().board(ME, &["Cairne Bloodhoof"]);
+    bury(&mut f, 0);
+    assert_eq!(f.g.players[0].board.len(), 1, "Baine, from the real death");
+    f.play("Undeath Sentence", None);
+    let baines = f.g.players[0]
+        .board
+        .iter()
+        .filter(|m| m.card.name() == "Baine Bloodhoof")
+        .count();
+    assert_eq!(baines, 2, "and a second Baine from the graveyard");
+}
+
+#[test]
+fn endbringer_umbra_reads_the_graveyard_now() {
+    let mut f = Fix::new().board(ME, &["Cairne Bloodhoof", "Chillwind Yeti"]);
+    bury(&mut f, 0);
+    // Clear Baine and the Yeti away so only the graveyard can explain what
+    // Umbra summons.
+    while !f.g.players[0].board.is_empty() {
+        f.g.players[0].board.remove(0);
+    }
+    f.play("Endbringer Umbra", None);
+    let baines = f.g.players[0]
+        .board
+        .iter()
+        .filter(|m| m.card.name() == "Baine Bloodhoof")
+        .count();
+    assert_eq!(baines, 1, "Cairne's rattle, fired from the graveyard");
+}
+
+#[test]
+fn aessina_waits_for_twenty_deaths() {
+    let mut f = Fix::new();
+    f.g.players[1].hero_hp = 30;
+    f.play("Aessina", None);
+    assert_eq!(f.g.players[1].hero_hp, 30, "nineteen is not twenty");
+
+    let mut f = Fix::new();
+    f.g.players[0].deaths = 20;
+    f.play("Aessina", None);
+    assert_eq!(f.g.players[1].hero_hp, 10, "twenty damage, nothing else to hit");
+}
+
+#[test]
+fn splintered_reality_grows_with_the_treants_you_have_lost() {
+    let mut f = Fix::new();
+    f.play("Splintered Reality", None);
+    assert_eq!(f.g.players[0].board.len(), 2);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (2, 2), "none died yet");
+    for _ in 0..2 {
+        bury(&mut f, 0);
+    }
+    f.play("Splintered Reality", None);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (4, 4), "two Treants died");
+}
+
+#[test]
+fn succumb_to_madness_only_resummons_a_dragon() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti", "Faerie Dragon"]);
+    bury(&mut f, 0);
+    bury(&mut f, 0);
+    f.play("Succumb to Madness", None);
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!(f.mine(0).card.name(), "Faerie Dragon");
+}
+
+#[test]
+fn succumb_to_madness_on_an_empty_graveyard_does_nothing() {
+    let mut f = Fix::new();
+    f.play("Succumb to Madness", None);
+    assert_eq!(f.g.players[0].board.len(), 0);
+}

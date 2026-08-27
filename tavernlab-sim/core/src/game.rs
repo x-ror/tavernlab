@@ -1747,6 +1747,18 @@ impl Game {
                 self.players[i].board.retain(|m| !m.is_dead());
             }
             self.board_dirty = true;
+            // Into the graveyard before any deathrattle runs: a dying minion
+            // is already in the pool when its own deathrattle reads it, which
+            // is why Ferocious Felbat has to say "a *different*" one. Only
+            // minions are recorded — every card that reads this says minion,
+            // and a Location is not one.
+            for (side, card, _, body) in dying.iter().copied() {
+                if body.is_minion() {
+                    let p = self.player_mut(side);
+                    p.deaths = p.deaths.saturating_add(1);
+                    p.graveyard.push(card);
+                }
+            }
 
             // Deathrattles fire once the bodies have left the board, in board
             // order. A minion summoned by one therefore lands at the end rather
