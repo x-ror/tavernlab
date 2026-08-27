@@ -1090,6 +1090,9 @@ impl Game {
             _ => unreachable!("filtered above"),
         }
         self.board_dirty = true;
+        // Before the battlecry: a minion that reads its own Attack ("if this
+        // has 4 or more Attack") has to see the aura it just walked into.
+        self.recompute_auras();
         if let Some(old) = broken_weapon {
             self.fire_weapon_deathrattle(side, old);
         }

@@ -7975,3 +7975,218 @@ fn razidir_burns_their_hand_on_kindred() {
     assert_eq!(f.g.players[0].hand.len(), 1);
     assert_eq!(f.g.players[1].hand.len(), 0);
 }
+
+// -------------------------------------------------------------- Hunter
+
+#[test]
+fn raptor_nest_nurse_pays_twice_over() {
+    let mut f = Fix::new().board(ME, &["Raptor-Nest Nurse"]);
+    f.play("Raptor-Nest Nurse", None);
+    let got = f.g.players[0].hand[0].card;
+    assert_eq!(got.def().kind(), Kind::Minion);
+    assert_eq!(got.def().cost, 1);
+    let at = f.g.players[0].board.len() - 1;
+    f.g.players[0].board[at].damage = f.g.players[0].board[at].max_hp;
+    f.g.sweep_deaths();
+    let got = f.g.players[0].hand[1].card;
+    assert_eq!(got.def().kind(), Kind::Spell);
+    assert_eq!(got.def().cost, 1);
+}
+
+#[test]
+fn dinositter_discounts_a_beast_each_turn() {
+    let mut f = Fix::new().board(ME, &["Dinositter"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("Fireball").unwrap()));
+    f.g.players[0].hand.push(HandCard::new(by_name("Bloodfen Raptor").unwrap()));
+    f.g.end_turn();
+    assert_eq!(f.g.players[0].hand[0].cost_delta, 0, "not a Beast");
+    assert_eq!(f.g.players[0].hand[1].cost_delta, -1);
+}
+
+#[test]
+fn freezing_trap_sends_the_attacker_home_taxed() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Freezing Trap", None);
+    f.g.current = FOE;
+    f.g.apply(Action::Attack { from: 0, target: Target::Hero(ME) });
+    assert_eq!(f.their_board(), 0);
+    assert_eq!(f.g.players[1].hand.len(), 1);
+    assert_eq!(f.g.players[1].hand[0].cost_delta, 2);
+    assert_eq!(f.g.players[0].secrets.len(), 0);
+}
+
+#[test]
+fn pressure_plate_answers_a_spell_with_a_kill() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Pressure Plate", None);
+    f.g.current = FOE;
+    f.g.players[1].hand.push(HandCard::new(by_name("The Coin").unwrap()));
+    assert!(f.g.apply(Action::Play {
+        hand: 0,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(f.their_board(), 0);
+}
+
+#[test]
+fn rat_trap_waits_for_a_third_card() {
+    let mut f = Fix::new();
+    f.play("Rat Trap", None);
+    f.g.current = FOE;
+    for i in 0..3 {
+        f.g.players[1].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+        assert!(f.g.apply(Action::Play {
+            hand: 0,
+            target: None,
+            position: u8::MAX,
+            choice: u8::MAX,
+        }));
+        let rats = f.g.players[0]
+            .board
+            .iter()
+            .filter(|m| m.card.name() == "Doom Rat")
+            .count();
+        assert_eq!(rats, usize::from(i >= 2), "after {} cards", i + 1);
+    }
+}
+
+#[test]
+fn augmented_porcupine_pays_out_its_attack() {
+    let mut f = Fix::new().board(ME, &["Augmented Porcupine"]); // 2/4
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[1].hero_hp, 28, "two points, nothing else to hit");
+}
+
+#[test]
+fn dragonbane_answers_every_hero_power() {
+    let mut f = Fix::new().board(ME, &["Dragonbane"]);
+    assert!(f.g.apply(Action::HeroPower { target: Some(Target::Hero(FOE)), second: false }));
+    assert!(f.g.players[1].hero_hp <= 24, "the power, and five more");
+}
+
+#[test]
+fn grace_of_the_greatwolf_goes_face_or_wide() {
+    let mut f = Fix::new();
+    f.play_mode("Grace of the Greatwolf", 0, None);
+    assert_eq!(f.g.players[1].hero_hp, 26);
+
+    let mut f = Fix::new();
+    f.play_mode("Grace of the Greatwolf", 1, None);
+    assert_eq!(f.g.players[0].board.len(), 2);
+    for i in 0..2 {
+        assert_eq!((f.mine(i).atk, f.mine(i).max_hp), (3, 2));
+        assert!(f.mine(i).has(Keywords::RUSH));
+    }
+}
+
+#[test]
+fn mythical_runebear_doubles_only_when_it_is_big_enough() {
+    let mut f = Fix::new();
+    f.play("Mythical Runebear", None); // printed 3/4
+    assert_eq!(f.g.players[0].board.len(), 1);
+
+    let mut f = Fix::new().board(ME, &["Leokk"]); // +1 Attack to the others
+    f.play("Mythical Runebear", None);
+    let bears = f.g.players[0]
+        .board
+        .iter()
+        .filter(|m| m.card.name() == "Mythical Runebear")
+        .count();
+    assert_eq!(bears, 2, "four attack under the aura");
+}
+
+#[test]
+fn wasteland_vanguard_fires_again_on_a_kill() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Wasteland Vanguard", None);
+    let dealt = f.theirs(0).damage + (30 - f.g.players[1].hero_hp);
+    assert_eq!(dealt, 3, "nothing died");
+
+    let mut f = Fix::new().board(FOE, &["Wisp", "Wisp", "Wisp"]);
+    f.play("Wasteland Vanguard", None);
+    let dealt: i16 = f.g.players[1].board.iter().map(|m| m.damage).sum::<i16>()
+        + (30 - f.g.players[1].hero_hp)
+        + 3 - f.their_board() as i16;
+    assert!(dealt >= 6, "a kill bought a second three");
+}
+
+#[test]
+fn sewer_swimmer_pulls_a_rattle_early() {
+    let mut f = Fix::new().board(ME, &["Cairne Bloodhoof"]);
+    f.play("Sewer Swimmer", None);
+    let baines = f.g.players[0]
+        .board
+        .iter()
+        .filter(|m| m.card.name() == "Baine Bloodhoof")
+        .count();
+    assert_eq!(baines, 1, "Cairne is still standing, and Baine is out");
+}
+
+#[test]
+fn spiritspeaker_brings_a_companion() {
+    let mut f = Fix::new();
+    f.play("Spiritspeaker", None);
+    assert_eq!(f.g.players[0].board.len(), 2);
+    let name = f.mine(1).card.name();
+    assert!(["Huffer", "Leokk", "Misha"].contains(&name), "{name}");
+}
+
+#[test]
+fn broll_bearmantle_summons_a_companion_per_spell() {
+    let mut f = Fix::new().board(ME, &["Broll Bearmantle"]);
+    f.play("The Coin", None);
+    assert_eq!(f.g.players[0].board.len(), 2);
+    let name = f.mine(1).card.name();
+    assert!(["Huffer", "Leokk", "Misha"].contains(&name), "{name}");
+}
+
+#[test]
+fn tending_dragonkin_copies_the_cheapest_beast() {
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Boulderfist Ogre").unwrap()));
+    f.g.players[0].hand.push(HandCard::new(by_name("Bloodfen Raptor").unwrap())); // 2, Beast
+    f.g.players[0].hand.push(HandCard::new(by_name("Mountain Bear").unwrap())); // 7, Beast
+    f.play("Tending Dragonkin", None);
+    let raptors = f.g.players[0]
+        .hand
+        .iter()
+        .filter(|h| h.card.name() == "Bloodfen Raptor")
+        .count();
+    assert_eq!(raptors, 2);
+}
+
+#[test]
+fn triennium_rex_pays_on_kindred_and_on_death() {
+    let mut f = Fix::new();
+    f.play("Triennium Rex", None);
+    assert_eq!(f.g.players[0].hand.len(), 0, "no Beast last turn");
+
+    let mut f = Fix::new();
+    f.g.players[0].played_races_last = Races::BEAST;
+    f.play("Triennium Rex", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].cost_delta, -2);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 2, "and again when it dies");
+}
+
+#[test]
+fn magma_hound_sprays_after_a_trade_it_survives() {
+    let mut f = Fix::new()
+        .board(ME, &["Magma Hound"]) // 5/8
+        .board(FOE, &["Wisp", "Wisp"]);
+    assert!(f.g.apply(Action::Attack { from: 0, target: Target::Minion(FOE, 0) }));
+    let dealt = (30 - f.g.players[1].hero_hp) as usize + (2 - f.their_board());
+    assert!(dealt >= 5, "five points went somewhere among the enemies");
+}
+
+#[test]
+fn leokk_lifts_the_rest_of_the_board() {
+    let mut f = Fix::new().board(ME, &["Leokk", "Chillwind Yeti"]);
+    assert_eq!(f.mine(0).atk, 2, "not himself");
+    assert_eq!(f.mine(1).atk, 5);
+}

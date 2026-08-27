@@ -470,6 +470,8 @@ mod tokens {
     pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
     /// Imp Gang Stooge's "8/8 Demon with Taunt and Lifesteal".
     pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
+    /// Rat Trap's 6/6.
+    pub const DOOM_RAT: CardId = token("GIL_577t");
     /// Sleep Paralysis' 3/6 Demon that cannot swing.
     pub const NIGHT_TERROR: CardId = token("EDR_490t");
     /// Glade Ecologist's spell and Holy Embrace's dark half. Both are real
@@ -4821,6 +4823,177 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         if g.player(side).overload_now > 0 { (1, 0) } else { (0, 0) }
     }),
 
+    // --------------------------------------------------------- Hunter
+    // Leokk is one of the three Animal Companions, so every card that summons
+    // one needs him to actually project his aura.
+    aura("Leokk", |ss, sl, ts, tl, _| {
+        if ss == ts && sl != tl { (1, 0) } else { (0, 0) }
+    }),
+    c(
+        "Raptor-Nest Nurse",
+        T::None,
+        None,
+        Some(|g, c| {
+            g.add_random_to_hand(c.side, |d| {
+                d.kind() == super::Kind::Minion && d.cost == 1
+            });
+        }),
+        Some(|g, c| {
+            g.add_random_to_hand(c.side, |d| {
+                d.kind() == super::Kind::Spell && d.cost == 1
+            });
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    trigger("Dinositter", |g, c| {
+        if !matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            return;
+        }
+        let mut beasts: Inline<u16, MAX_HAND> = Inline::new();
+        for (i, h) in g.player(c.side).hand.iter().enumerate() {
+            if h.card.def().races.any(Races::BEAST) {
+                beasts.push(i as u16);
+            }
+        }
+        if beasts.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(beasts.len());
+        if let Some(h) = g.player_mut(c.side).hand.get_mut(beasts[pick] as usize) {
+            h.cost_delta -= 1;
+        }
+    }),
+    secret("Freezing Trap", |g, owner, ev| {
+        if let Event::AttackDeclared { attacker: Target::Minion(s, i), .. } = ev
+            && s == owner.other()
+        {
+            g.bounce(Target::Minion(s, i));
+            // The bounce puts it at the end of their hand, so that is the copy
+            // the tax lands on.
+            if let Some(h) = g.player_mut(s).hand.last_mut() {
+                h.cost_delta += 2;
+            }
+            return true;
+        }
+        false
+    }),
+    secret("Pressure Plate", |g, owner, ev| {
+        if let Event::SpellCast { side, .. } = ev
+            && side == owner.other()
+            && let Some(t) = g.random_minion(owner.other())
+        {
+            g.destroy(t);
+            return true;
+        }
+        false
+    }),
+    secret("Rat Trap", |g, owner, ev| {
+        if let Event::CardPlayed { side, .. } = ev
+            && side == owner.other()
+            && g.player(side).cards_played_turn >= 3
+        {
+            g.summon_token(owner, tokens::DOOM_RAT, 1);
+            return true;
+        }
+        false
+    }),
+    deathrattle("Augmented Porcupine", |g, c| {
+        let atk = c.dying.map_or(0, |m| m.atk);
+        g.damage_split(c.side, Area::AllEnemies, atk);
+    }),
+    trigger("Dragonbane", |g, c| {
+        if matches!(c.event, Event::HeroPowerUsed { side } if side == c.side)
+            && let Some(t) = g.random_enemy(c.side)
+        {
+            g.deal_damage(t, 5);
+        }
+    }),
+    choose("Grace of the Greatwolf", &[
+        m(T::None, |g, c| {
+            g.spell_damage(c.side, Some(Target::Hero(c.side.other())), 4);
+        }),
+        m(T::None, |g, c| {
+            g.summon_token(c.side, tokens::PLAYFUL_PUP, 2);
+        }),
+    ]),
+    battlecry("Mythical Runebear", T::None, |g, c| {
+        // Reads the body on the board, so a buff before it lands counts.
+        let big = c
+            .source
+            .and_then(|s| g.player(c.side).board.get(s as usize).map(|m| m.atk >= 4))
+            .unwrap_or(false);
+        if big {
+            g.summon_copy(c.side, c.card);
+        }
+    }),
+    battlecry("Wasteland Vanguard", T::None, |g, c| {
+        let before = g.player(c.side.other()).board.len();
+        g.damage_split(c.side, Area::AllEnemies, 3);
+        g.sweep_deaths();
+        if g.player(c.side.other()).board.len() < before {
+            g.damage_split(c.side, Area::AllEnemies, 3);
+        }
+    }),
+    battlecry("Sewer Swimmer", T::None, |g, c| {
+        g.retrigger_friendly_deathrattles(c.side, 1);
+    }),
+    battlecry("Spiritspeaker", T::None, |g, c| {
+        g.summon_random_child(c.side, c.card);
+    }),
+    trigger("Broll Bearmantle", |g, c| {
+        if matches!(c.event, Event::SpellCast { side, .. } if side == c.side)
+            && let Some(card) = g.player(c.side).board.get(c.slot as usize).map(|m| m.card)
+        {
+            g.summon_random_child(c.side, card);
+        }
+    }),
+    battlecry("Tending Dragonkin", T::None, |g, c| {
+        let mut best: Option<(usize, i16)> = None;
+        for (i, h) in g.player(c.side).hand.iter().enumerate() {
+            if !h.card.def().races.any(Races::BEAST) {
+                continue;
+            }
+            let cost = h.card.def().cost;
+            if best.is_none_or(|(_, b)| cost < b) {
+                best = Some((i, cost));
+            }
+        }
+        if let Some((at, _)) = best {
+            let card = g.player(c.side).hand[at].card;
+            g.give_token(c.side, card);
+        }
+    }),
+    c(
+        "Triennium Rex",
+        T::None,
+        None,
+        Some(|g, c| {
+            if g.kindred(c.side, Races::BEAST) {
+                deathrattle_minion_to_hand(g, c.side);
+            }
+        }),
+        Some(|g, c| deathrattle_minion_to_hand(g, c.side)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    trigger("Magma Hound", |g, c| {
+        if let Event::AfterAttack { attacker, defender: Target::Minion(..), .. } = c.event
+            && attacker == c.me()
+            && let Some(atk) = g.player(c.side).board.get(c.slot as usize).map(|m| m.atk)
+        {
+            g.damage_split(c.side, Area::AllEnemies, atk);
+        }
+    }),
+
     // -------------------------------------------------------- Warlock
     spell("Shadow Rounds", T::EnemyMinion, |g, c| {
         let mut next = c.target;
@@ -6375,6 +6548,16 @@ fn index() -> &'static [u16] {
         }
         out
     })
+}
+
+/// Triennium Rex's payout, printed once and used by both of its hooks.
+fn deathrattle_minion_to_hand(g: &mut Game, side: Side) {
+    if g.add_random_to_hand(side, |d| {
+        d.kind() == super::Kind::Minion && d.keywords.has(Keywords::DEATHRATTLE)
+    }) && let Some(h) = g.player_mut(side).hand.last_mut()
+    {
+        h.cost_delta -= 2;
+    }
 }
 
 /// How much a Cataclysm is worth in this position, for Deathwing's pick.
