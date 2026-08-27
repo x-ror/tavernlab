@@ -474,6 +474,8 @@ mod tokens {
     pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
     /// Imp Gang Stooge's "8/8 Demon with Taunt and Lifesteal".
     pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
+    /// Bronze Redeemer's Dragon, resized to match its parent.
+    pub const BRONZE_BRUTE: CardId = token("CATA_478t");
     /// Web of Deception's 4/4.
     pub const SKITTERING_SPIDERLING: CardId = token("EDR_523t");
     /// Rat Trap's 6/6.
@@ -4829,6 +4831,174 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         if g.player(side).overload_now > 0 { (1, 0) } else { (0, 0) }
     }),
 
+    // -------------------------------------------------------- Paladin
+    battlecry("Ashleaf Pixie", T::None, |g, c| {
+        let holding = g.player(c.side).hand.iter().any(|h| {
+            h.card.def().kind() == super::Kind::Spell && h.card.def().cost >= 5
+        });
+        if holding && let Some(src) = c.source {
+            let t = Target::Minion(c.side, src);
+            g.grant(t, Keywords::DIVINE_SHIELD);
+            g.grant(t, Keywords::LIFESTEAL);
+        }
+    }),
+    spell("Mark of Ursol", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(s, _) = t else { return };
+        let n = if s == c.side { 3 } else { 1 };
+        g.set_attack(t, n);
+        g.set_health(t, n);
+    }),
+    deathrattle("Scarlet Bruiser", |g, c| {
+        if deck_has_neutrals(g, c.side) {
+            return;
+        }
+        if g.add_random_to_hand(c.side, |d| d.class() == super::Class::Paladin)
+            && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            h.cost_delta -= 2;
+        }
+    }),
+    battlecry("Vigilant Sentry", T::None, |g, c| {
+        if !deck_has_neutrals(g, c.side) {
+            g.summon_copy(c.side, c.card);
+            g.summon_copy(c.side, c.card);
+        }
+    }),
+    spell("Ready the Fleet", T::FriendlyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(_, i) = t else { return };
+        let Some(races) = g.player(c.side).board.get(i as usize).map(|m| m.races()) else {
+            return;
+        };
+        g.buff(t, 1, 2);
+        for j in 0..g.player(c.side).board.len() {
+            if j as u8 != i && g.player(c.side).board[j].races().any(races) {
+                g.buff(Target::Minion(c.side, j as u8), 1, 2);
+            }
+        }
+    }),
+    battlecry("Ivory Knight", T::None, |g, c| {
+        if g.discover(c.side, |d| d.kind() == super::Kind::Spell)
+            && let Some(h) = g.player(c.side).hand.last()
+        {
+            let cost = h.card.def().cost;
+            g.heal_hero(c.side, cost);
+        }
+    }),
+    choose("Lightmender", &[
+        m(T::None, |g, c| {
+            if let Some(src) = c.source {
+                let t = Target::Minion(c.side, src);
+                g.buff(t, 3, 0);
+                g.grant(t, Keywords::DIVINE_SHIELD);
+            }
+        }),
+        m(T::None, |g, c| {
+            if let Some(src) = c.source {
+                let t = Target::Minion(c.side, src);
+                g.buff(t, 0, 3);
+                g.grant(t, Keywords::LIFESTEAL);
+            }
+        }),
+    ]),
+    trigger("Spearheart Sentry", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side)
+            && g.add_random_to_hand(c.side, |d| {
+                d.kind() == super::Kind::Spell && d.school() == super::School::Holy
+            })
+            && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            h.cost_delta -= 3;
+        }
+    }),
+    battlecry("Arator the Redeemer", T::None, |g, c| {
+        for i in 0..g.player(c.side).board.len() {
+            let m = g.player(c.side).board[i];
+            if m.card.name() != "Silver Hand Recruit" {
+                continue;
+            }
+            let t = Target::Minion(c.side, i as u8);
+            g.buff(t, m.atk, m.max_hp);
+            g.grant(t, Keywords::TAUNT);
+        }
+    }),
+    trigger("Nozdormu, Bronze Aspect", |g, c| {
+        if !matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            return;
+        }
+        for i in 0..g.player(c.side).board.len() {
+            let t = Target::Minion(c.side, i as u8);
+            if g.player(c.side).board[i].has(Keywords::DIVINE_SHIELD) {
+                g.buff(t, 3, 3);
+            } else {
+                g.grant(t, Keywords::DIVINE_SHIELD);
+            }
+        }
+    }),
+    battlecry("Scarlet Recruiter", T::None, |g, c| {
+        for _ in 0..2 {
+            if !g.summon_from_deck(c.side, |d| d.cost <= 2) {
+                break;
+            }
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.grant(Target::Minion(c.side, slot), Keywords::RUSH);
+        }
+    }),
+    spell("Searing Reflection", T::None, |g, c| {
+        if !g.draw_matching(c.side, |d| d.kind() == super::Kind::Minion) {
+            return;
+        }
+        let Some(card) = g.player(c.side).hand.last().map(|h| h.card) else { return };
+        if g.summon(c.side, card) {
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.set_attack(Target::Minion(c.side, slot), 8);
+            g.set_health(Target::Minion(c.side, slot), 8);
+            g.grant(Target::Minion(c.side, slot), Keywords::DIVINE_SHIELD);
+        }
+    }),
+    spell("Hero's Welcome", T::None, |g, c| {
+        let pool = super::discover_pool(|d| {
+            d.kind() == super::Kind::Minion && d.rarity() == super::Rarity::Legendary
+        });
+        if pool.is_empty() {
+            return;
+        }
+        let mut offered = [0u32; 3];
+        let n = g.rngs.effects.sample_indices(pool.len(), &mut offered);
+        let Some(pick) = offered[..n].iter().map(|&i| pool[i as usize]).next() else {
+            return;
+        };
+        if g.summon(c.side, pick) {
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.set_attack(Target::Minion(c.side, slot), 10);
+            g.set_health(Target::Minion(c.side, slot), 10);
+        }
+    }),
+    battlecry("Firegill", T::None, |g, c| {
+        if !(g.kindred(c.side, Races::MURLOC) || g.kindred(c.side, Races::ELEMENTAL)) {
+            return;
+        }
+        let me = c.source.map(|s| Target::Minion(c.side, s));
+        for i in 0..g.player(c.side).board.len() {
+            let t = Target::Minion(c.side, i as u8);
+            if Some(t) != me {
+                g.grant(t, Keywords::RUSH);
+            }
+        }
+    }),
+    trigger("Bronze Redeemer", |g, c| {
+        if !matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            return;
+        }
+        let Some(me) = g.player(c.side).board.get(c.slot as usize).copied() else { return };
+        if g.summon_token(c.side, tokens::BRONZE_BRUTE, 1) > 0 {
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.set_attack(Target::Minion(c.side, slot), me.atk);
+            g.set_health(Target::Minion(c.side, slot), me.max_hp);
+        }
+    }),
+
     // ---------------------------------------------------------- Rogue
     spell("Mimicry", T::None, |g, c| {
         let foe = c.side.other();
@@ -6760,6 +6930,14 @@ fn index() -> &'static [u16] {
         }
         out
     })
+}
+
+/// "If your deck has no Neutral cards" -- two Paladin cards ask it.
+fn deck_has_neutrals(g: &Game, side: Side) -> bool {
+    g.player(side)
+        .deck
+        .iter()
+        .any(|card| card.def().class() == super::Class::Neutral)
 }
 
 /// Triennium Rex's payout, printed once and used by both of its hooks.

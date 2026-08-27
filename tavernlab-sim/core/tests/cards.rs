@@ -8365,3 +8365,172 @@ fn blackpaws_whip_is_cheaper_for_every_coin() {
     f.g.players[0].hand.push(HandCard::new(by_name("The Coin").unwrap()));
     assert_eq!(f.g.card_cost(ME, 0), 1);
 }
+
+// ------------------------------------------------------------- Paladin
+
+#[test]
+fn ashleaf_pixie_needs_an_expensive_spell_in_hand() {
+    let mut f = Fix::new();
+    f.play("Ashleaf Pixie", None);
+    assert!(!f.mine(0).has(Keywords::DIVINE_SHIELD));
+
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Pyroblast").unwrap()));
+    f.play("Ashleaf Pixie", None);
+    assert!(f.mine(0).has(Keywords::DIVINE_SHIELD));
+    assert!(f.mine(0).has(Keywords::LIFESTEAL));
+}
+
+#[test]
+fn mark_of_ursol_cuts_them_down_and_props_you_up() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Mark of Ursol", foe_minion(0));
+    assert_eq!((f.theirs(0).atk, f.theirs(0).max_hp), (1, 1));
+
+    let mut f = Fix::new().board(ME, &["Wisp"]);
+    f.play("Mark of Ursol", my_minion(0));
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (3, 3));
+}
+
+#[test]
+fn scarlet_bruiser_pays_a_deck_with_no_neutrals() {
+    let mut f = Fix::new().board(ME, &["Scarlet Bruiser"]).deck(&["Chillwind Yeti"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 0, "a Neutral Yeti is in there");
+
+    let mut f = Fix::new().board(ME, &["Scarlet Bruiser"]).deck(&["Holy Light"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.def().class(), Class::Paladin);
+    assert_eq!(f.g.players[0].hand[0].cost_delta, -2);
+}
+
+#[test]
+fn vigilant_sentry_triples_on_a_pure_deck() {
+    let mut f = Fix::new().deck(&["Chillwind Yeti"]);
+    f.play("Vigilant Sentry", None);
+    assert_eq!(f.g.players[0].board.len(), 1);
+
+    let mut f = Fix::new().deck(&["Holy Light"]);
+    f.play("Vigilant Sentry", None);
+    assert_eq!(f.g.players[0].board.len(), 3);
+}
+
+#[test]
+fn ready_the_fleet_lifts_the_tribe_it_points_at() {
+    let mut f = Fix::new().board(ME, &["Bloodfen Raptor", "Chillwind Yeti", "Mountain Bear"]);
+    f.play("Ready the Fleet", my_minion(0)); // a Beast
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (4, 4));
+    assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (4, 5), "no tribe");
+    assert_eq!((f.mine(2).atk, f.mine(2).max_hp), (6, 8), "another Beast");
+}
+
+#[test]
+fn ivory_knight_heals_for_what_it_found() {
+    let mut f = Fix::new();
+    f.g.players[0].hero_hp = 5;
+    f.play("Ivory Knight", None);
+    let cost = f.g.players[0].hand[0].card.def().cost;
+    assert_eq!(f.g.players[0].hero_hp, (5 + cost).min(30));
+}
+
+#[test]
+fn lightmender_picks_a_side_of_itself() {
+    let mut f = Fix::new();
+    f.play_mode("Lightmender", 0, None);
+    assert_eq!(f.mine(0).atk, 6);
+    assert!(f.mine(0).has(Keywords::DIVINE_SHIELD));
+
+    let mut f = Fix::new();
+    f.play_mode("Lightmender", 1, None);
+    assert_eq!(f.mine(0).max_hp, 6);
+    assert!(f.mine(0).has(Keywords::LIFESTEAL));
+}
+
+#[test]
+fn spearheart_sentry_pays_a_cheap_holy_spell_a_turn() {
+    let mut f = Fix::new().board(ME, &["Spearheart Sentry"]);
+    f.g.end_turn();
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    let h = &f.g.players[0].hand[0];
+    assert_eq!(h.card.def().school(), tavernlab_core::cards::School::Holy);
+    assert_eq!(h.cost_delta, -3);
+}
+
+#[test]
+fn arator_doubles_the_recruits() {
+    let mut f = Fix::new().board(ME, &["Silver Hand Recruit", "Chillwind Yeti"]);
+    f.play("Arator the Redeemer", None);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (2, 2));
+    assert!(f.mine(0).has(Keywords::TAUNT));
+    assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (4, 5), "not a Recruit");
+}
+
+#[test]
+fn nozdormu_shields_then_grows() {
+    let mut f = Fix::new().board(ME, &["Nozdormu, Bronze Aspect", "Chillwind Yeti"]);
+    f.g.end_turn();
+    assert!(f.mine(1).has(Keywords::DIVINE_SHIELD));
+    assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (4, 5));
+    f.g.end_turn();
+    assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (7, 8), "already shielded");
+}
+
+#[test]
+fn scarlet_recruiter_pulls_two_rushing_cheap_bodies() {
+    let mut f = Fix::new().deck(&["Wisp", "Bloodfen Raptor", "Boulderfist Ogre"]);
+    f.play("Scarlet Recruiter", None);
+    assert_eq!(f.g.players[0].board.len(), 3);
+    for i in 1..3 {
+        assert!(f.mine(i).card.def().cost <= 2);
+        assert!(f.mine(i).has(Keywords::RUSH));
+    }
+    assert_eq!(f.g.players[0].deck.len(), 1, "the Ogre stayed");
+}
+
+#[test]
+fn searing_reflection_lands_an_eight_eight() {
+    let mut f = Fix::new().deck(&["Wisp"]);
+    f.play("Searing Reflection", None);
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (8, 8));
+    assert!(f.mine(0).has(Keywords::DIVINE_SHIELD));
+    assert_eq!(f.g.players[0].hand.len(), 1, "the Wisp is still drawn");
+}
+
+#[test]
+fn heros_welcome_lands_a_ten_ten_legend() {
+    let mut f = Fix::new();
+    f.play("Hero's Welcome", None);
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (10, 10));
+    assert_eq!(
+        f.mine(0).card.def().rarity(),
+        tavernlab_core::cards::Rarity::Legendary
+    );
+}
+
+#[test]
+fn firegill_rushes_the_rest_on_kindred() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.play("Firegill", None);
+    assert!(!f.mine(0).has(Keywords::RUSH));
+
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.g.players[0].played_races_last = Races::MURLOC;
+    f.play("Firegill", None);
+    assert!(f.mine(0).has(Keywords::RUSH));
+    assert!(!f.mine(1).has(Keywords::RUSH), "\"your other minions\"");
+}
+
+#[test]
+fn bronze_redeemer_prints_itself_a_dragon() {
+    let mut f = Fix::new().board(ME, &["Bronze Redeemer"]); // 3/3
+    f.g.buff(Target::Minion(ME, 0), 2, 2);
+    f.g.end_turn();
+    assert_eq!(f.g.players[0].board.len(), 2);
+    assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (5, 5));
+    assert!(f.mine(1).races().any(Races::DRAGON));
+}
