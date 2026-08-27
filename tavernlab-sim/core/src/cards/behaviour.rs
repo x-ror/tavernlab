@@ -3610,6 +3610,97 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         g.summon_child(c.side, c.card, 3);
         g.equip(c.side, tokens::LIGHTS_JUSTICE);
     }),
+    battlecry("Skeletal Sidekick", T::FriendlyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(s, i) = t else { return };
+        if !g.player(s).board[i as usize].races().any(Races::UNDEAD) {
+            return;
+        }
+        g.buff(t, 2, 0);
+    }),
+    // "Freeze two random enemy minions" is the same distinct-random shape as
+    // `damage_random_enemy_minions`, just freezing instead of damaging, so it
+    // repeats that helper's loop by hand rather than adding a twin of it for
+    // one card.
+    spell("Timestop", T::None, |g, c| {
+        g.spell_damage(c.side, Some(Target::Hero(c.side.other())), 3);
+        let foe = c.side.other();
+        let live: Inline<u8, MAX_BOARD> = g
+            .player(foe)
+            .board
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.active() && m.is_minion())
+            .map(|(i, _)| i as u8)
+            .collect();
+        if live.is_empty() {
+            return;
+        }
+        let mut picks = [0u32; MAX_BOARD];
+        let taken = g
+            .rngs
+            .effects
+            .sample_indices(live.len(), &mut picks[..2.min(live.len())]);
+        for &p in picks.iter().take(taken) {
+            g.freeze(Target::Minion(foe, live[p as usize]));
+        }
+    }),
+    // The splash is still the spell's own damage, so each hit gets Spell
+    // Power independently, the same as the primary hit -- matching how
+    // Blizzard boosts every instance a multi-target spell deals, not just
+    // one of them.
+    spell("Howling Blast", T::EnemyCharacter, |g, c| {
+        let Some(t) = c.target else { return };
+        g.spell_damage(c.side, Some(t), 3);
+        g.freeze(t);
+        let mut pool: Inline<Target, { MAX_BOARD * 2 + 2 }> = Inline::new();
+        g.collect_area(c.side, Area::AllEnemies, &mut pool);
+        for &other in pool.iter() {
+            if other != t {
+                g.spell_damage(c.side, Some(other), 1);
+            }
+        }
+    }),
+    trigger("Deathchiller", |g, c| {
+        if matches!(c.event, Event::SpellCast { side, .. } if side == c.side) {
+            let mut pool: Inline<Target, { MAX_BOARD * 2 + 2 }> = Inline::new();
+            g.collect_area(c.side, Area::AllEnemies, &mut pool);
+            let mut picks = [0u32; MAX_BOARD * 2 + 2];
+            let taken = g
+                .rngs
+                .effects
+                .sample_indices(pool.len(), &mut picks[..2.min(pool.len())]);
+            for &p in picks.iter().take(taken) {
+                g.deal_damage(pool[p as usize], 1);
+            }
+        }
+    }),
+    // Reborn itself needs no card-specific code; only the deathrattle body
+    // does. Its Undead Beast is the card's own child, the same childIds
+    // pattern as Convalescence and Muster for Battle above.
+    deathrattle("Reluctant Wrangler", |g, c| {
+        g.summon_child(c.side, c.card, 1);
+    }),
+    deathrattle("Cryofrozen Champion", |g, c| {
+        if g.add_random_to_hand(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.rarity() == super::Rarity::Legendary
+        }) && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            h.cost_delta -= 1;
+        }
+    }),
+    // Weapons reach the trigger sweep too (see the after-attack cards above).
+    trigger("Bone Breaker", |g, c| {
+        if let Event::AfterAttack {
+            attacker: Target::Hero(s),
+            defender: Target::Minion(..),
+            ..
+        } = c.event
+            && s == c.side
+        {
+            g.deal_damage(Target::Hero(c.side.other()), 2);
+        }
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.

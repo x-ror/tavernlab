@@ -4469,3 +4469,104 @@ fn muster_for_battle_summons_recruits_and_equips_the_weapon() {
     assert_eq!(w.atk, 1);
     assert_eq!(w.durability, 4);
 }
+
+#[test]
+fn skeletal_sidekick_buffs_only_a_friendly_undead() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]); // 4/5, not Undead
+    f.play("Skeletal Sidekick", my_minion(0));
+    assert_eq!(f.mine(0).atk, 4, "not Undead: no buff");
+
+    let mut f = Fix::new().board(ME, &["Wisp"]); // races=[UNDEAD] in this corpus
+    f.play("Skeletal Sidekick", my_minion(0));
+    assert_eq!(f.mine(0).atk, 3, "1 plus 2");
+}
+
+#[test]
+fn timestop_deals_three_and_freezes_both_enemy_minions() {
+    let mut f = Fix::new().board(FOE, &["Wisp", "Wisp"]); // exactly 2: no randomness in which freeze
+    f.play("Timestop", None);
+    assert_eq!(f.g.players[1].hero_hp, 27, "3 damage to the enemy hero");
+    assert!(f.theirs(0).flags.has(Flags::FROZEN));
+    assert!(f.theirs(1).flags.has(Flags::FROZEN));
+}
+
+#[test]
+fn howling_blast_freezes_the_target_and_splashes_the_rest() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre", "Boulderfist Ogre"]); // 6/7 x2
+    f.play("Howling Blast", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 4, "7 minus 3, the primary target");
+    assert!(f.theirs(0).flags.has(Flags::FROZEN));
+    assert_eq!(
+        f.theirs(1).health(),
+        6,
+        "7 minus 1, splashed but not frozen"
+    );
+    assert!(!f.theirs(1).flags.has(Flags::FROZEN));
+    assert_eq!(f.g.players[1].hero_hp, 29, "1 splash to the enemy hero too");
+}
+
+#[test]
+fn deathchiller_hits_two_random_enemies_after_a_spell() {
+    // AllEnemies is the two Yetis and the enemy hero -- three possible
+    // targets for two hits, so which two land is random; only the total is
+    // deterministic. Chillwind Yeti, not Wisp, so a hit never kills one and
+    // shrinks the board out from under `theirs(1)`.
+    let mut f = Fix::new()
+        .board(ME, &["Deathchiller"])
+        .board(FOE, &["Chillwind Yeti", "Chillwind Yeti"]);
+    f.play("The Coin", None);
+    let total = f.theirs(0).damage + f.theirs(1).damage + (30 - f.g.players[1].hero_hp);
+    assert_eq!(total, 2, "two distinct points of damage landed somewhere");
+}
+
+#[test]
+fn reluctant_wrangler_deathrattle_summons_a_taunt_beast() {
+    let mut f = Fix::new().board(ME, &["Reluctant Wrangler"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!(f.mine(0).atk, 2);
+    assert_eq!(f.mine(0).max_hp, 2);
+    assert!(f.mine(0).has(Keywords::TAUNT));
+}
+
+#[test]
+fn cryofrozen_champion_deathrattle_gets_a_discounted_legendary() {
+    let mut f = Fix::new().board(ME, &["Cryofrozen Champion"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    let h = &f.g.players[0].hand[0];
+    assert_eq!(
+        h.card.def().rarity(),
+        tavernlab_core::cards::Rarity::Legendary
+    );
+    assert_eq!(h.cost_delta, -1);
+}
+
+#[test]
+fn bone_breaker_only_after_attacking_a_minion() {
+    let mut f = Fix::new().board(FOE, &["Wisp"]);
+    f.g.players[0].weapon = Some(tavernlab_core::state::Weapon::equip(
+        by_name("Bone Breaker").unwrap(),
+    ));
+    f.g.apply(Action::HeroAttack {
+        target: Target::Minion(FOE, 0),
+    });
+    assert_eq!(
+        f.g.players[1].hero_hp, 28,
+        "2 bonus damage after attacking a minion"
+    );
+
+    let mut f = Fix::new();
+    f.g.players[0].weapon = Some(tavernlab_core::state::Weapon::equip(
+        by_name("Bone Breaker").unwrap(),
+    ));
+    f.g.apply(Action::HeroAttack {
+        target: Target::Hero(FOE),
+    });
+    assert_eq!(
+        f.g.players[1].hero_hp, 28,
+        "2 from the weapon swing alone: no bonus for a hero target"
+    );
+}
