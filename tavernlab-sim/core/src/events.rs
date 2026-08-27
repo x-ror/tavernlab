@@ -215,6 +215,13 @@ impl Game {
         for i in 0..2 {
             let side = Side::from_index(i);
             for (slot, m) in self.players[i].board.iter().enumerate() {
+                // A card being played does not react to its own play; see
+                // `Flags::BEING_PLAYED`. Every other event reaches it.
+                if matches!(event, Event::CardPlayed { .. })
+                    && m.flags.has(crate::state::Flags::BEING_PLAYED)
+                {
+                    continue;
+                }
                 if m.active() && behaviour_of(m.card).and_then(|b| b.trigger).is_some() {
                     reactors.push((side, slot as u8, m.card));
                 }

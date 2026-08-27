@@ -55,6 +55,17 @@ impl Flags {
     /// independent of any keyword — silencing away the Rush it was granted
     /// alongside this must not save it, so this is not modelled as one.
     pub const DOOMED: Flags = Flags(1 << 8);
+    /// Set on a minion from the moment it lands until its own `CardPlayed`
+    /// event has been delivered.
+    ///
+    /// "Whenever you play a card" does not fire for the card being played,
+    /// but by the time that event goes out the minion is already in play --
+    /// Wild Pyromancer depends on exactly that ordering. `Game::fire` skips
+    /// a reactor carrying this flag for `CardPlayed` alone, so Questing
+    /// Adventurer does not grow off its own arrival. A flag rather than a
+    /// remembered slot, because a battlecry can reorder the board underneath
+    /// it and a flag travels with the permanent.
+    pub const BEING_PLAYED: Flags = Flags(1 << 9);
 
     #[inline]
     pub const fn has(self, f: Flags) -> bool {

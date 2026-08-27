@@ -1044,7 +1044,10 @@ impl Game {
         let mut broken_weapon = None;
         match def.kind() {
             Kind::Minion | Kind::Location => {
-                let m = Permanent::summon(hc.card);
+                let mut m = Permanent::summon(hc.card);
+                // Cleared once this card's own CardPlayed event has gone out;
+                // see `Flags::BEING_PLAYED`.
+                m.flags.insert(Flags::BEING_PLAYED);
                 if position == u8::MAX {
                     p.board.push(m);
                     slot = Some(p.board.len() as u8 - 1);
@@ -1179,6 +1182,9 @@ impl Game {
             side,
             card: hc.card,
         });
+        for m in self.player_mut(side).board.iter_mut() {
+            m.flags.remove(Flags::BEING_PLAYED);
+        }
         // One sweep, once everything the card set in motion has resolved.
         self.sweep_deaths();
         true
@@ -1613,7 +1619,11 @@ impl Game {
     pub fn heal_hero(&mut self, side: Side, amount: i16) {
         let p = self.player_mut(side);
         let before = p.hero_hp;
-        p.hero_hp = (p.hero_hp + amount).min(crate::state::START_HP);
+        // The ceiling is the starting total, except for a hero already above
+        // it: Story of Amara sets Health to 40, and a heal must never be the
+        // thing that takes those ten points away again.
+        let cap = crate::state::START_HP.max(p.hero_hp);
+        p.hero_hp = (p.hero_hp + amount).min(cap);
         // Healing a character already at full health is not a heal, and must
         // not wake "whenever a character is healed".
         let restored = p.hero_hp - before;
@@ -1734,6 +1744,33 @@ impl Game {
                         },
                     );
                 }
+                if self.is_over() {
+                    return;
+                }
+            }
+            // Reborn brings the body back once the deathrattle has run, with
+            // one Health and without the keyword, so it cannot come back
+            // twice. It returns as a fresh copy: buffs and enchantments are
+            // lost, which is what the real rule does too. A minion that was
+            // granted Reborn (Haunt) comes back the same way, which is why
+            // this reads the dying permanent's live keywords rather than the
+            // card's printed ones.
+            for (side, card, _, body) in dying.iter().copied() {
+                if !body.has(Keywords::REBORN) || !body.is_minion() {
+                    continue;
+                }
+                if self.player(side).board.is_full() {
+                    continue;
+                }
+                let mut back = Permanent::summon(card);
+                back.keywords.remove(Keywords::REBORN);
+                back.damage = (back.max_hp - 1).max(0);
+                let p = self.player_mut(side);
+                p.board.push(back);
+                let slot = p.board.len() as u8 - 1;
+                self.board_dirty = true;
+                self.recompute_auras();
+                self.fire(Event::MinionSummoned { side, card, slot });
                 if self.is_over() {
                     return;
                 }
