@@ -1202,6 +1202,8 @@ impl Game {
         for m in self.player_mut(side).board.iter_mut() {
             m.flags.remove(Flags::BEING_PLAYED);
         }
+        // A card left hand to be played; hand size is a printed condition.
+        self.refresh_conditionals();
         // One sweep, once everything the card set in motion has resolved.
         self.sweep_deaths();
         true
@@ -1287,7 +1289,11 @@ impl Game {
             }
             return false;
         }
-        p.hand.push(HandCard::new(card))
+        let ok = p.hand.push(HandCard::new(card));
+        // Hand and deck size are printed conditions ("if your deck has 25 or
+        // more cards"), and this is where both move.
+        self.refresh_conditionals();
+        ok
     }
 
     /// Draw `n` cards, taking fatigue for each empty draw.

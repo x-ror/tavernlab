@@ -91,6 +91,8 @@ pub enum TargetSpec {
     /// A minion with at least this much attack.
     MinionAtkAtLeast(i16),
     DamagedEnemyMinion,
+    /// Any damaged minion, either side (Ominous Nightmares).
+    DamagedMinion,
     UndamagedMinion,
     FriendlyBeast,
     /// An enemy minion that has a minion type at all (Bugsquasher). A body
@@ -150,6 +152,9 @@ impl TargetSpec {
             }
             TargetSpec::DamagedEnemyMinion => {
                 matches!(t, Target::Minion(s, i) if s == foe && g.player(s).board[i as usize].damage > 0)
+            }
+            TargetSpec::DamagedMinion => {
+                matches!(t, Target::Minion(s, i) if g.player(s).board[i as usize].damage > 0)
             }
             TargetSpec::UndamagedMinion => {
                 matches!(t, Target::Minion(s, i) if g.player(s).board[i as usize].damage == 0)
@@ -465,6 +470,8 @@ mod tokens {
     pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
     /// Imp Gang Stooge's "8/8 Demon with Taunt and Lifesteal".
     pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
+    /// Gladiatorial Combat's Tiger, which goes to the *opponent*.
+    pub const COLISEUM_TIGER: CardId = token("TIME_870t");
     /// Shaman backlog: Ritual of Power's Breezling, Spirits of the Forest's
     /// two halves, and the Lightning Bolt Rehgar hands out (a real card).
     pub const BREEZLING: CardId = token("CATA_561t");
@@ -4804,6 +4811,188 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         // The crystals locked for *this* turn, not the Overload queued for the
         // next one -- those are not yet Overloaded Mana Crystals.
         if g.player(side).overload_now > 0 { (1, 0) } else { (0, 0) }
+    }),
+
+    // -------------------------------------------------------- Warrior
+    choose("Ominous Nightmares", &[
+        m(T::None, |g, c| {
+            g.spell_damage_area(c.side, Area::AllMinions, 1);
+        }),
+        m(T::DamagedMinion, |g, c| {
+            if let Some(t) = c.target {
+                g.buff(t, 2, 2);
+            }
+        }),
+    ]),
+    spell("Precursory Strike", T::AnyCharacter, |g, c| {
+        g.spell_damage(c.side, c.target, 3);
+        let holding = g
+            .player(c.side)
+            .hand
+            .iter()
+            .any(|h| h.card.def().kind() == super::Kind::Minion && h.card.def().cost >= 5);
+        if holding {
+            g.draw_matching(c.side, |d| d.kind() == super::Kind::Minion);
+        }
+    }),
+    trigger("Stonecarver", |g, c| {
+        if !matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            return;
+        }
+        // "another": the Stonecarver does not carve itself.
+        let me = c.me();
+        let mut pool: Inline<Target, MAX_BOARD> = Inline::new();
+        for (i, m) in g.player(c.side).board.iter().enumerate() {
+            let t = Target::Minion(c.side, i as u8);
+            if t != me && m.active() && m.is_minion() && m.damage > 0 {
+                pool.push(t);
+            }
+        }
+        if pool.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(pool.len());
+        g.buff(pool[pick], 2, 2);
+    }),
+    battlecry("Baleful Blazer", T::AnyMinion, |g, c| {
+        let fire = g.player(c.side).schools_cast_turn & (1 << (super::School::Fire as u8)) != 0;
+        if fire && let Some(t) = c.target {
+            g.destroy(t);
+        }
+    }),
+    battlecry("Latorvian Armorer", T::EnemyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.deal_damage(t, 2);
+        let dead = matches!(t, Target::Minion(s, i)
+            if g.player(s).board.get(i as usize).is_some_and(|m| m.is_dead()));
+        if dead {
+            g.gain_armor(c.side, 5);
+        }
+    }),
+    battlecry("Cataclysmic War Axe", T::None, |g, c| g.herald(c.side)),
+    battlecry("Scorching Ravager", T::None, |g, c| {
+        let before = g.player(c.side).board.len();
+        g.herald(c.side);
+        // "the Soldier" is whatever the Herald just put down, if anything.
+        if g.player(c.side).board.len() > before {
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.grant(Target::Minion(c.side, slot), Keywords::RUSH);
+        }
+    }),
+    c(
+        "Afflicted Devastator",
+        T::None,
+        None,
+        Some(|g, c| {
+            let me = c.source.map(|s| Target::Minion(c.side, s));
+            let mut hits: Inline<Target, MAX_BOARD> = Inline::new();
+            g.collect_area(c.side, Area::FriendlyMinions, &mut hits);
+            for t in hits.iter() {
+                if Some(*t) != me {
+                    g.deal_damage(*t, 3);
+                }
+            }
+        }),
+        Some(|g, c| g.damage_area(c.side, Area::EnemyMinions, 3)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    battlecry("Nablya, the Watcher", T::None, |g, c| {
+        let wounded: Inline<CardId, MAX_BOARD> = g
+            .player(c.side)
+            .board
+            .iter()
+            .filter(|m| m.active() && m.is_minion() && m.damage > 0)
+            .map(|m| m.card)
+            .collect();
+        for card in wounded.iter().copied() {
+            if !g.summon(c.side, card) {
+                break;
+            }
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.grant(Target::Minion(c.side, slot), Keywords::RUSH);
+        }
+    }),
+    trigger("The Great Dracorex", |g, c| {
+        if let Event::AfterAttack { attacker, defender, defender_died } = c.event
+            && attacker == c.me()
+            && matches!(defender, Target::Minion(d, _) if d == c.side.other())
+        {
+            // The death sweep has already run by the time this fires, so board
+            // slots have shifted: a defender that died is simply gone, and one
+            // that lived is still at the slot the event named.
+            let spare = if defender_died { None } else { Some(defender) };
+            // "ALL other enemy minions" — the one it hit already took the
+            // exchange, and by now may not be there at all.
+            let atk = g
+                .player(c.side)
+                .board
+                .get(c.slot as usize)
+                .map_or(0, |m| m.atk);
+            let mut hits: Inline<Target, MAX_BOARD> = Inline::new();
+            g.collect_area(c.side, Area::EnemyMinions, &mut hits);
+            for t in hits.iter() {
+                if Some(*t) != spare {
+                    g.deal_damage(*t, atk);
+                }
+            }
+        }
+    }),
+    battlecry("Undefeated Champion", T::None, |g, c| {
+        let foe = c.side.other();
+        while !g.player(foe).board.is_full() {
+            if g.summon_random_of_cost(foe, 1, 1) == 0 {
+                break;
+            }
+        }
+    }),
+    trigger("Tortolla", |g, c| {
+        if matches!(c.event, Event::Damaged { target, .. } if target == c.me()) {
+            g.gain_armor(c.side, 1);
+            g.buff(c.me(), 1, 0);
+        }
+    }),
+    c(
+        "Crowd Control",
+        T::None,
+        Some(|g, c| {
+            for _ in 0..2 {
+                g.spell_damage_area(c.side, Area::AllMinions, 2);
+                g.sweep_deaths();
+            }
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(|g, side, _i| if g.player(side).deck.len() >= 25 { -2 } else { 0 }),
+        None,
+    ),
+    c(
+        "For Glory!",
+        T::None,
+        Some(|g, c| g.draw_cards(c.side, 2)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(|g, side, _i| -(g.minion_count(side.other()) as i16)),
+        None,
+    ),
+    bonus("Scrappy Defender", |g, side, _, _| {
+        if g.player(side).deck.len() >= 25 { (5, 0) } else { (0, 0) }
+    }),
+    spell("Gladiatorial Combat", T::None, |g, c| {
+        g.summon_from_deck(c.side, |_| true);
+        g.summon_token(c.side.other(), tokens::COLISEUM_TIGER, 1);
     }),
 
     // --------------------------------------------------------- Shaman

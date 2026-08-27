@@ -7333,3 +7333,197 @@ fn tortotem_finds_something_with_two_tribes() {
         got.name()
     );
 }
+
+// ------------------------------------------------------------- Warrior
+
+#[test]
+fn ominous_nightmares_sweeps_or_feeds_the_wounded() {
+    let mut f = Fix::new()
+        .board(ME, &["Wisp"])
+        .board(FOE, &["Chillwind Yeti"]);
+    f.play_mode("Ominous Nightmares", 0, None);
+    assert_eq!(f.g.players[0].board.len(), 0, "\"all minions\"");
+    assert_eq!(f.theirs(0).damage, 1);
+
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.g.players[0].board[0].damage = 1;
+    f.play_mode("Ominous Nightmares", 1, my_minion(0));
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (6, 7));
+}
+
+#[test]
+fn precursory_strike_draws_only_while_you_hold_something_big() {
+    let mut f = Fix::new().deck(&["Chillwind Yeti"]);
+    f.play("Precursory Strike", Some(Target::Hero(FOE)));
+    assert_eq!(f.g.players[1].hero_hp, 27);
+    assert_eq!(f.g.players[0].hand.len(), 0);
+
+    let mut f = Fix::new().deck(&["Chillwind Yeti"]);
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Boulderfist Ogre").unwrap()));
+    f.play("Precursory Strike", Some(Target::Hero(FOE)));
+    assert_eq!(f.g.players[0].hand.len(), 2, "the Ogre, and the drawn Yeti");
+}
+
+#[test]
+fn stonecarver_feeds_a_wounded_neighbour_not_itself() {
+    let mut f = Fix::new().board(ME, &["Stonecarver", "Chillwind Yeti"]);
+    f.g.players[0].board[0].damage = 1;
+    f.g.players[0].board[1].damage = 1;
+    f.g.end_turn();
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (1, 4), "\"another\"");
+    assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (6, 7));
+}
+
+#[test]
+fn baleful_blazer_needs_a_fire_spell_first() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Baleful Blazer", foe_minion(0));
+    assert_eq!(f.their_board(), 1, "no Fire cast this turn");
+
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Fireball", Some(Target::Hero(FOE)));
+    f.play("Baleful Blazer", foe_minion(0));
+    assert_eq!(f.their_board(), 0);
+}
+
+#[test]
+fn latorvian_armorer_only_gets_paid_for_a_kill() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Latorvian Armorer", foe_minion(0));
+    assert_eq!(f.g.players[0].armor, 0, "it lived");
+
+    let mut f = Fix::new().board(FOE, &["Wisp"]);
+    f.play("Latorvian Armorer", foe_minion(0));
+    assert_eq!(f.g.players[0].armor, 5);
+}
+
+#[test]
+fn cataclysmic_war_axe_heralds_when_equipped() {
+    let mut f = Fix::new();
+    f.g.players[0].class = Class::Warrior;
+    f.play("Cataclysmic War Axe", None);
+    assert_eq!(f.g.players[0].herald, 1);
+    assert_eq!(f.g.players[0].board.len(), 1, "a Soldier of Ragnaros");
+    assert!(f.g.players[0].weapon.is_some());
+}
+
+#[test]
+fn scorching_ravager_rushes_the_soldier_it_heralds() {
+    let mut f = Fix::new();
+    f.g.players[0].class = Class::Warrior;
+    f.play("Scorching Ravager", None);
+    let last = f.g.players[0].board.len() - 1;
+    assert_eq!(f.mine(last).card.name(), "Soldier of Ragnaros");
+    assert!(f.mine(last).has(Keywords::RUSH));
+}
+
+#[test]
+fn afflicted_devastator_burns_your_side_then_theirs() {
+    let mut f = Fix::new()
+        .board(ME, &["Chillwind Yeti"])
+        .board(FOE, &["Chillwind Yeti"]);
+    f.play("Afflicted Devastator", None);
+    assert_eq!(f.mine(0).damage, 3, "\"all other friendly\"");
+    assert_eq!(f.theirs(0).damage, 0, "not yet");
+    let at = f.g.players[0].board.len() - 1;
+    f.g.players[0].board[at].damage = f.g.players[0].board[at].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.theirs(0).damage, 3, "and the rattle reaches their side");
+}
+
+#[test]
+fn nablya_copies_only_the_wounded() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti", "Wisp"]);
+    f.g.players[0].board[0].damage = 1;
+    f.play("Nablya, the Watcher", None);
+    let yetis = f.g.players[0]
+        .board
+        .iter()
+        .filter(|m| m.card.name() == "Chillwind Yeti")
+        .count();
+    assert_eq!(yetis, 2);
+    let wisps = f.g.players[0]
+        .board
+        .iter()
+        .filter(|m| m.card.name() == "Wisp")
+        .count();
+    assert_eq!(wisps, 1, "the Wisp was untouched");
+    assert!(f.mine(f.g.players[0].board.len() - 1).has(Keywords::RUSH));
+}
+
+#[test]
+fn the_great_dracorex_sprays_the_rest_of_their_board() {
+    let mut f = Fix::new()
+        .board(ME, &["The Great Dracorex"]) // 5/12 Rush
+        .board(FOE, &["Chillwind Yeti", "Boulderfist Ogre", "Boulderfist Ogre"]);
+    assert!(f.g.apply(Action::Attack { from: 0, target: Target::Minion(FOE, 0) }));
+    assert_eq!(f.their_board(), 2, "the Yeti took five and died");
+    assert_eq!(f.theirs(0).damage, 5, "and so did the others");
+    assert_eq!(f.theirs(1).damage, 5);
+}
+
+#[test]
+fn undefeated_champion_fills_the_other_board() {
+    let mut f = Fix::new().board(FOE, &["Wisp"]);
+    f.play("Undefeated Champion", None);
+    assert_eq!(f.their_board(), 7, "filled to the brim");
+    for i in 1..7 {
+        assert_eq!(f.theirs(i).card.def().cost, 1);
+    }
+}
+
+#[test]
+fn tortolla_grows_on_every_hit() {
+    let mut f = Fix::new().board(ME, &["Tortolla"]); // 1/30
+    f.g.deal_damage(Target::Minion(ME, 0), 3);
+    assert_eq!(f.mine(0).atk, 2);
+    assert_eq!(f.g.players[0].armor, 1);
+    f.g.deal_damage(Target::Minion(ME, 0), 3);
+    assert_eq!(f.mine(0).atk, 3);
+    assert_eq!(f.g.players[0].armor, 2);
+}
+
+#[test]
+fn crowd_control_hits_twice_and_is_cheaper_on_a_fat_deck() {
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti"]);
+    f.play("Crowd Control", None);
+    assert_eq!(f.theirs(0).damage, 4);
+
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Crowd Control").unwrap()));
+    assert_eq!(f.g.card_cost(ME, 0), 5);
+    for _ in 0..25 {
+        f.g.players[0].deck.push(by_name("Wisp").unwrap());
+    }
+    assert_eq!(f.g.card_cost(ME, 0), 3);
+}
+
+#[test]
+fn for_glory_is_cheaper_the_more_they_have() {
+    let mut f = Fix::new().board(FOE, &["Wisp", "Wisp", "Wisp"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("For Glory!").unwrap()));
+    assert_eq!(f.g.card_cost(ME, 0), 2);
+}
+
+#[test]
+fn scrappy_defender_reads_the_deck_as_it_shrinks() {
+    let mut f = Fix::new().board(ME, &["Scrappy Defender"]); // 2/7
+    for _ in 0..25 {
+        f.g.players[0].deck.push(by_name("Wisp").unwrap());
+    }
+    f.g.recompute_auras();
+    assert_eq!(f.mine(0).atk, 7);
+    f.g.draw(ME, 1);
+    assert_eq!(f.mine(0).atk, 2, "twenty-four is not twenty-five");
+}
+
+#[test]
+fn gladiatorial_combat_arms_both_sides() {
+    let mut f = Fix::new().deck(&["Chillwind Yeti"]);
+    f.play("Gladiatorial Combat", None);
+    assert_eq!(f.mine(0).card.name(), "Chillwind Yeti");
+    assert_eq!(f.theirs(0).card.name(), "Coliseum Tiger");
+    assert!(f.theirs(0).has(Keywords::STEALTH));
+}
