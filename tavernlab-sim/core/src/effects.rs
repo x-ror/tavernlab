@@ -1168,6 +1168,31 @@ impl Game {
             .any(|m| m.races().any(race) || m.races().has(crate::cards::Races::ALL))
     }
 
+    /// Healing split one point at a time among friendly characters, the way
+    /// [`damage_split`](Self::damage_split) splits damage.
+    ///
+    /// Re-picked after every point, and a character already at full health is
+    /// not a candidate — twelve points into a board that can only take four
+    /// stop at four rather than being thrown away one at a time.
+    pub fn heal_split(&mut self, side: Side, total: i16) {
+        for _ in 0..total.max(0) {
+            let mut pool: Inline<Target, { MAX_BOARD + 1 }> = Inline::new();
+            if self.player(side).hero_hp < crate::state::START_HP {
+                pool.push(Target::Hero(side));
+            }
+            for (i, m) in self.player(side).board.iter().enumerate() {
+                if m.active() && m.is_minion() && m.damage > 0 {
+                    pool.push(Target::Minion(side, i as u8));
+                }
+            }
+            if pool.is_empty() {
+                return;
+            }
+            let pick = self.rngs.effects.index(pool.len());
+            self.heal(pool[pick], 1);
+        }
+    }
+
     // --------------------------------------------------------- graveyard
 
     /// The friendly minions that have died this game and match `pred`, as
