@@ -2028,7 +2028,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         g.discover(c.side, |d| d.cost == 1);
     }),
     // ------------------------------------------- ported from the Python engine
-    // Cards `hs2/impls.py` already reasoned through, translated onto the verbs
+    // Cards the retired Python engine already reasoned through, translated onto the verbs
     // that exist here. The Python original is the reference, not the authority:
     // it was written against a corpus that carried three data bugs we have
     // since fixed, so each of these arrives with a test of its own.
@@ -2130,7 +2130,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     }),
 
     // ---------------------------------------------- 2026 meta decks, phase 1
-    // Ported from `hs2/impls.py` against the corpus text; see
+    // Ported from the retired Python engine against the corpus text; see
     // docs/RUST_CARDS_PLAN.md §4 phase 1. No new engine mechanism needed —
     // existing verbs plus the small additions listed in that section.
     // death knight

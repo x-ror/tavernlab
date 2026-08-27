@@ -1,61 +1,24 @@
 # ─── Особисті дані (не комітяться ніколи) ────────────────────────────
-# Політика golden-логів (design §4.4): сирі логи містять батлтеги й
-# Blizzard account id. У git їдуть лише знеособлені зрізи з
-# tests/logs/fixtures/ (див. tests/logs/make_fixtures.py).
-tests/logs/raw/
-
-# Історія ігор старого формату — містить справжні імена гравців
-# (design "Security & privacy": PII → battletags). Мігрується в
-# tavernlab.sqlite при першому запуску app.py.
-games.jsonl
-
-# Локальний стан застосунку. Design §2.9: усе живе на диску користувача,
-# нічого не надсилається назовні.
-tavernlab.sqlite
-tavernlab.sqlite-wal
-tavernlab.sqlite-shm
+# Стан застосунку живе в теці даних користувача, а не тут (див. README,
+# «Де лежать ваші дані»). Ці шляхи лишаються в списку, бо старіші збірки
+# писали їх поруч із програмою.
 tavernlab.log
 tavernlab.log.*
-advisor_cache/
-coach_log.md
-watcher.pid
+settings.json
+tiers_*.json
 
-# Сирий корпус HearthstoneJSON — вхідні дані для hs2/build_data.py,
-# 9 МБ, перезавантажується через `build_data.py --fetch`.
+# ─── Вхідні дані генератора карткової таблиці ────────────────────────
+# `data/standard_cards.json` і `data/wild_cards.json` — комітяться: це
+# те, з чого xtask збирає `core/src/cards/table.rs`. А сирий дамп, з
+# якого їх колись зібрали, — ні: 9+ МБ і легко перевантажується.
 cards.json
-
-# Вихід scripts/build_cards.py (design §2a): злиття живого Blizzard
-# card-library API з CardDefs.xml, 9+ МБ, і кеш того самого API.
-# Перебудовується через `build_cards.py --include-carddefs-only`.
 cards_merged.json
 blizzard_api_cache.json
 
 # ─── Артефакти збірки ────────────────────────────────────────────────
-__pycache__/
-*.py[cod]
-.pytest_cache/
-build/
+target/
 dist/
-*.egg-info/
-venv/
-.venv/
-
-# ─── Вивід пайплайнів (регенерується скриптами з README) ─────────────
-# scripts/run2_optimize.py → optimized2.json → scripts/run2_final.py
-#     → results2.json → scripts/make_report.py
-optimized2.json
-results2.json
-report_data.json
-site_classic.json
-site_std.json
-
-# Консольні захоплення прогонів (містять локальні шляхи /home/…)
-*_log.txt
-live_out.txt
-user_burn_mage_report.txt
-
-# ─── Пісочниця для експериментальних карт (design §4.3) ──────────────
-hs2/impls_sandbox.py
+node_modules/
 
 # ─── Редактори / IDE ─────────────────────────────────────────────────
 .idea/
@@ -65,6 +28,6 @@ hs2/impls_sandbox.py
 *~
 .DS_Store
 
-# Кеш ілюстрацій (scripts/fetch_art.py). Арт — власність Blizzard:
+# Кеш ілюстрацій (`tavernsim art-urls`). Арт — власність Blizzard:
 # кешуємо для особистого використання, у репозиторій не кладемо.
 art_cache/

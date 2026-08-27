@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ComboBox, Item } from '@adobe/react-spectrum'
 import * as api from '../api'
 
@@ -25,6 +25,12 @@ function loadNames() {
 export default function CardCombo({ label, onAdd, width = '100%' }) {
   const [names, setNames] = useState(cache || [])
   const [text, setText] = useState('')
+  // Enter both commits the highlighted suggestion and ends the typed
+  // custom value, and the two used to add the same card twice. The two
+  // handlers fire in either order depending on where the key was
+  // handled, so the guard is "did a selection just happen" rather than a
+  // flag one of them resets.
+  const lastSelect = useRef(0)
 
   useEffect(() => {
     let live = true
@@ -53,17 +59,24 @@ export default function CardCombo({ label, onAdd, width = '100%' }) {
       width={width}
       onSelectionChange={(key) => {
         if (key) {
+          lastSelect.current = Date.now()
           onAdd(String(key))
           setText('')
         }
       }}
       onKeyDown={(e) => {
-        // Custom values matter here: the engine knows cards the picker
-        // list may not, and the server resolves the name anyway.
-        if (e.key === 'Enter' && text.trim()) {
-          onAdd(text.trim())
+        // Typing a name the picker did not offer still has to work: the
+        // server resolves a name by prefix too. The check runs a tick
+        // later so a suggestion the ComboBox commits on this same Enter
+        // wins, instead of the card landing in the hand twice.
+        if (e.key !== 'Enter') return
+        const typed = text.trim()
+        if (!typed) return
+        setTimeout(() => {
+          if (Date.now() - lastSelect.current < 100) return
+          onAdd(typed)
           setText('')
-        }
+        }, 0)
       }}
     >
       {(item) => <Item>{item.name}</Item>}

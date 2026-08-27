@@ -6,12 +6,18 @@
 //! [`xtask`] can bake it into Rust source; nothing in the engine's hot path ever
 //! touches it.
 //!
-//! Scope is deliberately narrow: parse, look up, convert. No serialisation, no
-//! derives, no borrowing games. Objects keep insertion order in a flat vector
-//! because the documents involved have well under a hundred keys per object and
-//! a linear scan beats a hash map at that size.
+//! Scope is deliberately narrow: parse, look up, convert, and — for the HTTP
+//! server, which answers in JSON and has no serialisation crate available
+//! either — write. No derives and nothing reflecting over a struct. Objects
+//! keep insertion order in a flat vector because the documents involved have
+//! well under a hundred keys per object and a linear scan beats a hash map at
+//! that size.
 
 use std::fmt;
+
+mod write;
+
+pub use write::{ArrOut, ObjOut, Out, escape, to_string};
 
 /// A parsed JSON value.
 #[derive(Clone, Debug, PartialEq)]

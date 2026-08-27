@@ -1,0 +1,1234 @@
+//! The `/api` handlers.
+//!
+//! Every one of them is a function of the request and the card table: there
+//! is no database and nothing is sent anywhere. The only state that outlives
+//! a request is the user's settings, the cached tier table they asked for,
+//! and an in-memory telemetry cache that exists purely so a second question
+//! about the same deck does not replay the same games.
+//!
+//! Two rules hold across all of them.
+//!
+//! **A deck the engine cannot field is never quietly approximated.** If a
+//! list holds a card that is not implemented, not legal in its format, or not
+//! in the corpus at all, the answer names the cards and stops. Dropping them
+//! would move the win rate by an unknown amount and report it as a
+//! measurement.
+//!
+//! **Numbers carry their sample.** Every rate is published with the number of
+//! games behind it, and the gauntlet decks that could not be fielded are
+//! listed rather than silently left out of an average.
+
+use std::sync::Arc;
+
+use tavernlab_core::agent::Style;
+use tavernlab_core::batch::Contender;
+use tavernlab_core::cards::{CardId, Class, Formats, Kind, by_name, is_implemented};
+use tavernlab_core::deckstring::{self, Resolved};
+use tavernlab_core::gauntlet::{self, MetaDeck, class_name};
+use tavernlab_core::optimize::{self, Budget};
+use tavernlab_core::tiers;
+use tavernlab_json::{Json, Out, to_string};
+
+use super::http::{Request, Response};
+use super::state::{App, format_by_name};
+
+/// Games per opponent a rating run may ask for.
+const ANALYZE_MIN: usize = 100;
+const ANALYZE_MAX: usize = 10_000;
+/// Games per ordered pair a tier run may ask for.
+const TIERS_MIN: usize = 20;
+const TIERS_MAX: usize = 2_000;
+/// Below this many appearances a per-card delta is noise, and is reported as
+/// "no answer" rather than as a number.
+const MIN_APPEARANCES: u32 = 30;
+/// The same floor for the coach screen, which averages across matchups and
+/// so needs each one to mean something.
+const MIN_DRAWS: u32 = 100;
+
+// ----------------------------------------------------------------- helpers
+
+fn body(req: &Request) -> Json {
+    Json::parse(req.body_str()).unwrap_or(Json::Null)
+}
+
+fn field_str<'a>(j: &'a Json, key: &str) -> &'a str {
+    j.str_or_empty(key)
+}
+
+fn strings(j: &Json, key: &str) -> Vec<String> {
+    j.arr_or_empty(key)
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .filter(|s| !s.trim().is_empty())
+        .collect()
+}
+
+fn clamped(j: &Json, key: &str, default: usize, lo: usize, hi: usize) -> usize {
+    match j.get(key).and_then(Json::as_i64) {
+        Some(n) if n > 0 => (n as usize).clamp(lo, hi),
+        _ => default,
+    }
+}
+
+/// The format a request asked for, defaulting to Standard.
+fn format_of(j: &Json) -> (&'static str, Formats) {
+    format_by_name(field_str(j, "format")).unwrap_or(("standard", Formats::STANDARD))
+}
+
+/// A deck code read against the table, together with the field it will be
+/// scored against.
+struct Loaded {
+    resolved: Resolved,
+    format_name: &'static str,
+    format: Formats,
+    field: Arc<Vec<MetaDeck>>,
+    /// True when the deck code did not say which format it is for, so
+    /// Standard was assumed. Every answer built on it has to say so.
+    assumed_format: bool,
+}
+
+impl Loaded {
+    fn style(&self) -> Style {
+        Style::Midrange
+    }
+
+    fn contender(&self) -> Contender<'_> {
+        Contender {
+            class: self.resolved.class,
+            cards: &self.resolved.ids,
+            style: self.style(),
+        }
+    }
+
+    fn playable_field(&self) -> usize {
+        self.field.iter().filter(|d| d.playable()).count()
+    }
+}
+
+/// Resolve a pasted code and load its gauntlet, or explain what is wrong in
+/// the words the player needs.
+fn load(app: &App, code: &str) -> Result<Loaded, String> {
+    let resolved = deckstring::resolve(code).map_err(|e| e.to_string())?;
+    if !resolved.illegal.is_empty() {
+        return Err(format!(
+            "not legal in {}: {}",
+            resolved
+                .format
+                .map(super::state::format_name)
+                .unwrap_or("this format"),
+            resolved.illegal.join(", ")
+        ));
+    }
+    if !resolved.unimplemented.is_empty() {
+        return Err(format!(
+            "the simulator cannot play these cards: {}",
+            resolved.unimplemented.join(", ")
+        ));
+    }
+    if !resolved.missing.is_empty() {
+        return Err(format!(
+            "no card in the corpus has these dbf ids: {}",
+            resolved
+                .missing
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !resolved.not_deckable.is_empty() {
+        return Err(format!(
+            "these cannot go in a deck: {}",
+            resolved.not_deckable.join(", ")
+        ));
+    }
+    let assumed_format = resolved.format.is_none();
+    let format = resolved.format.unwrap_or(Formats::STANDARD);
+    let format_name = super::state::format_name(format);
+    let field = app.gauntlet(format_name);
+    if field.is_empty() {
+        return Err(format!(
+            "no gauntlet for {format_name} ({})",
+            app.gauntlet_path(format_name).display()
+        ));
+    }
+    Ok(Loaded {
+        resolved,
+        format_name,
+        format,
+        field,
+        assumed_format,
+    })
+}
+
+/// The cache key for a deck's telemetry: the bare code, so the same deck
+/// pasted with and without its comment block is one deck.
+fn deck_key(code: &str) -> String {
+    deckstring::extract(code).unwrap_or(code.trim()).to_string()
+}
+
+fn write_rates(o: &mut Out, rates: &gauntlet::Rates) {
+    o.obj(|o| {
+        for (name, rate) in &rates.per_deck {
+            o.field(name, |v| v.round(*rate, 4));
+        }
+    });
+}
+
+/// The gauntlet decks that could not be fielded, and why — attached to every
+/// answer that averages over the field.
+fn write_field_note(o: &mut tavernlab_json::ObjOut<'_>, field: &[MetaDeck]) {
+    let played = field.iter().filter(|d| d.playable()).count();
+    o.int_field("field_decks", field.len() as i64);
+    o.int_field("field_played", played as i64);
+    o.field("field_skipped", |v| {
+        v.arr(|a| {
+            for deck in field.iter().filter(|d| !d.playable()) {
+                a.item(|v| {
+                    v.obj(|o| {
+                        o.str_field("deck", &deck.name);
+                        o.field("cards", |v| {
+                            v.arr(|a| {
+                                for (name, n) in &deck.missing {
+                                    a.item(|v| {
+                                        v.arr(|a| {
+                                            a.str_item(name);
+                                            a.item(|v| v.int(*n as i64));
+                                        })
+                                    });
+                                }
+                            })
+                        });
+                    })
+                });
+            }
+        })
+    });
+}
+
+// ---------------------------------------------------------------- handlers
+
+/// `POST /api/resolve` — can we simulate this list, and if not, why not.
+pub fn resolve(app: &App, req: &Request) -> Response {
+    let payload = body(req);
+    let code = field_str(&payload, "code");
+    let name = deckstring::deck_name(code);
+    let r = match deckstring::resolve(code) {
+        Ok(r) => r,
+        Err(e) => {
+            return Response::json(
+                200,
+                to_string(|o| {
+                    o.obj(|o| {
+                        o.bool_field("ok", false);
+                        // The key is what the front end translates; the text
+                        // is the same thing in English, for anything that
+                        // logs the answer rather than showing it.
+                        o.str_field("error_code", e.code());
+                        o.str_field("error", &e.to_string());
+                        o.field("name", |v| v.opt(name, |v, n| v.str(n)));
+                    })
+                }),
+            );
+        }
+    };
+    let format_name = r.format.map(super::state::format_name);
+    let has_gauntlet = format_name
+        .map(|f| !app.gauntlet(f).is_empty())
+        .unwrap_or(false);
+    Response::json(
+        200,
+        to_string(|o| {
+            o.obj(|o| {
+                o.bool_field("ok", r.playable());
+                o.field("name", |v| v.opt(name, |v, n| v.str(n)));
+                o.str_field("cls", class_name(r.class));
+                o.int_field("total", r.total() as i64);
+                o.field("format", |v| v.opt(format_name, |v, f| v.str(f)));
+                o.bool_field("has_gauntlet", has_gauntlet);
+                o.field("cards", |v| {
+                    v.arr(|a| {
+                        for (name, n) in &r.cards {
+                            a.item(|v| {
+                                v.arr(|a| {
+                                    a.str_item(name);
+                                    a.item(|v| v.int(*n as i64));
+                                })
+                            });
+                        }
+                    })
+                });
+                for (key, list) in [
+                    ("unimplemented", &r.unimplemented),
+                    ("illegal", &r.illegal),
+                    ("not_deckable", &r.not_deckable),
+                ] {
+                    o.field(key, |v| {
+                        v.arr(|a| {
+                            for name in list.iter() {
+                                a.str_item(name);
+                            }
+                        })
+                    });
+                }
+                o.field("missing", |v| {
+                    v.arr(|a| {
+                        for dbf in &r.missing {
+                            a.item(|v| v.int(*dbf as i64));
+                        }
+                    })
+                });
+            })
+        }),
+    )
+}
+
+/// `POST /api/analyze` — win rate against the gauntlet. A job, because the
+/// UI shows its progress; the run itself takes well under a second.
+pub fn analyze(app: &Arc<App>, req: &Request) -> Response {
+    let payload = body(req);
+    let code = field_str(&payload, "code").to_string();
+    let games = clamped(&payload, "games", 1000, ANALYZE_MIN, ANALYZE_MAX);
+    let app = Arc::clone(app);
+    let id = app.clone().jobs.start(move |p| {
+        let loaded = load(&app, &code)?;
+        if loaded.assumed_format {
+            p.say("the deck code names no format; scoring it as Standard");
+        }
+        p.say(format!(
+            "{}, {} cards [{}] — {} games against each of {} field decks",
+            class_name(loaded.resolved.class),
+            loaded.resolved.total(),
+            loaded.format_name,
+            games,
+            loaded.playable_field()
+        ));
+        let rates = gauntlet::evaluate(
+            loaded.contender(),
+            &loaded.field,
+            games,
+            app.threads,
+            17,
+        );
+        app.count_games((games * rates.per_deck.len()) as u64);
+        let Some(avg) = rates.average() else {
+            return Err(format!(
+                "not one deck in the {} gauntlet could be fielded, so there is nothing to score against",
+                loaded.format_name
+            ));
+        };
+        if !rates.skipped.is_empty() {
+            p.say(format!(
+                "{} deck(s) not fielded: {}",
+                rates.skipped.len(),
+                rates.skipped.join(", ")
+            ));
+        }
+        p.say(format!("done: {:.1}%", avg * 100.0));
+        Ok(to_string(|o| {
+            o.obj(|o| {
+                o.str_field("cls", class_name(loaded.resolved.class));
+                o.str_field("format", loaded.format_name);
+                o.bool_field("format_assumed", loaded.assumed_format);
+                o.field("avg", |v| v.round(avg, 4));
+                o.int_field("games", games as i64);
+                o.field("rates", |v| write_rates(v, &rates));
+                write_field_note(o, &loaded.field);
+            })
+        }))
+    });
+    started(&id)
+}
+
+/// `POST /api/optimize` — measured single-card swaps.
+pub fn optimize_deck(app: &Arc<App>, req: &Request) -> Response {
+    let payload = body(req);
+    let code = field_str(&payload, "code").to_string();
+    let app = Arc::clone(app);
+    let id = app.clone().jobs.start(move |p| {
+        let loaded = load(&app, &code)?;
+        let budget = Budget {
+            threads: app.threads,
+            ..Budget::default()
+        };
+        let report = optimize::optimize(
+            &loaded.resolved.ids,
+            loaded.resolved.class,
+            loaded.format,
+            loaded.style(),
+            &loaded.field,
+            budget,
+            |line| p.say(line),
+        );
+        app.count_games(report.games);
+        let swap = |o: &mut Out, s: &optimize::Swap, delta: f64| {
+            o.arr(|a| {
+                a.str_item(s.out);
+                a.str_item(s.inn);
+                a.item(|v| v.round(delta, 4));
+            })
+        };
+        Ok(to_string(|o| {
+            o.obj(|o| {
+                o.field("base", |v| v.round(report.base, 4));
+                o.field("new_avg", |v| v.round(report.best, 4));
+                o.int_field("games", report.games as i64);
+                o.int_field("confirm_games", budget.confirm_games as i64);
+                o.field("swaps", |v| {
+                    v.arr(|a| {
+                        for s in &report.kept {
+                            a.item(|v| swap(v, s, s.confirmed_delta.unwrap_or(0.0)));
+                        }
+                    })
+                });
+                o.field("near", |v| {
+                    v.arr(|a| {
+                        for s in &report.near {
+                            a.item(|v| swap(v, s, s.confirmed_delta.unwrap_or(s.screen_delta)));
+                        }
+                    })
+                });
+                write_field_note(o, &loaded.field);
+            })
+        }))
+    });
+    started(&id)
+}
+
+fn started(id: &str) -> Response {
+    Response::json(200, to_string(|o| o.obj(|o| o.str_field("job", id))))
+}
+
+/// `POST /api/mull` — keep or throw, per card, measured.
+pub fn mulligan(app: &App, req: &Request) -> Response {
+    let payload = body(req);
+    let code = field_str(&payload, "code");
+    let loaded = match load(app, code) {
+        Ok(l) => l,
+        Err(e) => return Response::error(400, &e),
+    };
+    let Some(class) = gauntlet::class_by_name(field_str(&payload, "opp")) else {
+        return Response::error(
+            400,
+            &format!("unknown class: {}", field_str(&payload, "opp")),
+        );
+    };
+    let Some(opp) = loaded
+        .field
+        .iter()
+        .find(|d| d.class == class && d.playable())
+    else {
+        return Response::error(
+            400,
+            &format!(
+                "the {} gauntlet has no {} deck the simulator can field",
+                loaded.format_name,
+                class_name(class)
+            ),
+        );
+    };
+
+    let hand = strings(&payload, "hand");
+    let mut cards: Vec<CardId> = Vec::new();
+    for name in &hand {
+        match find_card(name) {
+            Some(c) => cards.push(c),
+            None => return Response::error(400, &format!("unknown card: {name}")),
+        }
+    }
+
+    let telemetry = app.telemetry(
+        &deck_key(code),
+        &loaded.resolved.ids,
+        loaded.resolved.class,
+        loaded.style(),
+        &loaded.field,
+    );
+    let Some((_, matchup)) = telemetry.matchups.iter().find(|(n, _)| *n == opp.name) else {
+        return Response::error(500, "the telemetry run holds no record for that opponent");
+    };
+    let base = matchup.base();
+
+    Response::json(
+        200,
+        to_string(|o| {
+            o.obj(|o| {
+                o.str_field("opp_deck", &opp.name);
+                o.str_field("opp_cls", class_name(opp.class));
+                o.field("base", |v| v.round(base, 4));
+                o.int_field("games", matchup.games as i64);
+                o.int_field("min_n", MIN_APPEARANCES as i64);
+                o.field("cards", |v| {
+                    v.arr(|a| {
+                        for card in &cards {
+                            let stat = matchup.stat(*card).unwrap_or_default();
+                            let delta = stat.opening_delta(base, MIN_APPEARANCES);
+                            let cost = card.def().cost;
+                            // No measurement is not "throw it": a card the
+                            // sample cannot speak about falls back to the
+                            // only thing that is still true — its cost.
+                            let keep = match delta {
+                                Some(d) => d > -0.01,
+                                None => cost <= 3,
+                            };
+                            a.item(|v| {
+                                v.obj(|o| {
+                                    o.str_field("card", card.name());
+                                    o.int_field("cost", cost as i64);
+                                    o.bool_field("keep", keep);
+                                    o.field("delta", |v| v.opt(delta, |v, d| v.round(d, 4)));
+                                    o.int_field("n", stat.open_n as i64);
+                                    o.field("why", |v| reasons(v, *card, opp.style, delta));
+                                })
+                            });
+                        }
+                    })
+                });
+            })
+        }),
+    )
+}
+
+/// Why the answer is what it is, as keys the front end translates.
+///
+/// Prose does not belong in an API that serves a bilingual UI: a
+/// server-composed sentence is a sentence in one language, and the screen
+/// showing it may be in the other. So this returns the *reasons* — a short
+/// key and, where it has one, its number — and the front end writes them out
+/// in the language it is running in.
+fn reasons(o: &mut Out, card: CardId, opp: Style, delta: Option<f64>) {
+    let def = card.def();
+    o.arr(|a| {
+        let mut reason = |key: &str, n: Option<f64>| {
+            a.item(|v| {
+                v.obj(|o| {
+                    o.str_field("k", key);
+                    if let Some(n) = n {
+                        o.field("n", |v| v.round(n, 4));
+                    }
+                })
+            });
+        };
+        if def.cost >= 6 {
+            reason("expensive", Some(def.cost as f64));
+            if opp == Style::Aggro {
+                reason("vs_aggro_cheap", None);
+            }
+        } else if def.cost <= 2 {
+            reason("cheap", None);
+        }
+        if def.kind() == Kind::Spell && card.info().text.contains("damage") {
+            reason(
+                match opp {
+                    Style::Aggro => "removal_vs_aggro",
+                    Style::Control => "burn_vs_control",
+                    Style::Midrange => "damage_both_ways",
+                },
+                None,
+            );
+        }
+        if def.kind() == Kind::Minion && (2..=4).contains(&def.cost) && opp != Style::Aggro {
+            reason("curve_body", None);
+        }
+        match delta {
+            Some(d) => reason("measured", Some(d)),
+            None => reason("no_data", None),
+        }
+    });
+}
+
+/// The card a typed name means: exact first, then case-insensitive, then a
+/// unique prefix.
+///
+/// Every answer goes back through [`by_name`], which is the one place that
+/// decides *which printing* a name means — several names in the corpus belong
+/// to a collectible card and to a token or an enchantment as well, and a
+/// lookup that returns whichever it walked into first would hand the engine a
+/// card that cannot be played.
+fn find_card(name: &str) -> Option<CardId> {
+    let name = name.trim();
+    if let Some(c) = by_name(name) {
+        return Some(c);
+    }
+    let low = name.to_lowercase();
+    let mut prefix: Option<&'static str> = None;
+    let mut prefixes = 0;
+    for c in tavernlab_core::cards::all() {
+        if !c.def().collectible {
+            continue;
+        }
+        let n = c.name().to_lowercase();
+        if n == low {
+            return by_name(c.name());
+        }
+        if n.starts_with(&low) && prefix != Some(c.name()) {
+            prefix = Some(c.name());
+            prefixes += 1;
+        }
+    }
+    // An ambiguous prefix is not a guess: two cards start with "Fire" and
+    // picking one of them would silently answer about the wrong card.
+    (prefixes == 1)
+        .then_some(prefix)
+        .flatten()
+        .and_then(by_name)
+}
+
+/// `POST /api/coach` — which matchups hurt, and which of your own cards the
+/// simulations like and dislike.
+pub fn coach(app: &App, req: &Request) -> Response {
+    let payload = body(req);
+    let code = field_str(&payload, "code");
+    let loaded = match load(app, code) {
+        Ok(l) => l,
+        Err(e) => return Response::error(400, &e),
+    };
+    let t = app.telemetry(
+        &deck_key(code),
+        &loaded.resolved.ids,
+        loaded.resolved.class,
+        loaded.style(),
+        &loaded.field,
+    );
+    if t.matchups.is_empty() {
+        return Response::error(400, "not one deck in the gauntlet could be fielded");
+    }
+
+    let mut weak: Vec<(&str, f64)> = t
+        .matchups
+        .iter()
+        .map(|(name, m)| (name.as_str(), m.base()))
+        .collect();
+    weak.sort_by(|a, b| a.1.total_cmp(&b.1));
+
+    // One number per card: the mean, across matchups, of "won when it showed
+    // up" minus "won in this matchup at all".
+    let mut per_card: Vec<(CardId, f64, u32, u32)> = Vec::new();
+    for (_, m) in &t.matchups {
+        let base = m.base();
+        for (card, stat) in &m.cards {
+            let Some(d) = stat.drawn_delta(base, MIN_DRAWS) else {
+                continue;
+            };
+            match per_card.iter_mut().find(|(c, _, _, _)| c == card) {
+                Some((_, sum, n, games)) => {
+                    *sum += d;
+                    *n += 1;
+                    *games += stat.drawn_n;
+                }
+                None => per_card.push((*card, d, 1, stat.drawn_n)),
+            }
+        }
+    }
+    let mut ranked: Vec<(CardId, f64, u32)> = per_card
+        .into_iter()
+        .map(|(c, sum, n, games)| (c, sum / n as f64, games))
+        .collect();
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+    let card_list = |a: &mut tavernlab_json::ArrOut<'_>, rows: &[(CardId, f64, u32)]| {
+        for (card, delta, games) in rows {
+            a.item(|v| {
+                v.arr(|a| {
+                    a.str_item(card.name());
+                    a.item(|v| v.round(*delta, 4));
+                    a.item(|v| v.int(*games as i64));
+                })
+            });
+        }
+    };
+    let keep: Vec<_> = ranked.iter().take(5).cloned().collect();
+    let cut: Vec<_> = ranked.iter().rev().take(5).cloned().collect();
+
+    Response::json(
+        200,
+        to_string(|o| {
+            o.obj(|o| {
+                o.str_field("cls", class_name(loaded.resolved.class));
+                o.str_field("format", loaded.format_name);
+                o.int_field("games", t.games_per_opponent as i64);
+                o.int_field("min_n", MIN_DRAWS as i64);
+                o.field("weak", |v| {
+                    v.arr(|a| {
+                        for (name, rate) in weak.iter().take(3) {
+                            a.item(|v| {
+                                v.arr(|a| {
+                                    a.str_item(name);
+                                    a.item(|v| v.round(*rate, 4));
+                                })
+                            });
+                        }
+                    })
+                });
+                o.field("keep", |v| v.arr(|a| card_list(a, &keep)));
+                o.field("cut", |v| v.arr(|a| card_list(a, &cut)));
+            })
+        }),
+    )
+}
+
+/// `POST /api/predict` — which gauntlet deck the cards you have seen fit.
+pub fn predict(app: &App, req: &Request) -> Response {
+    let payload = body(req);
+    let (format_name, _) = format_of(&payload);
+    let Some(class) = gauntlet::class_by_name(field_str(&payload, "opp")) else {
+        return Response::error(
+            400,
+            &format!("unknown class: {}", field_str(&payload, "opp")),
+        );
+    };
+    let field = app.gauntlet(format_name);
+    let decks: Vec<&MetaDeck> = field.iter().filter(|d| d.class == class).collect();
+    if decks.is_empty() {
+        return Response::error(
+            400,
+            &format!(
+                "the {format_name} gauntlet has no {} decks",
+                class_name(class)
+            ),
+        );
+    }
+
+    let mut seen: Vec<String> = Vec::new();
+    for name in strings(&payload, "seen") {
+        match find_card(&name) {
+            Some(c) => seen.push(c.name().to_string()),
+            None => return Response::error(400, &format!("unknown card: {name}")),
+        }
+    }
+
+    Response::json(
+        200,
+        to_string(|o| {
+            o.obj(|o| {
+                o.str_field("format", format_name);
+                o.field("decks", |v| {
+                    v.arr(|a| {
+                        for deck in &decks {
+                            let hits = seen
+                                .iter()
+                                .filter(|s| deck.cards.iter().any(|(n, _)| n == *s))
+                                .count();
+                            let frac = if seen.is_empty() {
+                                1.0
+                            } else {
+                                hits as f64 / seen.len() as f64
+                            };
+                            a.item(|v| {
+                                v.obj(|o| {
+                                    o.str_field("deck", &deck.name);
+                                    o.int_field("hits", hits as i64);
+                                    o.int_field("seen", seen.len() as i64);
+                                    o.field("frac", |v| v.round(frac, 2));
+                                    o.field("threats", |v| {
+                                        v.arr(|a| {
+                                            // Only once the read is more
+                                            // likely than not: naming eight
+                                            // threats from a deck that
+                                            // matched one card in ten is a
+                                            // guess dressed as a warning.
+                                            if frac < 0.5 {
+                                                return;
+                                            }
+                                            for (card, cost) in threats(deck, &seen) {
+                                                a.item(|v| {
+                                                    v.obj(|o| {
+                                                        o.str_field("card", card.name());
+                                                        o.int_field("cost", cost as i64);
+                                                        o.str_field(
+                                                            "text",
+                                                            &short(card.info().text),
+                                                        );
+                                                    })
+                                                });
+                                            }
+                                        })
+                                    });
+                                })
+                            });
+                        }
+                    })
+                });
+            })
+        }),
+    )
+}
+
+/// The most expensive cards in the deck that have not been seen yet.
+fn threats(deck: &MetaDeck, seen: &[String]) -> Vec<(CardId, i16)> {
+    let mut out: Vec<(CardId, i16)> = deck
+        .cards
+        .iter()
+        .filter(|(n, _)| !seen.iter().any(|s| s == n))
+        .filter_map(|(n, _)| by_name(n).map(|c| (c, c.def().cost)))
+        .collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.name().cmp(b.0.name())));
+    out.truncate(8);
+    out
+}
+
+fn short(text: &str) -> String {
+    let clean = text.replace('\n', " ");
+    if clean.chars().count() <= 90 {
+        return clean;
+    }
+    clean.chars().take(89).collect::<String>() + "…"
+}
+
+/// `POST /api/meta` — the field itself, in full.
+pub fn meta(app: &App, req: &Request) -> Response {
+    let payload = body(req);
+    let (format_name, format) = format_of(&payload);
+    let field = app.gauntlet(format_name);
+    Response::json(
+        200,
+        to_string(|o| {
+            o.obj(|o| {
+                o.str_field("format", format_name);
+                o.field("decks", |v| {
+                    v.arr(|a| {
+                        for deck in field.iter() {
+                            a.item(|v| write_meta_deck(v, deck, format));
+                        }
+                    })
+                });
+            })
+        }),
+    )
+}
+
+fn write_meta_deck(o: &mut Out, deck: &MetaDeck, format: Formats) {
+    let code = export(deck, format);
+    o.obj(|o| {
+        o.str_field("name", &deck.name);
+        o.str_field("cls", class_name(deck.class));
+        o.str_field("archetype", gauntlet::style_name(deck.style));
+        o.bool_field("playable", deck.playable());
+        o.int_field("total", deck.total() as i64);
+        o.field("cards", |v| {
+            v.arr(|a| {
+                for (name, n) in &deck.cards {
+                    a.item(|v| {
+                        v.arr(|a| {
+                            a.str_item(name);
+                            a.item(|v| v.int(*n as i64));
+                        })
+                    });
+                }
+            })
+        });
+        // Everything the UI needs to draw the list: the string id for the
+        // art tile, the cost for the curve, and whether the engine can
+        // actually play the card.
+        o.field("cardlist", |v| {
+            v.arr(|a| {
+                let mut rows: Vec<(&str, u32)> =
+                    deck.cards.iter().map(|(n, c)| (n.as_str(), *c)).collect();
+                rows.sort_by_key(|(n, _)| {
+                    by_name(n).map(|c| (c.def().cost, *n)).unwrap_or((99, *n))
+                });
+                for (name, n) in rows {
+                    let card = by_name(name);
+                    a.item(|v| {
+                        v.obj(|o| {
+                            o.str_field("id", card.map(|c| c.info().id).unwrap_or(name));
+                            o.str_field("card", name);
+                            o.int_field("n", n as i64);
+                            o.int_field("cost", card.map(|c| c.def().cost).unwrap_or(0) as i64);
+                            o.str_field(
+                                "type",
+                                card.map(|c| kind_name(c.def().kind())).unwrap_or("UNKNOWN"),
+                            );
+                            o.bool_field("implemented", card.is_some_and(is_implemented));
+                        })
+                    });
+                }
+            })
+        });
+        o.field("missing", |v| {
+            v.arr(|a| {
+                for (name, n) in &deck.missing {
+                    a.item(|v| {
+                        v.arr(|a| {
+                            a.str_item(name);
+                            a.item(|v| v.int(*n as i64));
+                        })
+                    });
+                }
+            })
+        });
+        o.field("deckstring", |v| v.opt(code.as_ref(), |v, c| v.str(&c.0)));
+        o.field("deckstring_complete", |v| {
+            v.bool(code.as_ref().is_some_and(|c| c.1))
+        });
+    });
+}
+
+fn kind_name(k: Kind) -> &'static str {
+    match k {
+        Kind::Minion => "MINION",
+        Kind::Spell => "SPELL",
+        Kind::Weapon => "WEAPON",
+        Kind::Location => "LOCATION",
+        Kind::Hero => "HERO",
+        Kind::HeroPower => "HERO_POWER",
+    }
+}
+
+/// A deck code for a gauntlet deck, and whether it is the whole deck.
+///
+/// It is built from the file's own list rather than from what the engine
+/// fielded: a sideboard folded in as ten copies is right for the simulator
+/// and would be an illegal list in game, so such a deck is exported as
+/// incomplete and the UI says so.
+fn export(deck: &MetaDeck, format: Formats) -> Option<(String, bool)> {
+    let hero = hero_dbf(deck.class)?;
+    let mut cards: Vec<(u32, u32)> = Vec::new();
+    let mut complete = true;
+    for (name, n) in &deck.cards {
+        match by_name(name) {
+            // Ten copies of one card is the Beatrix sideboard, which no
+            // legal deck code can carry.
+            Some(c) if *n <= 2 => cards.push((c.info().dbf, *n)),
+            _ => complete = false,
+        }
+    }
+    if cards.is_empty() {
+        return None;
+    }
+    let total: u32 = cards.iter().map(|(_, n)| n).sum();
+    // The format of the gauntlet the deck came from, not a guess from its
+    // cards: every Standard card is Wild-legal too, so reading it off the
+    // list would tag most of the Wild field as Standard and the code would
+    // come back illegal the moment it was pasted in.
+    let format_byte = if format.has(Formats::STANDARD) { 2 } else { 1 };
+    Some((
+        deckstring::encode(hero, &cards, format_byte),
+        complete && total == 30,
+    ))
+}
+
+/// The classic hero portrait for a class, which is what a deck code names.
+fn hero_dbf(class: Class) -> Option<u32> {
+    let id = match class {
+        Class::Warrior => "HERO_01",
+        Class::Shaman => "HERO_02",
+        Class::Rogue => "HERO_03",
+        Class::Paladin => "HERO_04",
+        Class::Hunter => "HERO_05",
+        Class::Druid => "HERO_06",
+        Class::Warlock => "HERO_07",
+        Class::Mage => "HERO_08",
+        Class::Priest => "HERO_09",
+        Class::DemonHunter => "HERO_10",
+        Class::DeathKnight => "HERO_11",
+        _ => return None,
+    };
+    tavernlab_core::cards::by_id(id).map(|c| c.info().dbf)
+}
+
+/// `GET /api/tiers?format=` — the cached table, or `null`. Never a
+/// computation on a GET: the matrix is quadratic.
+pub fn tiers_read(app: &App, req: &Request) -> Response {
+    let format_name = req.param("format").unwrap_or("standard");
+    let Some((format_name, _)) = format_by_name(format_name) else {
+        return Response::error(400, "unknown format");
+    };
+    match std::fs::read_to_string(app.tiers_path(format_name)) {
+        Ok(body) if Json::parse(&body).is_ok() => Response::json(200, body),
+        _ => Response::json(
+            200,
+            to_string(|o| {
+                o.obj(|o| {
+                    o.str_field("format", format_name);
+                    o.field("decks", |v| v.null());
+                })
+            }),
+        ),
+    }
+}
+
+/// `POST /api/tiers` — play the field against itself.
+pub fn tiers_start(app: &Arc<App>, req: &Request) -> Response {
+    let payload = body(req);
+    let (format_name, _) = format_of(&payload);
+    let games = clamped(&payload, "games", 200, TIERS_MIN, TIERS_MAX);
+    let app = Arc::clone(app);
+    let id = app.clone().jobs.start(move |p| {
+        let field = app.gauntlet(format_name);
+        if field.is_empty() {
+            return Err(format!("no gauntlet for {format_name}"));
+        }
+        let table = tiers::build(&field, games, app.threads, |line| p.say(line));
+        if table.rows.is_empty() {
+            return Err("not one deck in the gauntlet could be fielded".into());
+        }
+        let played = table.rows.len();
+        app.count_games((played.saturating_sub(1) * played * games) as u64);
+        // Unix seconds, so a cached table can say how old it is. The
+        // engine itself never reads a clock — a simulation that depended
+        // on one could not be reproduced — but a cache entry has to.
+        let computed_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let body = to_string(|o| {
+            o.obj(|o| {
+                o.str_field("format", format_name);
+                o.int_field("computed_at", computed_at);
+                o.int_field("games_per_pair", table.games_per_pair as i64);
+                o.field("margin", |v| v.round(table.margin, 4));
+                o.field("tiers", |v| {
+                    v.arr(|a| {
+                        for (name, floor) in tiers::BANDS {
+                            a.item(|v| {
+                                v.obj(|o| {
+                                    o.str_field("tier", name);
+                                    o.field("floor", |v| v.num(floor));
+                                })
+                            });
+                        }
+                    })
+                });
+                o.field("skipped", |v| {
+                    v.arr(|a| {
+                        for name in &table.skipped {
+                            a.str_item(name);
+                        }
+                    })
+                });
+                o.field("decks", |v| {
+                    v.arr(|a| {
+                        for row in &table.rows {
+                            a.item(|v| {
+                                v.obj(|o| {
+                                    o.str_field("name", &row.name);
+                                    o.str_field("cls", class_name(row.class));
+                                    o.str_field("archetype", gauntlet::style_name(row.style));
+                                    o.str_field("tier", row.tier);
+                                    o.field("winrate", |v| v.round(row.winrate, 4));
+                                    o.field("vs", |v| {
+                                        v.obj(|o| {
+                                            for (name, rate) in &row.vs {
+                                                o.field(name, |v| v.round(*rate, 4));
+                                            }
+                                        })
+                                    });
+                                })
+                            });
+                        }
+                    })
+                });
+            })
+        });
+        // Cached so nobody has to re-run a quadratic matrix to look at a
+        // table they already computed.
+        let path = app.tiers_path(format_name);
+        if let Err(e) = std::fs::write(&path, &body) {
+            p.say(format!("could not save {}: {e}", path.display()));
+        }
+        Ok(body)
+    });
+    started(&id)
+}
+
+/// `POST /api/cardnames` — names for the autocomplete boxes.
+pub fn cardnames(req: &Request) -> Response {
+    let payload = body(req);
+    let want_all = payload.get("all").and_then(Json::as_bool).unwrap_or(true);
+    let class = gauntlet::class_by_name(field_str(&payload, "cls"));
+    let mut names: Vec<&'static str> = tavernlab_core::cards::all()
+        .filter(|c| {
+            let d = c.def();
+            // Deliberately not restricted to what the engine implements
+            // when `all` is set: a player types the name of the card they
+            // are actually holding, and a box that cannot spell it is worse
+            // than one that answers "not simulated".
+            d.collectible
+                && d.deckable()
+                && (want_all || is_implemented(*c))
+                && class.is_none_or(|k| d.playable_by(k))
+        })
+        .map(|c| c.name())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    Response::json(
+        200,
+        to_string(|o| {
+            o.obj(|o| {
+                o.bool_field("all", want_all);
+                o.field("names", |v| {
+                    v.arr(|a| {
+                        for n in &names {
+                            a.str_item(n);
+                        }
+                    })
+                });
+            })
+        }),
+    )
+}
+
+/// `GET /api/settings` and `POST /api/settings`.
+pub fn settings(app: &App, req: &Request) -> Response {
+    if req.method == "POST" {
+        let payload = body(req);
+        let mut patch: Vec<(String, String)> = Vec::new();
+        for (k, v) in payload.as_object().unwrap_or(&[]) {
+            let value = match v {
+                Json::Str(s) => s.clone(),
+                Json::Null => String::new(),
+                other => other.as_i64().map(|n| n.to_string()).unwrap_or_default(),
+            };
+            // A pasted deck block is stored as the bare code, with its
+            // `### Name` title lifted into `deck_name`: the same deck
+            // pasted twice, once with comments, must be one deck.
+            if k == "deckstring" && !value.trim().is_empty() {
+                if let Some(name) = deckstring::deck_name(&value) {
+                    patch.push(("deck_name".into(), name.to_string()));
+                }
+                let bare = deckstring::extract(&value)
+                    .map(str::to_string)
+                    .unwrap_or_else(|_| value.trim().to_string());
+                patch.push((k.clone(), bare));
+                continue;
+            }
+            patch.push((k.clone(), value));
+        }
+        if let Err(e) = app.set_settings(&patch) {
+            return Response::error(500, &e);
+        }
+    }
+    Response::json(
+        200,
+        to_string(|o| {
+            o.obj(|o| {
+                o.field("settings", |v| {
+                    v.obj(|o| {
+                        for (k, val) in app.settings() {
+                            o.str_field(&k, &val);
+                        }
+                    })
+                });
+            })
+        }),
+    )
+}
+
+/// `GET /api/metrics` — local counters and what this build can actually do.
+/// Nothing is sent anywhere; this is the whole of the observability story.
+pub fn metrics(app: &App) -> Response {
+    let counts = |fmt: Formats| -> (usize, usize) {
+        let deckable: Vec<CardId> = tavernlab_core::cards::all()
+            .filter(|c| {
+                let d = c.def();
+                d.collectible && d.deckable() && d.formats.has(fmt)
+            })
+            .collect();
+        let done = deckable.iter().filter(|c| is_implemented(**c)).count();
+        (deckable.len(), done)
+    };
+    let (std_total, std_done) = counts(Formats::STANDARD);
+    let (wild_total, wild_done) = counts(Formats::WILD);
+
+    Response::json(
+        200,
+        to_string(|o| {
+            o.obj(|o| {
+                o.int_field("cards", tavernlab_core::cards::DEFS.len() as i64);
+                o.int_field("standard_deckable", std_total as i64);
+                o.int_field("standard_implemented", std_done as i64);
+                o.int_field("wild_deckable", wild_total as i64);
+                o.int_field("wild_implemented", wild_done as i64);
+                for format_name in ["standard", "wild"] {
+                    let field = app.gauntlet(format_name);
+                    o.field(&format!("gauntlet_{format_name}"), |v| {
+                        v.obj(|o| {
+                            o.int_field("decks", field.len() as i64);
+                            o.int_field(
+                                "playable",
+                                field.iter().filter(|d| d.playable()).count() as i64,
+                            );
+                        })
+                    });
+                }
+                o.int_field("games_simulated", app.games_simulated() as i64);
+                o.int_field("jobs_started", app.jobs.started_total() as i64);
+                o.int_field("threads", app.threads as i64);
+                o.int_field("uptime_s", app.started.elapsed().as_secs() as i64);
+                o.str_field("data_home", &app.home.display().to_string());
+                o.str_field("root", &app.root.display().to_string());
+            })
+        }),
+    )
+}
+
+/// `GET /api/job/{id}` — how a background run is doing.
+pub fn job(app: &App, id: &str) -> Response {
+    let Some(body) = app.jobs.with(id, |job| {
+        to_string(|o| {
+            o.obj(|o| {
+                o.str_field("status", job.status.as_str());
+                o.field("progress", |v| {
+                    v.arr(|a| {
+                        for line in &job.progress {
+                            a.str_item(line);
+                        }
+                    })
+                });
+                o.field("error", |v| v.opt(job.error.as_deref(), |v, e| v.str(e)));
+                o.field("result", |v| match &job.result {
+                    Some(r) => v.raw(r),
+                    None => v.null(),
+                });
+                o.field("elapsed_ms", |v| {
+                    v.int(
+                        job.finished
+                            .unwrap_or_else(|| job.started.elapsed())
+                            .as_millis() as i64,
+                    )
+                });
+            })
+        })
+    }) else {
+        return Response::error(404, "no such job");
+    };
+    Response::json(200, body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_typed_card_name_resolves_exactly_case_insensitively_and_by_prefix() {
+        assert_eq!(find_card("Fireball"), by_name("Fireball"));
+        // Several names in the corpus are shared by a collectible card and a
+        // token; the collectible one is what a player means.
+        assert_eq!(find_card("  fireball "), by_name("Fireball"));
+        assert_eq!(find_card("not a card at all"), None);
+        // A prefix that matches exactly one card resolves; one that matches
+        // several is refused rather than guessed.
+        assert_eq!(find_card("Goldshire Foot"), by_name("Goldshire Footman"));
+        assert_eq!(find_card("The "), None);
+    }
+
+    #[test]
+    fn card_text_is_shortened_without_cutting_a_character_in_half() {
+        let long = "ї".repeat(200);
+        let s = short(&long);
+        assert_eq!(s.chars().count(), 90);
+        assert!(s.ends_with('…'));
+        assert_eq!(short("short one"), "short one");
+        assert_eq!(short("two\nlines"), "two lines");
+    }
+
+    #[test]
+    fn every_playable_class_has_a_hero_portrait_for_export() {
+        for c in tavernlab_core::cards::PLAYABLE_CLASSES {
+            assert!(hero_dbf(c).is_some(), "{c:?} has no hero portrait");
+        }
+        assert_eq!(hero_dbf(Class::Neutral), None);
+    }
+}

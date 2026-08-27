@@ -1,9 +1,9 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// The Python app owns /api and /locales. In dev we proxy to it, in the
-// build we ship a relative-path bundle that app.py serves from web/dist,
-// so the runtime keeps needing nothing but CPython.
+// `tavernsim serve` owns /api and /locales. In dev we proxy to it; the
+// build is a relative-path bundle that the same binary serves out of
+// web/dist, so the runtime needs no Node at all.
 const backend = 'http://127.0.0.1:8765'
 
 export default defineConfig({

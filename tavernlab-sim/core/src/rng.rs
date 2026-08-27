@@ -2,9 +2,9 @@
 //!
 //! # Why not Mersenne Twister
 //!
-//! The obvious move when replacing a Python engine is to reproduce
-//! `random.Random` bit for bit, so the two implementations can be compared game
-//! for game. That is the wrong trade here, for a structural reason rather than a
+//! The obvious move when replacing the Python engine this grew out of was to
+//! reproduce `random.Random` bit for bit, so the two implementations could be
+//! compared game for game. That is the wrong trade here, for a structural reason rather than a
 //! stylistic one: MT19937 carries 624 words — 2.5 KB — of state.
 //!
 //! The point of this engine is that [`crate::game::Game`] is a fixed-size value
@@ -15,18 +15,15 @@
 //!
 //! So the engine uses xoshiro256++: 32 bytes, `Copy`, roughly one nanosecond per
 //! draw, and no rejection loop on the common path. Equivalence with the old
-//! engine is established by per-card conformance tests and win-rate agreement
+//! engine was established by per-card conformance tests and win-rate agreement
 //! instead of by an identical word stream — a coarser net at the game level, a
-//! finer one at the card level, and no constraint on the design.
-//!
-//! A CPython-compatible generator still exists behind the `pycompat` feature,
-//! compiled out by default. It is a disposable bridge for the differential
-//! harness, not part of the engine.
+//! finer one at the card level, and no constraint on the design. That engine is
+//! now gone, and with it the last reason anyone would want the word stream.
 //!
 //! # Streams
 //!
-//! `hs2` drives shuffles, draws, discovers and random effects from one
-//! generator. That is what caps paired-seed variance reduction at the measured
+//! The old engine drove shuffles, draws, discovers and random effects from one
+//! generator. That is what capped paired-seed variance reduction at the measured
 //! 8.5×: changing a card in deck A shifts the whole downstream stream, so the
 //! opponent's draws move too.
 //!

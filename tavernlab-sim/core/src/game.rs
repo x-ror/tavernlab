@@ -449,6 +449,16 @@ impl Game {
     /// Play one full game against two agents, returning how it ended.
     pub fn run(&mut self, first: Side, agents: &mut [&mut dyn Agent; 2]) -> Outcome {
         self.start(first, agents);
+        self.play_out(agents)
+    }
+
+    /// Everything after [`start`](Self::start): turns until someone wins.
+    ///
+    /// Split out so a caller that needs to *see* the opening — telemetry
+    /// wants the post-mulligan hand and the shuffled deck before a card is
+    /// drawn from it — does not have to re-implement the turn loop and drift
+    /// out of step with it.
+    pub fn play_out(&mut self, agents: &mut [&mut dyn Agent; 2]) -> Outcome {
         while !self.is_over() {
             self.turn += 1;
             if self.turn > TURN_LIMIT {

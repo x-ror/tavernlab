@@ -3,6 +3,7 @@ import { Button, Flex, Item, Picker, ProgressBar, Text } from '@adobe/react-spec
 import * as api from '../api'
 import { useApp } from '../store'
 import { useT } from '../i18n'
+import { useMetaDecks } from '../meta'
 import HeroPortrait from '../components/HeroPortrait'
 import { Caveats, ErrorNote, Loading, Panel } from '../components/ui'
 import { classColor, classWash } from '../classes'
@@ -36,6 +37,8 @@ export default function Meta() {
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState([])
   const [error, setError] = useState(null)
+  const field = useMetaDecks(fmt)
+  const playable = (field || []).filter((d) => d.playable !== false).length
 
   const load = useCallback(async (which) => {
     setData(undefined)
@@ -74,6 +77,9 @@ export default function Meta() {
   // bands, which matters more than anything else on the page.
   const marginPts = data?.margin ? Math.round(data.margin * 1000) / 10 : null
   const caveats = [
+    data?.skipped?.length
+      ? t('meta.caveat_skipped', { n: data.skipped.length, decks: data.skipped.join(', ') })
+      : null,
     marginPts !== null && data.margin > 0.05
       ? t('meta.caveat_noisy', { games: data.games_per_pair, margin: marginPts })
       : null,
@@ -160,7 +166,10 @@ export default function Meta() {
         !busy && (
           <Panel>
             <Text>
-              {t('ui.tiers.none', { pairs: 12 * 11, games })}
+              {t('ui.tiers.none', {
+                pairs: Math.max(0, playable * (playable - 1)),
+                games,
+              })}
             </Text>
           </Panel>
         )

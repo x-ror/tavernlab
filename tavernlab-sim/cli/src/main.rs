@@ -3,12 +3,14 @@
 //! Commands:
 //!
 //! ```text
+//! tavernsim serve [port]              the local app: web UI + API
 //! tavernsim bench [games] [threads]   throughput against a fixed mirror match
 //! tavernsim matrix [games]            every class against every class
 //! tavernsim demo [seed]               one game, turn by turn
 //! tavernsim coverage                  how much of the card pool is implemented
 //! tavernsim gauntlet [path]           how much of real deck lists resolves
 //! tavernsim backlog <class>           exactly which Standard cards are missing
+//! tavernsim art-urls [--heroes]       where to fetch the card art cache from
 //! ```
 
 use std::time::Instant;
@@ -22,12 +24,35 @@ use tavernlab_core::inline::Inline;
 use tavernlab_core::state::{Game, Outcome, Side};
 use tavernlab_json::Json;
 
+mod serve;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cmd = args.first().map(String::as_str).unwrap_or("bench");
     let num = |i: usize, d: usize| args.get(i).and_then(|s| s.parse().ok()).unwrap_or(d);
 
     match cmd {
+        "serve" => {
+            let port = args
+                .get(1)
+                .and_then(|s| s.parse().ok())
+                .or_else(|| {
+                    std::env::var("TAVERNLAB_PORT")
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                })
+                .unwrap_or(serve::DEFAULT_PORT);
+            // One thread is left to the OS and the HTTP handlers: a batch
+            // that saturates every core makes the UI that started it stop
+            // answering.
+            let threads = default_threads().saturating_sub(1).max(1);
+            let open = !args.iter().any(|a| a == "--no-open");
+            if let Err(e) = serve::run(port, threads, open) {
+                eprintln!("tavernsim serve: {e}");
+                std::process::exit(1);
+            }
+        }
+        "art-urls" => serve::art_urls(args.iter().any(|a| a == "--heroes")),
         "bench" => bench(num(1, 20_000), num(2, default_threads())),
         "matrix" => matrix(num(1, 200)),
         "demo" => demo(num(1, 1) as u64),
@@ -40,7 +65,9 @@ fn main() {
         "backlog" => backlog(args.get(1).map(String::as_str)),
         other => {
             eprintln!("unknown command {other:?}");
-            eprintln!("usage: tavernsim [bench|matrix|demo|coverage] [args]");
+            eprintln!(
+                "usage: tavernsim [serve|bench|matrix|demo|coverage|gauntlet|backlog|art-urls] [args]"
+            );
             std::process::exit(2);
         }
     }
@@ -475,14 +502,14 @@ fn backlog(class_name: Option<&str>) {
 /// `coverage` measures the whole card pool; a percentage there can rise
 /// without a single real deck getting any closer to playable, because the
 /// pool is dominated by cards no meta deck runs. This instead resolves the
-/// actual decklists in `path` (default: the repo's own `hs2/meta_decks_2026.json`)
+/// actual decklists in `path` (default: the repo's own `data/gauntlet_standard.json`)
 /// against the implemented table, one slot at a time, and prints what is
 /// still missing so the next card to port is obvious.
 fn gauntlet(path: Option<&str>) {
     use tavernlab_core::cards::by_name;
     use tavernlab_core::deck::resolve_slots;
 
-    let path = path.unwrap_or("../hs2/meta_decks_2026.json");
+    let path = path.unwrap_or("../data/gauntlet_standard.json");
     let src = std::fs::read_to_string(path).unwrap_or_else(|e| {
         eprintln!("failed to read {path}: {e}");
         std::process::exit(1);

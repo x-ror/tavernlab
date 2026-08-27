@@ -32,7 +32,7 @@ const DOT = {
  * into the rating, mulligan and coach screens separately. */
 export default function DeckBadge() {
   const { t } = useT()
-  const { deckCode, setDeckCode, deckInfo, hasTelemetry, deckName } = useApp()
+  const { deckCode, setDeckCode, deckInfo, deckName } = useApp()
 
   const cls = deckInfo?.cls ? t(`class.${deckInfo.cls}`) : null
   const label = deckCode
@@ -48,9 +48,7 @@ export default function DeckBadge() {
     : deckInfo?.pending
       ? 'neutral'
       : deckInfo?.ok
-        ? hasTelemetry
-          ? 'positive'
-          : 'notice'
+        ? 'positive'
         : 'negative'
 
   return (
@@ -74,12 +72,19 @@ export default function DeckBadge() {
           <Text>{label}</Text>
         </Flex>
       </ActionButton>
-      {(close) => <DeckDialog close={close} deckCode={deckCode} setDeckCode={setDeckCode} deckInfo={deckInfo} hasTelemetry={hasTelemetry} />}
+      {(close) => (
+        <DeckDialog
+          close={close}
+          deckCode={deckCode}
+          setDeckCode={setDeckCode}
+          deckInfo={deckInfo}
+        />
+      )}
     </DialogTrigger>
   )
 }
 
-function DeckDialog({ close, deckCode, setDeckCode, deckInfo, hasTelemetry }) {
+function DeckDialog({ close, deckCode, setDeckCode, deckInfo }) {
   const { t } = useT()
   const [draft, setDraft] = useState(deckCode)
   useEffect(() => setDraft(deckCode), [deckCode])
@@ -100,9 +105,11 @@ function DeckDialog({ close, deckCode, setDeckCode, deckInfo, hasTelemetry }) {
         {deckCode && deckInfo && !deckInfo.pending && (
           <Flex direction="column" gap="size-100" marginTop="size-200">
             {deckInfo.ok ? (
-              <StatusLight variant={hasTelemetry ? 'positive' : 'notice'}>
-                {formatName(deckInfo.format, t)} ·{' '}
-                {hasTelemetry ? t('ui.deck.analysed') : t('ui.deck.not_analysed')}
+              <StatusLight variant="positive">
+                {formatName(deckInfo.format, t)} · {t('ui.deck.ok', {
+                  cls: t(`class.${deckInfo.cls}`),
+                  n: deckInfo.total,
+                })}
               </StatusLight>
             ) : (
               <Text UNSAFE_style={{ color: 'var(--tl-neg)' }}>
