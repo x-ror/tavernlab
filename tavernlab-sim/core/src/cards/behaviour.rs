@@ -95,6 +95,8 @@ pub enum TargetSpec {
     DamagedMinion,
     UndamagedMinion,
     FriendlyBeast,
+    /// A Legendary minion, either side (Garona's Last Stand).
+    LegendaryMinion,
     /// An enemy minion that has a minion type at all (Bugsquasher). A body
     /// with no tribe is not a legal target, which is the whole joke.
     EnemyMinionWithRace,
@@ -161,6 +163,8 @@ impl TargetSpec {
             }
             TargetSpec::FriendlyBeast => matches!(t, Target::Minion(s, i)
                 if s == side && g.player(s).board[i as usize].races().any(Races::BEAST)),
+            TargetSpec::LegendaryMinion => matches!(t, Target::Minion(s, i)
+                if g.player(s).board[i as usize].card.def().rarity() == super::Rarity::Legendary),
             TargetSpec::EnemyMinionWithRace => matches!(t, Target::Minion(s, i)
                 if s == foe && !g.player(s).board[i as usize].races().is_empty()),
             TargetSpec::EnemyTaunt => matches!(t, Target::Minion(s, i)
@@ -470,6 +474,8 @@ mod tokens {
     pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
     /// Imp Gang Stooge's "8/8 Demon with Taunt and Lifesteal".
     pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
+    /// Web of Deception's 4/4.
+    pub const SKITTERING_SPIDERLING: CardId = token("EDR_523t");
     /// Rat Trap's 6/6.
     pub const DOOM_RAT: CardId = token("GIL_577t");
     /// Sleep Paralysis' 3/6 Demon that cannot swing.
@@ -4822,6 +4828,212 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         // next one -- those are not yet Overloaded Mana Crystals.
         if g.player(side).overload_now > 0 { (1, 0) } else { (0, 0) }
     }),
+
+    // ---------------------------------------------------------- Rogue
+    spell("Mimicry", T::None, |g, c| {
+        let foe = c.side.other();
+        let before = g.player(foe).hand.len();
+        g.draw(foe, 2);
+        for i in before..g.player(foe).hand.len() {
+            let card = g.player(foe).hand[i].card;
+            g.give_token(c.side, card);
+        }
+    }),
+    spell("Garona's Last Stand", T::LegendaryMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.destroy(t);
+        }
+    }),
+    spell("Jackpot!", T::None, |g, c| {
+        let mine = g.player(c.side).class;
+        for _ in 0..2 {
+            g.add_random_to_hand_where(c.side, |d| {
+                d.kind() == super::Kind::Spell
+                    && d.cost >= 5
+                    && d.class() != mine
+                    && d.class() != super::Class::Neutral
+            });
+        }
+    }),
+    spell("Silent Strike", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.buff(t, 3, 0);
+        let Target::Minion(s, i) = t else { return };
+        let Some(m) = g.player(s).board.get(i as usize).copied() else { return };
+        if m.has(Keywords::STEALTH)
+            && let Some(victim) = g.random_minion(c.side.other())
+        {
+            g.deal_damage(victim, m.atk);
+        }
+    }),
+    spell("Web of Deception", T::FriendlyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.bounce(t);
+        g.summon_token(c.side, tokens::SKITTERING_SPIDERLING, 1);
+    }),
+    spell("Deadly Bribe", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.destroy(t);
+        }
+        g.give_token(c.side.other(), tokens::COIN);
+        if g.combo_active(c.side) {
+            g.give_token(c.side, tokens::COIN);
+        }
+    }),
+    trigger("SI:7 Slayer", |g, c| {
+        // On the declaration: attacking is what strips Stealth, so by the time
+        // the exchange is over the minion this asks about is no longer one.
+        if let Event::AttackDeclared { attacker: Target::Minion(s, i), .. } = c.event
+            && s == c.side
+            && g.player(s)
+                .board
+                .get(i as usize)
+                .is_some_and(|m| m.has(Keywords::STEALTH))
+        {
+            g.buff(Target::Minion(s, i), 2, 2);
+        }
+    }),
+    trigger("Shaku, the Collector", |g, c| {
+        if matches!(c.event, Event::AfterAttack { attacker, .. } if attacker == c.me()) {
+            let mine = g.player(c.side).class;
+            g.add_random_to_hand_where(c.side, |d| {
+                d.class() != mine && d.class() != super::Class::Neutral
+            });
+        }
+    }),
+    battlecry("Tricky Satyr", T::None, |g, c| {
+        let foe = c.side.other();
+        let mut best: Option<(usize, i16)> = None;
+        for (i, h) in g.player(foe).hand.iter().enumerate() {
+            let cost = h.card.def().cost;
+            if best.is_none_or(|(_, b)| cost < b) {
+                best = Some((i, cost));
+            }
+        }
+        if let Some((at, _)) = best {
+            let card = g.player(foe).hand[at].card;
+            g.give_token(c.side, card);
+        }
+    }),
+    trigger("Mathias Shaw", |g, c| {
+        // On the declaration: attacking is what strips Stealth, so by the time
+        // the exchange is over the minion this asks about is no longer one.
+        if let Event::AttackDeclared { attacker: Target::Minion(s, i), .. } = c.event
+            && s == c.side
+            && g.player(s)
+                .board
+                .get(i as usize)
+                .is_some_and(|m| m.has(Keywords::STEALTH))
+        {
+            let n = g.player(c.side).hand.len();
+            if n == 0 {
+                return;
+            }
+            let pick = g.rngs.effects.index(n);
+            if let Some(h) = g.player_mut(c.side).hand.get_mut(pick) {
+                h.cost_delta -= 3;
+            }
+        }
+    }),
+    deathrattle("Waggle Pick", |g, c| {
+        let Some(t) = g.random_minion(c.side) else { return };
+        g.bounce(t);
+        if let Some(h) = g.player_mut(c.side).hand.last_mut() {
+            h.cost_delta -= 2;
+        }
+    }),
+    spell("Fast Forward", T::None, |g, c| {
+        let before = g.player(c.side).hand.len();
+        g.draw_cards(c.side, 2);
+        // "Pick one": the dearer of the two, which is the one worth the two.
+        let mut best: Option<(usize, i16)> = None;
+        for i in before..g.player(c.side).hand.len() {
+            let cost = g.player(c.side).hand[i].card.def().cost;
+            if best.is_none_or(|(_, b)| cost > b) {
+                best = Some((i, cost));
+            }
+        }
+        if let Some((at, _)) = best
+            && let Some(h) = g.player_mut(c.side).hand.get_mut(at)
+        {
+            h.cost_delta -= 2;
+        }
+    }),
+    battlecry("Swashburglar", T::None, |g, c| {
+        let mine = g.player(c.side).class;
+        g.add_random_to_hand_where(c.side, |d| {
+            d.class() != mine && d.class() != super::Class::Neutral
+        });
+    }),
+    c(
+        "Crystal Tusk",
+        T::None,
+        None,
+        Some(|g, c| {
+            if g.player(c.side).hand.is_empty() {
+                return;
+            }
+            let card = g.player(c.side).hand[0].card;
+            g.player_mut(c.side).hand.remove(0);
+            g.shuffle_into_deck(c.side, card);
+        }),
+        Some(|g, c| g.draw_cards(c.side, 2)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    battlecry("Merchant of Legend", T::None, |g, c| {
+        let pool = super::discover_pool(|d| {
+            d.kind() == super::Kind::Minion && d.rarity() == super::Rarity::Legendary
+        });
+        if pool.is_empty() {
+            return;
+        }
+        let mut offered = [0u32; 3];
+        let n = g.rngs.effects.sample_indices(pool.len(), &mut offered);
+        let crystals = g.player(c.side).crystals;
+        let cards: Inline<CardId, 3> = offered[..n].iter().map(|&i| pool[i as usize]).collect();
+        let Some(best) = cards
+            .iter()
+            .copied()
+            .max_by_key(|card| (card.def().cost <= crystals + 1, card.def().cost))
+        else {
+            return;
+        };
+        let mut kept = false;
+        for card in cards.iter().copied() {
+            if card == best && !kept {
+                kept = true;
+                g.give_card(c.side, card);
+            } else {
+                g.shuffle_into_deck(c.side, card);
+            }
+        }
+    }),
+    c(
+        "Blackpaw's Whip",
+        T::None,
+        None,
+        None,
+        Some(|g, c| g.draw_cards(c.side, 1)),
+        None,
+        None,
+        None,
+        None,
+        Some(|g, side, _i| {
+            let coins = g
+                .player(side)
+                .hand
+                .iter()
+                .filter(|h| h.card.name() == "The Coin")
+                .count() as i16;
+            -coins
+        }),
+        None,
+    ),
 
     // --------------------------------------------------------- Hunter
     // Leokk is one of the three Animal Companions, so every card that summons

@@ -8190,3 +8190,178 @@ fn leokk_lifts_the_rest_of_the_board() {
     assert_eq!(f.mine(0).atk, 2, "not himself");
     assert_eq!(f.mine(1).atk, 5);
 }
+
+// --------------------------------------------------------------- Rogue
+
+#[test]
+fn mimicry_pays_you_for_their_draw() {
+    let mut f = Fix::new();
+    f.g.players[1].deck.push(by_name("Wisp").unwrap());
+    f.g.players[1].deck.push(by_name("Chillwind Yeti").unwrap());
+    f.play("Mimicry", None);
+    assert_eq!(f.g.players[1].hand.len(), 2);
+    let mut mine: Vec<&str> = f.g.players[0].hand.iter().map(|h| h.card.name()).collect();
+    mine.sort();
+    assert_eq!(mine, vec!["Chillwind Yeti", "Wisp"]);
+}
+
+#[test]
+fn garonas_last_stand_only_points_at_legends() {
+    let mut f = Fix::new().board(FOE, &["Deathwing"]);
+    f.play("Garona's Last Stand", foe_minion(0));
+    assert_eq!(f.their_board(), 0);
+}
+
+#[test]
+fn jackpot_pays_out_two_big_spells_from_elsewhere() {
+    let mut f = Fix::new(); // a Mage fixture
+    f.play("Jackpot!", None);
+    assert_eq!(f.g.players[0].hand.len(), 2);
+    for h in f.g.players[0].hand.iter() {
+        let d = h.card.def();
+        assert_eq!(d.kind(), Kind::Spell);
+        assert!(d.cost >= 5, "{}", h.card.name());
+        assert_ne!(d.class(), Class::Mage);
+        assert_ne!(d.class(), Class::Neutral);
+    }
+}
+
+#[test]
+fn silent_strike_only_shoots_from_stealth() {
+    let mut f = Fix::new()
+        .board(ME, &["Chillwind Yeti"])
+        .board(FOE, &["Boulderfist Ogre"]);
+    f.play("Silent Strike", my_minion(0));
+    assert_eq!(f.mine(0).atk, 7);
+    assert_eq!(f.theirs(0).damage, 0, "not Stealthed");
+
+    let mut f = Fix::new()
+        .board(ME, &["Stranglethorn Tiger"]) // 5/5 Stealth
+        .board(FOE, &["Boulderfist Ogre"]);
+    f.play("Silent Strike", my_minion(0));
+    assert_eq!(f.their_board(), 0, "eight, which is more than a 6/7 has");
+}
+
+#[test]
+fn web_of_deception_trades_a_body_for_a_spider() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.play("Web of Deception", my_minion(0));
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (4, 4));
+    assert!(f.mine(0).has(Keywords::STEALTH));
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Chillwind Yeti");
+}
+
+#[test]
+fn deadly_bribe_pays_them_and_you_on_combo() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Deadly Bribe", foe_minion(0));
+    assert_eq!(f.their_board(), 0);
+    assert_eq!(f.g.players[1].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand.len(), 0);
+
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Wisp", None);
+    f.play("Deadly Bribe", foe_minion(0));
+    assert_eq!(f.g.players[0].hand.len(), 1, "combo pays you too");
+}
+
+#[test]
+fn si7_slayer_feeds_the_hidden() {
+    let mut f = Fix::new().board(ME, &["SI:7 Slayer", "Stranglethorn Tiger"]);
+    assert!(f.g.apply(Action::Attack { from: 1, target: Target::Hero(FOE) }));
+    assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (7, 7));
+}
+
+#[test]
+fn shaku_steals_a_card_per_swing() {
+    let mut f = Fix::new().board(ME, &["Shaku, the Collector"]);
+    assert!(f.g.apply(Action::Attack { from: 0, target: Target::Hero(FOE) }));
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    let got = f.g.players[0].hand[0].card;
+    assert_ne!(got.def().class(), Class::Mage);
+    assert_ne!(got.def().class(), Class::Neutral);
+}
+
+#[test]
+fn tricky_satyr_takes_their_cheapest() {
+    let mut f = Fix::new();
+    f.g.players[1].hand.push(HandCard::new(by_name("Boulderfist Ogre").unwrap()));
+    f.g.players[1].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("Tricky Satyr", None);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Wisp");
+    assert_eq!(f.g.players[1].hand.len(), 2, "a copy, not a theft");
+}
+
+#[test]
+fn mathias_shaw_discounts_on_a_hidden_swing() {
+    let mut f = Fix::new().board(ME, &["Mathias Shaw", "Stranglethorn Tiger"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("Fireball").unwrap()));
+    assert!(f.g.apply(Action::Attack { from: 1, target: Target::Hero(FOE) }));
+    assert_eq!(f.g.players[0].hand[0].cost_delta, -3);
+}
+
+#[test]
+fn waggle_pick_hands_a_minion_back_cheaper() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.play("Waggle Pick", None);
+    f.g.destroy_weapon(ME);
+    assert_eq!(f.g.players[0].board.len(), 0);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Chillwind Yeti");
+    assert_eq!(f.g.players[0].hand[0].cost_delta, -2);
+}
+
+#[test]
+fn fast_forward_discounts_the_dearer_of_the_two() {
+    let mut f = Fix::new().deck(&["Boulderfist Ogre", "Wisp"]);
+    f.play("Fast Forward", None);
+    assert_eq!(f.g.players[0].hand.len(), 2);
+    let ogre = f.g.players[0]
+        .hand
+        .iter()
+        .find(|h| h.card.name() == "Boulderfist Ogre")
+        .expect("drawn");
+    assert_eq!(ogre.cost_delta, -2);
+}
+
+#[test]
+fn swashburglar_lifts_a_card_from_another_class() {
+    let mut f = Fix::new();
+    f.play("Swashburglar", None);
+    let got = f.g.players[0].hand[0].card;
+    assert_ne!(got.def().class(), Class::Mage);
+    assert_ne!(got.def().class(), Class::Neutral);
+}
+
+#[test]
+fn crystal_tusk_buries_a_card_and_pays_it_back() {
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("Crystal Tusk", None);
+    assert_eq!(f.g.players[0].hand.len(), 0);
+    assert_eq!(f.g.players[0].deck.len(), 1);
+    f.g.destroy_weapon(ME);
+    assert_eq!(f.g.players[0].hand.len(), 1, "one back off a one-card deck");
+}
+
+#[test]
+fn merchant_of_legend_keeps_one_and_buries_the_rest() {
+    let mut f = Fix::new();
+    f.play("Merchant of Legend", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(
+        f.g.players[0].hand[0].card.def().rarity(),
+        tavernlab_core::cards::Rarity::Legendary
+    );
+    assert_eq!(f.g.players[0].deck.len(), 2, "the other two went in");
+}
+
+#[test]
+fn blackpaws_whip_is_cheaper_for_every_coin() {
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Blackpaw's Whip").unwrap()));
+    assert_eq!(f.g.card_cost(ME, 0), 3);
+    f.g.players[0].hand.push(HandCard::new(by_name("The Coin").unwrap()));
+    f.g.players[0].hand.push(HandCard::new(by_name("The Coin").unwrap()));
+    assert_eq!(f.g.card_cost(ME, 0), 1);
+}
