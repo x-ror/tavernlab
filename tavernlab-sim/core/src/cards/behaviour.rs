@@ -470,6 +470,8 @@ mod tokens {
     pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
     /// Imp Gang Stooge's "8/8 Demon with Taunt and Lifesteal".
     pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
+    /// Sleep Paralysis' 3/6 Demon that cannot swing.
+    pub const NIGHT_TERROR: CardId = token("EDR_490t");
     /// Glade Ecologist's spell and Holy Embrace's dark half. Both are real
     /// playable spells with rows of their own below.
     pub const PURIFYING_VINES: CardId = token("TLC_813");
@@ -4817,6 +4819,156 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         // The crystals locked for *this* turn, not the Overload queued for the
         // next one -- those are not yet Overloaded Mana Crystals.
         if g.player(side).overload_now > 0 { (1, 0) } else { (0, 0) }
+    }),
+
+    // -------------------------------------------------------- Warlock
+    spell("Shadow Rounds", T::EnemyMinion, |g, c| {
+        let mut next = c.target;
+        // Chains while it keeps killing; the board is finite, so is this.
+        for _ in 0..MAX_BOARD {
+            let Some(t) = next else { break };
+            g.spell_damage(c.side, Some(t), 2);
+            let dead = matches!(t, Target::Minion(s, i)
+                if g.player(s).board.get(i as usize).is_some_and(|m| m.is_dead()));
+            g.sweep_deaths();
+            if !dead {
+                break;
+            }
+            next = g.random_minion(c.side.other());
+        }
+    }),
+    battlecry("Ocular Occultist", T::None, |g, c| {
+        g.discard_random(c.side);
+    }),
+    spell("RAFAAM LADDER!!", T::None, |g, c| {
+        // "of different Costs": three draws, no two at the same price.
+        let mut taken: Inline<i16, 3> = Inline::new();
+        for _ in 0..3 {
+            let mut matches: Inline<u16, { crate::state::MAX_DECK }> = Inline::new();
+            for (i, card) in g.player(c.side).deck.iter().enumerate() {
+                if !taken.contains(&card.def().cost) {
+                    matches.push(i as u16);
+                }
+            }
+            if matches.is_empty() {
+                break;
+            }
+            let pick = g.rngs.effects.index(matches.len());
+            let at = matches[pick] as usize;
+            let card = g.player(c.side).deck[at];
+            g.player_mut(c.side).deck.remove(at);
+            taken.push(card.def().cost);
+            g.give_card(c.side, card);
+        }
+    }),
+    deathrattle("Possessed Animancer", |g, c| {
+        if g.summon_from_deck(c.side, |d| d.races.any(Races::BEAST)) {
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.grant(Target::Minion(c.side, slot), Keywords::LIFESTEAL);
+        }
+    }),
+    choose("Sleep Paralysis", &[
+        m(T::None, |g, c| {
+            g.summon_token(c.side, tokens::NIGHT_TERROR, 2);
+        }),
+        m(T::EnemyMinion, |g, c| {
+            if let Some(t) = c.target {
+                g.destroy(t);
+            }
+        }),
+    ]),
+    battlecry("Riftcleaver", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(s, i) = t else { return };
+        let Some(health) = g.player(s).board.get(i as usize).map(|m| m.health()) else {
+            return;
+        };
+        g.destroy(t);
+        g.damage_hero(c.side, health);
+    }),
+    trigger("Asphyxiodon", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side)
+            && let Some(t) = g.random_minion(c.side.other())
+        {
+            g.deal_damage(t, 5);
+        }
+    }),
+    battlecry("Archwitch Willow", T::None, |g, c| {
+        // One pool over both zones, so a hand of Demons and a deck of them
+        // are equally likely to answer.
+        let hand: Inline<u16, MAX_HAND> = (0..g.player(c.side).hand.len() as u16)
+            .filter(|i| g.player(c.side).hand[*i as usize].card.def().races.any(Races::DEMON))
+            .collect();
+        let deck: Inline<u16, { crate::state::MAX_DECK }> =
+            (0..g.player(c.side).deck.len() as u16)
+                .filter(|i| g.player(c.side).deck[*i as usize].def().races.any(Races::DEMON))
+                .collect();
+        let total = hand.len() + deck.len();
+        if total == 0 {
+            return;
+        }
+        let pick = g.rngs.effects.index(total);
+        let card = if pick < hand.len() {
+            let at = hand[pick] as usize;
+            let card = g.player(c.side).hand[at].card;
+            g.player_mut(c.side).hand.remove(at);
+            card
+        } else {
+            let at = deck[pick - hand.len()] as usize;
+            let card = g.player(c.side).deck[at];
+            g.player_mut(c.side).deck.remove(at);
+            card
+        };
+        g.summon(c.side, card);
+    }),
+    spell("Bat Mask", T::FriendlyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(_, i) = t else { return };
+        g.set_attack(t, 1);
+        g.set_health(t, 1);
+        let card = g.player(c.side).board[i as usize].card;
+        while !g.player(c.side).board.is_full() {
+            if !g.summon(c.side, card) {
+                break;
+            }
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.set_attack(Target::Minion(c.side, slot), 1);
+            g.set_health(Target::Minion(c.side, slot), 1);
+        }
+    }),
+    battlecry("Chronogor", T::None, |g, c| {
+        // Both halves come off *your* deck: the two dearest to you, the two
+        // cheapest to them.
+        for _ in 0..2 {
+            let mut best: Option<(usize, i16)> = None;
+            for (i, card) in g.player(c.side).deck.iter().enumerate() {
+                let cost = card.def().cost;
+                if best.is_none_or(|(_, b)| cost > b) {
+                    best = Some((i, cost));
+                }
+            }
+            let Some((at, _)) = best else { break };
+            let card = g.player(c.side).deck[at];
+            g.player_mut(c.side).deck.remove(at);
+            g.give_card(c.side, card);
+        }
+        for _ in 0..2 {
+            let mut worst: Option<(usize, i16)> = None;
+            for (i, card) in g.player(c.side).deck.iter().enumerate() {
+                let cost = card.def().cost;
+                if worst.is_none_or(|(_, b)| cost < b) {
+                    worst = Some((i, cost));
+                }
+            }
+            let Some((at, _)) = worst else { break };
+            let card = g.player(c.side).deck[at];
+            g.player_mut(c.side).deck.remove(at);
+            g.give_card(c.side.other(), card);
+        }
+    }),
+    battlecry("Razidir", T::None, |g, c| {
+        let theirs = g.kindred(c.side, Races::DEMON) || g.kindred(c.side, Races::BEAST);
+        g.discard_random(if theirs { c.side.other() } else { c.side });
     }),
 
     // --------------------------------------------------------- Priest

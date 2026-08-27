@@ -7843,3 +7843,135 @@ fn holy_embrace_leaves_its_dark_half_in_hand() {
     f.play("Dark Embrace", Some(Target::Hero(FOE)));
     assert_eq!(f.g.players[1].hero_hp, 26);
 }
+
+// ------------------------------------------------------------- Warlock
+
+#[test]
+fn shadow_rounds_chains_while_it_keeps_killing() {
+    let mut f = Fix::new().board(FOE, &["Wisp", "Wisp", "Boulderfist Ogre"]);
+    f.play("Shadow Rounds", foe_minion(0));
+    assert_eq!(f.their_board(), 1, "both 1/1s went");
+    assert_eq!(f.theirs(0).card.name(), "Boulderfist Ogre");
+    assert_eq!(f.theirs(0).damage, 2, "and the chain stopped on it");
+}
+
+#[test]
+fn ocular_occultist_costs_you_a_card() {
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("Ocular Occultist", None);
+    assert_eq!(f.g.players[0].hand.len(), 0);
+}
+
+#[test]
+fn rafaam_ladder_draws_three_different_prices() {
+    let mut f = Fix::new().deck(&["Wisp", "Wisp", "Bloodfen Raptor", "Chillwind Yeti"]);
+    f.play("RAFAAM LADDER!!", None);
+    let mut costs: Vec<i16> = f.g.players[0]
+        .hand
+        .iter()
+        .map(|h| h.card.def().cost)
+        .collect();
+    costs.sort();
+    assert_eq!(costs, vec![0, 2, 4], "one Wisp, the Raptor, the Yeti");
+}
+
+#[test]
+fn possessed_animancer_pulls_a_lifestealing_beast() {
+    let mut f = Fix::new()
+        .board(ME, &["Possessed Animancer"])
+        .deck(&["Chillwind Yeti", "Bloodfen Raptor"]); // only the Raptor is a Beast
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.mine(0).card.name(), "Bloodfen Raptor");
+    assert!(f.mine(0).has(Keywords::LIFESTEAL));
+}
+
+#[test]
+fn sleep_paralysis_offers_two_walls_or_a_kill() {
+    let mut f = Fix::new();
+    f.play_mode("Sleep Paralysis", 0, None);
+    assert_eq!(f.g.players[0].board.len(), 2);
+    for i in 0..2 {
+        assert_eq!((f.mine(i).atk, f.mine(i).max_hp), (3, 6));
+        assert!(f.mine(i).has(Keywords::TAUNT));
+        assert!(f.mine(i).has(Keywords::CANT_ATTACK));
+    }
+
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play_mode("Sleep Paralysis", 1, foe_minion(0));
+    assert_eq!(f.their_board(), 0);
+}
+
+#[test]
+fn riftcleaver_charges_you_for_the_kill() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 7 health
+    f.play("Riftcleaver", foe_minion(0));
+    assert_eq!(f.their_board(), 0);
+    assert_eq!(f.g.players[0].hero_hp, 23);
+}
+
+#[test]
+fn asphyxiodon_picks_one_off_every_turn() {
+    let mut f = Fix::new()
+        .board(ME, &["Asphyxiodon"])
+        .board(FOE, &["Chillwind Yeti"]);
+    f.g.end_turn();
+    assert_eq!(f.their_board(), 0, "five kills a 4/5");
+    assert_eq!(f.g.players[1].hero_hp, 30, "a minion, never the hero");
+}
+
+#[test]
+fn archwitch_willow_reaches_into_hand_and_deck_alike() {
+    let mut f = Fix::new().deck(&["Voidwalker"]); // a Demon
+    f.play("Archwitch Willow", None);
+    assert_eq!(f.g.players[0].board.len(), 2);
+    assert_eq!(f.mine(1).card.name(), "Voidwalker");
+    assert_eq!(f.g.players[0].deck.len(), 0, "it left the deck");
+
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Voidwalker").unwrap()));
+    f.play("Archwitch Willow", None);
+    assert_eq!(f.mine(1).card.name(), "Voidwalker");
+    assert_eq!(f.g.players[0].hand.len(), 0, "it left the hand");
+}
+
+#[test]
+fn bat_mask_fills_the_board_with_one_ones() {
+    let mut f = Fix::new().board(ME, &["Boulderfist Ogre"]);
+    f.play("Bat Mask", my_minion(0));
+    assert_eq!(f.g.players[0].board.len(), 7);
+    for i in 0..7 {
+        assert_eq!((f.mine(i).atk, f.mine(i).max_hp), (1, 1));
+        assert_eq!(f.mine(i).card.name(), "Boulderfist Ogre");
+    }
+}
+
+#[test]
+fn chronogor_splits_your_deck_by_price() {
+    let mut f = Fix::new().deck(&["Wisp", "Wisp", "Chillwind Yeti", "Boulderfist Ogre"]);
+    f.play("Chronogor", None);
+    let mine: Vec<i16> = f.g.players[0].hand.iter().map(|h| h.card.def().cost).collect();
+    let theirs: Vec<i16> = f.g.players[1].hand.iter().map(|h| h.card.def().cost).collect();
+    assert_eq!(mine, vec![6, 4], "the two dearest");
+    assert_eq!(theirs, vec![0, 0], "the two cheapest");
+    assert_eq!(f.g.players[0].deck.len(), 0);
+}
+
+#[test]
+fn razidir_burns_their_hand_on_kindred() {
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.g.players[1].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("Razidir", None);
+    assert_eq!(f.g.players[0].hand.len(), 0, "no Kindred: your own hand");
+    assert_eq!(f.g.players[1].hand.len(), 1);
+
+    let mut f = Fix::new();
+    f.g.players[0].played_races_last = Races::DEMON;
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.g.players[1].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("Razidir", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[1].hand.len(), 0);
+}
