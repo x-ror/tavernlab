@@ -112,6 +112,7 @@ impl Game {
             deaths_this_turn: 0,
             trigger_depth: 0,
             countered: false,
+            conditional: 0,
         })
     }
 
@@ -381,6 +382,9 @@ impl Game {
                 PendingKind::None => {}
             }
         }
+        // "Has +2 Attack during your opponent's turn" changes hands here, and
+        // Surging Tempest reads the Overload that was just locked in.
+        self.refresh_conditionals();
         self.fire(Event::TurnStart { side });
     }
 
@@ -451,6 +455,7 @@ impl Game {
             self.board_dirty = true;
             self.recompute_auras();
         }
+        self.refresh_conditionals();
         self.sweep_deaths();
     }
 
@@ -1569,6 +1574,20 @@ impl Game {
 
     /// Deal `amount` damage. Returns whether damage actually landed, which is
     /// what Poisonous and Lifesteal key off — a Divine Shield pop is not a hit.
+    /// Re-apply the "has +N Attack while …" bonuses, if any minion in play
+    /// carries one.
+    ///
+    /// Board changes already end in a recomputation; this is for the inputs
+    /// that move without the board moving — damage, healing, the turn passing,
+    /// a weapon arriving or breaking. The counter makes the common case (no
+    /// such minion in play) a single comparison.
+    #[inline]
+    pub(crate) fn refresh_conditionals(&mut self) {
+        if self.conditional > 0 {
+            self.recompute_auras();
+        }
+    }
+
     pub fn deal_damage(&mut self, target: Target, amount: i16) -> bool {
         if amount <= 0 {
             return false;
@@ -1587,6 +1606,9 @@ impl Game {
                     return false;
                 }
                 m.damage += amount;
+                // "Has +3 Attack while damaged" is live the instant the damage
+                // lands, before anything reacts to it.
+                self.refresh_conditionals();
                 self.fire(Event::Damaged { target, amount });
                 true
             }
@@ -1648,6 +1670,8 @@ impl Game {
                 let before = m.damage;
                 m.damage = (m.damage - amount).max(0);
                 let restored = before - m.damage;
+                // A minion healed to full stops being enraged at once.
+                self.refresh_conditionals();
                 if restored > 0 {
                     self.fire(Event::Healed {
                         target,
@@ -1820,6 +1844,8 @@ impl Game {
                 },
             );
         }
+        // Small-Time Buccaneer is +2 Attack only while a weapon is equipped.
+        self.refresh_conditionals();
     }
 
     pub(crate) fn check_over(&mut self) {

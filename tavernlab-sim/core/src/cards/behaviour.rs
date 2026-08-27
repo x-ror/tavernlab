@@ -176,6 +176,10 @@ pub struct Behaviour {
     pub trigger: Option<Trigger>,
     /// A continuous effect on other minions, true while this one is in play.
     pub aura: Option<Aura>,
+    /// A continuous effect a minion has on *itself* -- "Has +3 Attack while
+    /// damaged", "Has +2 Attack during your opponent's turn". Recomputed
+    /// alongside auras.
+    pub bonus: Option<Bonus>,
     /// A secret's reaction. Returns whether it fired, in which case the engine
     /// removes it — a secret that does not apply must say so rather than
     /// silently doing nothing, or it would stay armed forever.
@@ -230,6 +234,28 @@ pub type Aura = fn(
     target: &crate::state::Permanent,
 ) -> (i16, i16);
 
+/// What a minion grants itself right now, as `(attack, health)`.
+///
+/// Unlike [`Aura`] this does get the whole game, because the conditions
+/// printed on these cards are about the position at large -- whose turn it
+/// is, whether a weapon is equipped, what else you control. The rule that
+/// keeps that safe is the same one recomputation needs: **a bonus may only
+/// read state this recomputation does not itself change.** Reading another
+/// minion's attack would feed back into itself; reading `damage`, the turn,
+/// the weapon or the board does not.
+///
+/// It also has to be true that every input can only change at a point that
+/// recomputes -- a board change, a turn boundary, damage or healing, or a
+/// weapon arriving or breaking. "While your opponent holds six cards" is a
+/// real printed condition this cannot yet express, because hand size moves
+/// on every draw and no recomputation follows.
+pub type Bonus = fn(
+    game: &Game,
+    side: Side,
+    slot: u8,
+    me: &crate::state::Permanent,
+) -> (i16, i16);
+
 /// Shorthand so a row stays on one line.
 ///
 /// One parameter per hook is deliberate: the wrappers below are what card
@@ -257,10 +283,29 @@ const fn c(
         deathrattle,
         trigger,
         aura,
+        bonus: None,
         secret,
         choose,
         cost_delta,
         start_of_game,
+    }
+}
+
+/// A minion whose only behaviour is a continuous effect on itself.
+const fn bonus(name: &'static str, f: Bonus) -> Behaviour {
+    Behaviour {
+        name,
+        target: TargetSpec::None,
+        spell: None,
+        battlecry: None,
+        deathrattle: None,
+        trigger: None,
+        aura: None,
+        bonus: Some(f),
+        secret: None,
+        choose: None,
+        cost_delta: None,
+        start_of_game: None,
     }
 }
 
@@ -4679,6 +4724,55 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.damage_area(c.side, Area::AllMinions, 1);
         }
     }),
+    // ---------------------------------------------- "Has +N Attack while …"
+    // One rule, twenty-one cards. Each row is only the condition; the
+    // recomputation that keeps it live is `Game::refresh_conditionals`.
+
+    // While damaged.
+    bonus("Aberrant Berserker", |_, _, _, me| if me.damage > 0 { (2, 0) } else { (0, 0) }),
+    bonus("Amani Berserker", |_, _, _, me| if me.damage > 0 { (3, 0) } else { (0, 0) }),
+    bonus("Angry Chicken", |_, _, _, me| if me.damage > 0 { (5, 0) } else { (0, 0) }),
+    bonus("Bloodhoof Brave", |_, _, _, me| if me.damage > 0 { (3, 0) } else { (0, 0) }),
+    bonus("Dozing Marksman", |_, _, _, me| if me.damage > 0 { (4, 0) } else { (0, 0) }),
+    bonus("Grommash Hellscream", |_, _, _, me| if me.damage > 0 { (6, 0) } else { (0, 0) }),
+    bonus("Redband Wasp", |_, _, _, me| if me.damage > 0 { (3, 0) } else { (0, 0) }),
+    bonus("Tauren Warrior", |_, _, _, me| if me.damage > 0 { (3, 0) } else { (0, 0) }),
+    bonus("Temple Berserker", |_, _, _, me| if me.damage > 0 { (2, 0) } else { (0, 0) }),
+    bonus("Undercover Cultist", |_, _, _, me| if me.damage > 0 { (3, 0) } else { (0, 0) }),
+    bonus("Warbot", |_, _, _, me| if me.damage > 0 { (1, 0) } else { (0, 0) }),
+
+    // During your opponent's turn.
+    bonus("Tar Slime", |g, side, _, _| if g.current != side { (2, 0) } else { (0, 0) }),
+    bonus("Tar Creeper", |g, side, _, _| if g.current != side { (2, 0) } else { (0, 0) }),
+    bonus("Tar Lurker", |g, side, _, _| if g.current != side { (3, 0) } else { (0, 0) }),
+    bonus("Tar Lord", |g, side, _, _| if g.current != side { (4, 0) } else { (0, 0) }),
+    bonus("Tar Tyrant", |g, side, _, _| if g.current != side { (6, 0) } else { (0, 0) }),
+
+    // While the rest of the position says so.
+    bonus("Cogmaster", |g, side, _, _| {
+        if g.controls_race(side, Races::MECHANICAL) { (2, 0) } else { (0, 0) }
+    }),
+    bonus("Proud Defender", |g, side, _, _| {
+        // "no other minions" — the Defender itself is always one of them.
+        if g.minion_count(side) <= 1 { (2, 0) } else { (0, 0) }
+    }),
+    bonus("Small-Time Buccaneer", |g, side, _, _| {
+        if g.player(side).weapon.is_some() { (2, 0) } else { (0, 0) }
+    }),
+    bonus("Spine Crawler", |g, side, _, _| {
+        let has_location = g
+            .player(side)
+            .board
+            .iter()
+            .any(|m| m.active() && m.kind() == super::Kind::Location);
+        if has_location { (3, 0) } else { (0, 0) }
+    }),
+    bonus("Surging Tempest", |g, side, _, _| {
+        // The crystals locked for *this* turn, not the Overload queued for the
+        // next one -- those are not yet Overloaded Mana Crystals.
+        if g.player(side).overload_now > 0 { (1, 0) } else { (0, 0) }
+    }),
+
     trigger("Truth Seeker", |g, c| {
         if matches!(c.event, Event::AfterAttack { attacker: Target::Hero(s), .. } if s == c.side) {
             for i in 0..g.player(c.side).board.len() {

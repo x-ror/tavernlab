@@ -19,8 +19,8 @@
    ["Silvermoon Guardian", 2],
    ["Stormpike Commando", 2],
    ["Stranglethorn Tiger", 2],
-   ["Voodoo Doctor", 2],
-   ["Wolfrider", 2]
+   ["Tauren Warrior", 2],
+   ["Voodoo Doctor", 2]
   ],
   "sideboard": [],
   "total": 30
@@ -45,8 +45,8 @@
    ["Silvermoon Guardian", 2],
    ["Stormpike Commando", 2],
    ["Stranglethorn Tiger", 2],
-   ["Voodoo Doctor", 2],
-   ["Wolfrider", 2]
+   ["Tauren Warrior", 2],
+   ["Voodoo Doctor", 2]
   ],
   "sideboard": [],
   "total": 30
@@ -63,7 +63,6 @@
    ["Gnomish Inventor", 1],
    ["Ironbark Protector", 1],
    ["Lord of the Arena", 2],
-   ["Mark of Nature", 2],
    ["Mark of the Wild", 2],
    ["Murloc Raider", 2],
    ["Nourish", 2],
@@ -72,6 +71,7 @@
    ["Silvermoon Guardian", 2],
    ["Stranglethorn Tiger", 2],
    ["Swipe", 2],
+   ["Tauren Warrior", 2],
    ["Voodoo Doctor", 2]
   ],
   "sideboard": [],
@@ -97,8 +97,8 @@
    ["Silvermoon Guardian", 2],
    ["Stormpike Commando", 2],
    ["Stranglethorn Tiger", 2],
-   ["Voodoo Doctor", 2],
-   ["Wolfrider", 2]
+   ["Tauren Warrior", 2],
+   ["Voodoo Doctor", 2]
   ],
   "sideboard": [],
   "total": 30
@@ -112,7 +112,6 @@
    ["Bloodfen Raptor", 2],
    ["Chillwind Yeti", 1],
    ["Counterspell", 2],
-   ["Dalaran Mage", 2],
    ["Doomsayer", 2],
    ["Force-Tank MAX", 1],
    ["Frostwolf Grunt", 2],
@@ -124,6 +123,7 @@
    ["Silvermoon Guardian", 2],
    ["Stormpike Commando", 2],
    ["Stranglethorn Tiger", 2],
+   ["Tauren Warrior", 2],
    ["Voodoo Doctor", 2]
   ],
   "sideboard": [],
@@ -142,7 +142,6 @@
    ["Force-Tank MAX", 1],
    ["Frostwolf Grunt", 2],
    ["Gnomish Inventor", 1],
-   ["Hammer of Wrath", 2],
    ["Lord of the Arena", 2],
    ["Murloc Raider", 2],
    ["Ravenholdt Assassin", 1],
@@ -150,6 +149,7 @@
    ["Silvermoon Guardian", 2],
    ["Stormpike Commando", 2],
    ["Stranglethorn Tiger", 2],
+   ["Tauren Warrior", 2],
    ["Voodoo Doctor", 2]
   ],
   "sideboard": [],
@@ -175,8 +175,8 @@
    ["Silvermoon Guardian", 2],
    ["Stormpike Commando", 2],
    ["Stranglethorn Tiger", 2],
-   ["Voodoo Doctor", 2],
-   ["Wolfrider", 2]
+   ["Tauren Warrior", 2],
+   ["Voodoo Doctor", 2]
   ],
   "sideboard": [],
   "total": 30
@@ -201,8 +201,8 @@
    ["Silvermoon Guardian", 2],
    ["Stormpike Commando", 2],
    ["Stranglethorn Tiger", 2],
-   ["Voodoo Doctor", 2],
-   ["Wolfrider", 2]
+   ["Tauren Warrior", 2],
+   ["Voodoo Doctor", 2]
   ],
   "sideboard": [],
   "total": 30
@@ -226,9 +226,9 @@
    ["Silverback Patriarch", 2],
    ["Silvermoon Guardian", 2],
    ["Stranglethorn Tiger", 2],
+   ["Tauren Warrior", 2],
    ["Voodoo Doctor", 2],
-   ["Windfury", 2],
-   ["Wolfrider", 2]
+   ["Windfury", 2]
   ],
   "sideboard": [],
   "total": 30
@@ -251,10 +251,10 @@
    ["Silvermoon Guardian", 2],
    ["Stormpike Commando", 2],
    ["Stranglethorn Tiger", 2],
+   ["Tauren Warrior", 2],
    ["Twisting Nether", 1],
    ["Voidwalker", 2],
-   ["Voodoo Doctor", 2],
-   ["Wolfrider", 2]
+   ["Voodoo Doctor", 2]
   ],
   "sideboard": [],
   "total": 30
@@ -270,8 +270,8 @@
    ["Chillwind Yeti", 1],
    ["Dalaran Mage", 2],
    ["Doomsayer", 2],
-   ["Force-Tank MAX", 1],
    ["Frostwolf Grunt", 2],
+   ["Grommash Hellscream", 1],
    ["Kor'kron Elite", 2],
    ["Lord of the Arena", 2],
    ["Murloc Raider", 2],
@@ -279,8 +279,8 @@
    ["Silverback Patriarch", 2],
    ["Silvermoon Guardian", 2],
    ["Stranglethorn Tiger", 2],
-   ["Voodoo Doctor", 2],
-   ["Wolfrider", 2]
+   ["Tauren Warrior", 2],
+   ["Voodoo Doctor", 2]
   ],
   "sideboard": [],
   "total": 30

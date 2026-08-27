@@ -35,6 +35,10 @@ impl Fix {
             m.flags.remove(Flags::JUST_SUMMONED);
             self.g.player_mut(side).board.push(m);
         }
+        // A minion that is in play has its continuous effects applied — both
+        // the auras it projects and the ones it grants itself. Pushing straight
+        // onto the board skips the summon that would normally do this.
+        self.g.recompute_auras();
         self
     }
 
@@ -6142,4 +6146,150 @@ fn truth_seeker_grows_only_the_paladin_half_of_the_board() {
     assert!(f.g.apply(Action::HeroAttack { target: Target::Hero(FOE) }));
     assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (4, 5), "a Neutral Yeti");
     assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (3 + 2, 2 + 2));
+}
+
+// ------------------------------------------- "Has +N Attack while …"
+// The rule first, then one case per card.
+
+/// Attack of the first friendly minion after taking one point of damage.
+fn enraged_attack(name: &str) -> (i16, i16) {
+    let mut f = Fix::new().board(ME, &[name]);
+    let calm = f.mine(0).atk;
+    // Two spare Health first: Angry Chicken is a 1/1, and a body that dies to
+    // the point of damage never gets to be angry about it.
+    f.g.buff(Target::Minion(ME, 0), 0, 2);
+    f.g.deal_damage(Target::Minion(ME, 0), 1);
+    (calm, f.mine(0).atk)
+}
+
+#[test]
+fn enrage_switches_on_with_damage_and_off_with_healing() {
+    let mut f = Fix::new().board(ME, &["Amani Berserker"]); // 2/3, +3 damaged
+    assert_eq!(f.mine(0).atk, 2);
+    f.g.deal_damage(Target::Minion(ME, 0), 1);
+    assert_eq!(f.mine(0).atk, 5, "damaged");
+    f.g.heal(Target::Minion(ME, 0), 1);
+    assert_eq!(f.mine(0).atk, 2, "and back to full");
+}
+
+#[test]
+fn silence_takes_the_enrage_with_it() {
+    let mut f = Fix::new().board(ME, &["Amani Berserker"]);
+    f.g.deal_damage(Target::Minion(ME, 0), 1);
+    assert_eq!(f.mine(0).atk, 5);
+    f.g.silence(Target::Minion(ME, 0));
+    f.g.recompute_auras();
+    assert_eq!(f.mine(0).atk, 2, "a silenced minion grants itself nothing");
+}
+
+#[test]
+fn an_enraged_minion_hits_for_the_enraged_number() {
+    let mut f = Fix::new()
+        .board(ME, &["Amani Berserker"]) // 2/3, +3 while damaged
+        .board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.g.deal_damage(Target::Minion(ME, 0), 1);
+    assert!(f.g.apply(Action::Attack { from: 0, target: Target::Minion(FOE, 0) }));
+    assert_eq!(f.theirs(0).damage, 5, "five, not two");
+}
+
+#[test]
+fn every_while_damaged_card_carries_its_printed_number() {
+    for (name, bonus) in [
+        ("Aberrant Berserker", 2),
+        ("Amani Berserker", 3),
+        ("Angry Chicken", 5),
+        ("Bloodhoof Brave", 3),
+        ("Dozing Marksman", 4),
+        ("Grommash Hellscream", 6),
+        ("Redband Wasp", 3),
+        ("Tauren Warrior", 3),
+        ("Temple Berserker", 2),
+        ("Undercover Cultist", 3),
+        ("Warbot", 1),
+    ] {
+        let (calm, angry) = enraged_attack(name);
+        assert_eq!(angry - calm, bonus, "{name}");
+    }
+}
+
+#[test]
+fn every_tar_minion_wakes_up_on_the_other_turn() {
+    for (name, bonus) in [
+        ("Tar Slime", 2),
+        ("Tar Creeper", 2),
+        ("Tar Lurker", 3),
+        ("Tar Lord", 4),
+        ("Tar Tyrant", 6),
+    ] {
+        let mut f = Fix::new().board(ME, &[name]);
+        let mine = f.mine(0).atk;
+        f.g.current = FOE;
+        f.g.recompute_auras();
+        assert_eq!(f.mine(0).atk - mine, bonus, "{name} on their turn");
+        f.g.current = ME;
+        f.g.recompute_auras();
+        assert_eq!(f.mine(0).atk, mine, "{name} back on mine");
+    }
+}
+
+#[test]
+fn a_tar_minion_is_awake_when_it_is_attacked() {
+    // The whole point of the card: it defends at the bigger number. The turn
+    // boundary is what refreshes it, so this drives real turns.
+    let mut f = Fix::new()
+        .board(ME, &["Tar Creeper"]) // 1/5, +2 on their turn
+        .board(FOE, &["Chillwind Yeti"]); // 4/5
+    f.g.end_turn();
+    f.g.current = FOE;
+    f.g.begin_turn();
+    assert_eq!(f.mine(0).atk, 3);
+    assert!(f.g.apply(Action::Attack { from: 0, target: Target::Minion(ME, 0) }));
+    assert_eq!(f.theirs(0).damage, 3, "it hit back for three");
+}
+
+#[test]
+fn cogmaster_needs_a_mech_on_the_board() {
+    let mut f = Fix::new().board(ME, &["Cogmaster"]); // 1/2
+    assert_eq!(f.mine(0).atk, 1);
+    f.play("Mechanical Dragonling", None); // a Mech
+    assert_eq!(f.mine(0).atk, 3);
+}
+
+#[test]
+fn proud_defender_stands_alone() {
+    let mut f = Fix::new().board(ME, &["Proud Defender"]); // 2/6
+    assert_eq!(f.mine(0).atk, 4, "no other minions");
+    f.play("Wisp", None);
+    assert_eq!(f.mine(0).atk, 2, "and now there is one");
+}
+
+#[test]
+fn small_time_buccaneer_needs_the_weapon() {
+    let mut f = Fix::new().board(ME, &["Small-Time Buccaneer"]); // 1/2
+    assert_eq!(f.mine(0).atk, 1);
+    f.play("Fiery War Axe", None);
+    assert_eq!(f.mine(0).atk, 3);
+    f.g.destroy_weapon(ME);
+    assert_eq!(f.mine(0).atk, 1, "and it goes when the weapon does");
+}
+
+#[test]
+fn spine_crawler_needs_a_location() {
+    let mut f = Fix::new().board(ME, &["Spine Crawler"]); // 1/6
+    assert_eq!(f.mine(0).atk, 1);
+    assert!(f.mine(0).has(Keywords::CANT_ATTACK), "printed on the card");
+    f.play("Tranquil Clearing", None);
+    assert_eq!(f.mine(0).atk, 4);
+}
+
+#[test]
+fn surging_tempest_reads_the_crystals_locked_now() {
+    let mut f = Fix::new().board(ME, &["Surging Tempest"]); // 1/3
+    assert_eq!(f.mine(0).atk, 1);
+    f.play("Ceremonial Clash", None); // Overload: (1), queued for next turn
+    assert_eq!(f.mine(0).atk, 1, "queued Overload is not locked Overload");
+    f.g.end_turn();
+    f.g.begin_turn();
+    assert_eq!(f.g.players[0].overload_now, 1);
+    assert_eq!(f.mine(0).atk, 2);
 }
