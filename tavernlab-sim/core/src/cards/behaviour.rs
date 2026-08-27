@@ -415,6 +415,16 @@ mod tokens {
     pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
     /// Imp Gang Stooge's "8/8 Demon with Taunt and Lifesteal".
     pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
+    /// Cairne's Baine and Mountain Bear's Cub. Both cards' Standard
+    /// reprints carry no `childIds` in this snapshot (docs/RUST_CARDS_PLAN.md
+    /// §2a), so the tokens are named rather than looked up.
+    pub const BAINE_BLOODHOOF: CardId = token("EX1_110t");
+    pub const MOUNTAIN_CUB: CardId = token("AV_337t");
+    /// Eternal Bloodpetal's "0/1 Eternal Seedling", whose own deathrattle
+    /// summons the Bloodpetal back; the card itself is the token for that
+    /// half, which is why both are named here.
+    pub const ETERNAL_SEEDLING: CardId = token("TLC_234t");
+    pub const ETERNAL_BLOODPETAL: CardId = token("TLC_234");
     /// Immortalized in Stone's three Taunt Elementals: 1/2, 2/4 and 4/8.
     /// Named one by one because the card summons one of each rather than a
     /// random child.
@@ -4466,6 +4476,216 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             },
         ] {
             g.summon_random_where(c.side, pred);
+        }
+    }),
+
+    // -------------------------------------------- class backlog, second pass
+    // Same rule as the pass above: only cards the engine can say exactly.
+
+    // Deathrattles that summon.
+    deathrattle("Cairne Bloodhoof", |g, c| {
+        g.summon_token(c.side, tokens::BAINE_BLOODHOOF, 1);
+    }),
+    deathrattle("Voidlord", |g, c| {
+        // "three 1/3 Demons with Taunt" is three Voidwalkers; the card carries
+        // no childIds of its own, so the body is named rather than looked up.
+        g.summon_token(c.side, tokens::VOIDWALKER, 3);
+    }),
+    deathrattle("Mountain Bear", |g, c| {
+        g.summon_token(c.side, tokens::MOUNTAIN_CUB, 2);
+    }),
+    deathrattle("Eternal Bloodpetal", |g, c| {
+        g.summon_token(c.side, tokens::ETERNAL_SEEDLING, 1);
+    }),
+    deathrattle("Eternal Seedling", |g, c| {
+        g.summon_token(c.side, tokens::ETERNAL_BLOODPETAL, 1);
+    }),
+    deathrattle("Sneed's Old Shredder", |g, c| {
+        g.summon_random_where(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.rarity() == super::Rarity::Legendary
+        });
+    }),
+    deathrattle("Drakeadon Mongrel", |g, c| {
+        g.summon_random_of_cost(c.side, 4, 2);
+    }),
+
+    // Deathrattles that clear.
+    deathrattle("Obsidian Statue", |g, c| {
+        if let Some(t) = g.random_minion(c.side.other()) {
+            g.destroy(t);
+        }
+    }),
+    deathrattle("Avatar of Destruction", |g, c| {
+        g.damage_area(c.side, Area::EnemyMinions, 9);
+    }),
+    deathrattle("Sewer Imp", |g, c| {
+        g.damage_area(c.side, Area::AllEnemies, 2);
+    }),
+
+    // Deathrattles that fill a hand.
+    deathrattle("Fae Trickster", |g, c| {
+        g.draw_matching(c.side, |d| d.kind() == super::Kind::Spell && d.cost >= 5);
+    }),
+    deathrattle("Tormented Dreadwing", |g, c| {
+        for _ in 0..2 {
+            if g.draw_matching(c.side, |d| d.races.any(Races::DRAGON))
+                && let Some(h) = g.player_mut(c.side).hand.last_mut()
+            {
+                h.cost_delta -= 1;
+            }
+        }
+    }),
+    deathrattle("Seeding Dragon", |g, c| {
+        if g.add_random_to_hand(c.side, |d| d.races.any(Races::DRAGON))
+            && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            h.cost_delta -= 2;
+        }
+    }),
+    deathrattle("Twilight Mender", |g, c| {
+        g.add_random_to_hand(c.side, |d| {
+            d.kind() == super::Kind::Spell && d.school() == super::School::Holy
+        });
+        g.add_random_to_hand(c.side, |d| {
+            d.kind() == super::Kind::Spell && d.school() == super::School::Shadow
+        });
+    }),
+
+    // Battlecries.
+    battlecry("Primordial Drake", T::None, |g, c| {
+        let me = c.source.map(|s| Target::Minion(c.side, s));
+        let mut hits: Inline<Target, { MAX_BOARD * 2 }> = Inline::new();
+        g.collect_area(c.side, Area::AllMinions, &mut hits);
+        for t in hits.iter() {
+            if Some(*t) != me {
+                g.deal_damage(*t, 2);
+            }
+        }
+    }),
+    battlecry("Nerubian Swarmguard", T::None, |g, c| {
+        g.summon_copy(c.side, c.card);
+        g.summon_copy(c.side, c.card);
+    }),
+    c(
+        "Underking",
+        T::None,
+        None,
+        Some(|g, c| g.gain_armor(c.side, 6)),
+        Some(|g, c| g.gain_armor(c.side, 6)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    battlecry("Heir of Hereafter", T::None, |g, c| {
+        // Every damaged minion on the table, both boards; the Heir itself has
+        // just landed and is not one of them.
+        let damaged = (0..2)
+            .map(|i| {
+                g.players[i]
+                    .board
+                    .iter()
+                    .filter(|m| m.active() && m.is_minion() && m.damage > 0)
+                    .count() as i16
+            })
+            .sum::<i16>();
+        if damaged > 0
+            && let Some(src) = c.source
+        {
+            g.buff(Target::Minion(c.side, src), 2 * damaged, 2 * damaged);
+        }
+    }),
+
+    // Spells.
+    spell("Blizzard", T::None, |g, c| {
+        g.spell_damage_area(c.side, Area::EnemyMinions, 2);
+        g.freeze_area(c.side, Area::EnemyMinions);
+    }),
+    spell("Ceremonial Clash", T::None, |g, c| {
+        for cost in [3, 2, 1] {
+            g.summon_random_of_cost(c.side, cost, 1);
+        }
+    }),
+    spell("Ward of Earth", T::None, |g, c| {
+        g.gain_armor(c.side, 5);
+        if g.summon_random_of_cost(c.side, 5, 1) > 0 {
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.grant(Target::Minion(c.side, slot), Keywords::TAUNT);
+        }
+    }),
+    spell("For All Time", T::None, |g, c| {
+        g.destroy_area_where(c.side, Area::AllMinions, |m| m.atk <= 4);
+    }),
+    spell("Forest's Gift", T::FriendlyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        // Counted before the buff lands, and the target counts itself.
+        let n = g.minion_count(c.side) as i16;
+        g.buff(t, n, n);
+    }),
+    spell("Dethrone", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.destroy(t);
+        }
+        if g.combo_active(c.side) {
+            g.sweep_deaths();
+            g.summon_random_of_cost(c.side, 8, 1);
+        }
+    }),
+    spell("Nascent Bolt", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.spell_damage(c.side, Some(t), 5);
+        let alive = matches!(t, Target::Minion(s, i)
+            if g.player(s).board.get(i as usize).is_some_and(|m| !m.is_dead()));
+        if alive {
+            g.draw_cards(c.side, 2);
+        }
+    }),
+    spell("Eldritch Tentacles", T::None, |g, c| {
+        // "Repeat this with 1 less damage" — 3, then 2, then 1, then done.
+        // Spell Damage rides on each pass, as it does on any spell damage.
+        for base in (1..=3).rev() {
+            g.spell_damage_area(c.side, Area::AllMinions, base);
+            g.sweep_deaths();
+        }
+    }),
+
+    // End of turn, and after an attack.
+    trigger("Yesterloc", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            let me = c.me();
+            let mut hits: Inline<Target, MAX_BOARD> = Inline::new();
+            g.collect_area(c.side, Area::FriendlyMinions, &mut hits);
+            for t in hits.iter() {
+                if *t != me {
+                    g.buff(*t, 0, 1);
+                }
+            }
+        }
+    }),
+    trigger("Scalebreaker Bulwark", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            g.damage_area(c.side, Area::AllEnemies, 2);
+        }
+    }),
+    trigger("Gorishi Tunneler", |g, c| {
+        if matches!(c.event, Event::AfterAttack { attacker, .. } if attacker == c.me()) {
+            g.deal_damage(Target::Hero(c.side.other()), 2);
+        }
+    }),
+    trigger("Axe of the Forefathers", |g, c| {
+        if matches!(c.event, Event::AfterAttack { attacker: Target::Hero(s), .. } if s == c.side) {
+            g.damage_area(c.side, Area::AllMinions, 1);
+        }
+    }),
+    trigger("Truth Seeker", |g, c| {
+        if matches!(c.event, Event::AfterAttack { attacker: Target::Hero(s), .. } if s == c.side) {
+            for i in 0..g.player(c.side).board.len() {
+                if g.player(c.side).board[i].card.def().class() == super::Class::Paladin {
+                    g.buff(Target::Minion(c.side, i as u8), 2, 2);
+                }
+            }
         }
     }),
 ];
