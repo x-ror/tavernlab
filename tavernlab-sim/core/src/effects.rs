@@ -808,6 +808,74 @@ impl Game {
         self.player(side).played_races_last.any(race)
     }
 
+    /// [`discover`](Self::discover) with a closure rather than a plain `fn`,
+    /// for the cards whose pool depends on the position — "from another
+    /// class" has to know which class you are.
+    pub fn discover_where(&mut self, side: Side, pred: impl Fn(&crate::cards::CardDef) -> bool) -> bool {
+        let pool = crate::cards::discover_pool(pred);
+        if pool.is_empty() {
+            return false;
+        }
+        let mut offered = [0u32; 3];
+        let n = self.rngs.effects.sample_indices(pool.len(), &mut offered);
+        let crystals = self.player(side).crystals;
+        let best = offered[..n]
+            .iter()
+            .map(|&i| pool[i as usize])
+            .max_by_key(|c| {
+                let d = c.def();
+                (d.cost <= crystals + 1, d.cost)
+            });
+        match best {
+            Some(c) => self.give_card(side, c),
+            None => false,
+        }
+    }
+
+    /// Summon a minion straight out of your own deck, chosen at random among
+    /// those matching `pred`. Returns whether one was found.
+    pub fn summon_from_deck(
+        &mut self,
+        side: Side,
+        pred: impl Fn(&crate::cards::CardDef) -> bool,
+    ) -> bool {
+        let mut matches: Inline<u16, { crate::state::MAX_DECK }> = Inline::new();
+        for (i, c) in self.player(side).deck.iter().enumerate() {
+            if c.def().kind() == crate::cards::Kind::Minion && pred(c.def()) {
+                matches.push(i as u16);
+            }
+        }
+        if matches.is_empty() {
+            return false;
+        }
+        let pick = self.rngs.effects.index(matches.len());
+        let at = matches[pick] as usize;
+        let card = self.player(side).deck[at];
+        self.player_mut(side).deck.remove(at);
+        self.summon(side, card)
+    }
+
+    /// Discard a random card from hand matching `pred`. Returns whether there
+    /// was one to discard.
+    pub fn discard_random_where(
+        &mut self,
+        side: Side,
+        pred: impl Fn(&crate::cards::CardDef) -> bool,
+    ) -> bool {
+        let mut matches: Inline<u16, { crate::state::MAX_HAND }> = Inline::new();
+        for (i, h) in self.player(side).hand.iter().enumerate() {
+            if pred(h.card.def()) {
+                matches.push(i as u16);
+            }
+        }
+        if matches.is_empty() {
+            return false;
+        }
+        let pick = self.rngs.effects.index(matches.len());
+        self.player_mut(side).hand.remove(matches[pick] as usize);
+        true
+    }
+
     /// Discover among the cards left in your own deck, moving the pick to hand.
     ///
     /// Distinct from [`Game::discover`], which offers from the whole card pool:
@@ -1166,6 +1234,31 @@ impl Game {
         self.player(side)
             .minions()
             .any(|m| m.races().any(race) || m.races().has(crate::cards::Races::ALL))
+    }
+
+    /// Healing split one point at a time among friendly characters, the way
+    /// [`damage_split`](Self::damage_split) splits damage.
+    ///
+    /// Re-picked after every point, and a character already at full health is
+    /// not a candidate — twelve points into a board that can only take four
+    /// stop at four rather than being thrown away one at a time.
+    pub fn heal_split(&mut self, side: Side, total: i16) {
+        for _ in 0..total.max(0) {
+            let mut pool: Inline<Target, { MAX_BOARD + 1 }> = Inline::new();
+            if self.player(side).hero_hp < crate::state::START_HP {
+                pool.push(Target::Hero(side));
+            }
+            for (i, m) in self.player(side).board.iter().enumerate() {
+                if m.active() && m.is_minion() && m.damage > 0 {
+                    pool.push(Target::Minion(side, i as u8));
+                }
+            }
+            if pool.is_empty() {
+                return;
+            }
+            let pick = self.rngs.effects.index(pool.len());
+            self.heal(pool[pick], 1);
+        }
     }
 
     // --------------------------------------------------------- graveyard
