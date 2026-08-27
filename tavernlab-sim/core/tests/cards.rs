@@ -4019,3 +4019,78 @@ fn poison_breath_only_affects_an_undead_target() {
     f.play("Poison Breath", my_minion(1));
     assert!(f.mine(1).has(Keywords::POISONOUS));
 }
+
+// ---------------------------------------------------- backlog batch, Shaman
+
+#[test]
+fn static_shock_damages_and_buffs_the_hero_for_the_turn() {
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti"]); // 4/5
+    f.play("Static Shock", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 4);
+    assert_eq!(f.g.players[0].hero_bonus_atk, 1);
+    f.g.end_turn();
+    assert_eq!(f.g.players[0].hero_bonus_atk, 0, "expired");
+}
+
+#[test]
+fn lightning_rod_hits_the_friendly_target_and_a_random_enemy() {
+    let mut f = Fix::new()
+        .board(ME, &["Boulderfist Ogre"]) // 6/7
+        .board(FOE, &["Chillwind Yeti"]); // 4/5, the only possible random pick
+    f.play("Lightning Rod", my_minion(0));
+    assert_eq!(f.mine(0).health(), 5, "the friendly target took 2");
+    assert_eq!(f.theirs(0).health(), 1, "the random enemy took 4");
+}
+
+#[test]
+fn thunderquake_damages_every_minion_and_grants_a_static_shock() {
+    let mut f = Fix::new()
+        .board(ME, &["Boulderfist Ogre"])
+        .board(FOE, &["Chillwind Yeti"]);
+    f.play("Thunderquake", None);
+    assert_eq!(f.mine(0).health(), 6, "friendly minions are hit too");
+    assert_eq!(f.theirs(0).health(), 4);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Static Shock");
+}
+
+#[test]
+fn lightning_storm_only_hits_enemy_minions_and_overloads() {
+    let mut f = Fix::new()
+        .board(ME, &["Boulderfist Ogre"])
+        .board(FOE, &["Chillwind Yeti"]);
+    f.play("Lightning Storm", None);
+    assert_eq!(f.mine(0).health(), 7, "friendly minions are untouched");
+    assert_eq!(f.theirs(0).health(), 2, "5 health minus 3 damage");
+    assert_eq!(f.g.players[0].overload_next, 1);
+}
+
+#[test]
+fn far_sight_draws_a_card_discounted_by_three() {
+    let mut f = Fix::new().deck(&["Boulderfist Ogre"]); // 6 Mana
+    f.play("Far Sight", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.card_cost(ME, 0), 3, "6 minus 3");
+}
+
+#[test]
+fn voltaic_burst_summons_two_sparks_and_overloads() {
+    let mut f = Fix::new();
+    f.play("Voltaic Burst", None);
+    assert_eq!(f.g.players[0].board.len(), 2);
+    for slot in 0..2 {
+        assert_eq!(f.mine(slot).card.name(), "Spark");
+        assert!(f.mine(slot).has(Keywords::RUSH));
+    }
+    assert_eq!(f.g.players[0].overload_next, 1);
+}
+
+#[test]
+fn cinderfin_deathrattle_summons_sizzling_cinder() {
+    let mut f = Fix::new();
+    f.play("Cinderfin", None);
+    f.g.deal_damage(Target::Minion(ME, 0), 5);
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!(f.mine(0).card.name(), "Sizzling Cinder");
+}

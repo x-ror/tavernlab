@@ -355,6 +355,11 @@ mod tokens {
     pub const STEADFAST_SECURITY: CardId = token("TLC_622t");
     pub const RAMPAGING_ZOMBIE: CardId = token("RLK_018t");
     pub const UNDEAD_MONSTROSITY: CardId = token("RLK_057t");
+    pub const SPARK: CardId = token("BOT_102t");
+    pub const SIZZLING_CINDER: CardId = token("TLC_249");
+    /// Static Shock is itself a real, collectible card (implemented below);
+    /// Thunderquake just needs to hand out a copy of it.
+    pub const STATIC_SHOCK: CardId = token("TIME_218");
     pub const GORISHI_STINGER: CardId = token("TLC_630t");
     /// Brood Keeper's "2/2 Sword". A weapon, so it never shows up through
     /// `summonable_children()`, which only ever returns minions.
@@ -3290,6 +3295,46 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         {
             g.grant(t, Keywords::POISONOUS);
         }
+    }),
+
+    // -------------------------------------------------- backlog batch, Shaman
+    spell("Static Shock", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.spell_damage(c.side, Some(t), 1);
+        }
+        g.buff_temp_atk(Target::Hero(c.side), 1);
+    }),
+    spell("Lightning Rod", T::FriendlyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.spell_damage(c.side, Some(t), 2);
+        }
+        if let Some(r) = g.random_minion(c.side.other()) {
+            g.spell_damage(c.side, Some(r), 4);
+        }
+    }),
+    spell("Thunderquake", T::None, |g, c| {
+        g.spell_damage_area(c.side, Area::AllMinions, 1);
+        g.give_card(c.side, tokens::STATIC_SHOCK);
+    }),
+    // Overload is read straight off the card's own printed `overload` field
+    // in `Game::play_card`, unconditionally -- nothing to do here for it.
+    spell("Lightning Storm", T::None, |g, c| {
+        g.spell_damage_area(c.side, Area::EnemyMinions, 3);
+    }),
+    spell("Far Sight", T::None, |g, c| {
+        let before = g.player(c.side).hand.len();
+        g.draw_cards(c.side, 1);
+        if let Some(hc) = g.player_mut(c.side).hand.get_mut(before) {
+            hc.cost_delta -= 3;
+        }
+    }),
+    spell("Voltaic Burst", T::None, |g, c| {
+        g.summon_token(c.side, tokens::SPARK, 2);
+    }),
+    // Sizzling Cinder itself was already implemented (line ~1383); only the
+    // token reference is needed here.
+    deathrattle("Cinderfin", |g, c| {
+        g.summon_token(c.side, tokens::SIZZLING_CINDER, 1);
     }),
 ];
 
