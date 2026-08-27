@@ -2020,7 +2020,12 @@ pub static BEHAVIOURS: &[Behaviour] = &[
 
     // ------------------------------------------------------------- bespoke
     battlecry("Endbringer Umbra", T::None, |g, c| {
-        g.retrigger_friendly_deathrattles(c.side, 5)
+        // "5 friendly minions that died this game", oldest first, counting
+        // only the ones that actually carry a deathrattle.
+        let dead = g.dead_where(c.side, |d| d.keywords.has(Keywords::DEATHRATTLE));
+        for card in dead.iter().copied().take(5) {
+            g.fire_deathrattle_of(c.side, card);
+        }
     }),
     battlecry("Dissolving Ooze", T::FriendlyMinion, |g, c| {
         if let Some(t) = c.target {
@@ -4773,6 +4778,103 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         if g.player(side).overload_now > 0 { (1, 0) } else { (0, 0) }
     }),
 
+    // ------------------------------------------------------------ graveyard
+    // "… that died this game". The pool itself is `Player::graveyard`.
+
+    spell("Memoriam Manifest", T::None, |g, c| {
+        g.resurrect_costliest(c.side, |d| d.races.any(Races::UNDEAD));
+    }),
+    battlecry("Calia Menethil", T::None, |g, c| {
+        g.resurrect_costliest(c.side, |_| true);
+    }),
+    spell("Resuscitate", T::None, |g, c| {
+        for cost in [1, 2, 3] {
+            if g.resurrect(c.side, |d| d.cost == cost) {
+                let slot = g.player(c.side).board.len() as u8 - 1;
+                g.grant(Target::Minion(c.side, slot), Keywords::REBORN);
+            }
+        }
+    }),
+    spell("Undeath Sentence", T::None, |g, c| {
+        let dead = g.dead_where(c.side, |d| d.keywords.has(Keywords::DEATHRATTLE));
+        if dead.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(dead.len());
+        let card = dead[pick];
+        g.fire_deathrattle_of(c.side, card);
+    }),
+    battlecry("Merithra", T::None, |g, c| {
+        // "all different" — one body per distinct card, however many copies
+        // of it died.
+        let dead = g.dead_where(c.side, |d| d.cost >= 8);
+        let mut done: Inline<CardId, { crate::state::GRAVEYARD }> = Inline::new();
+        for card in dead.iter().copied() {
+            if done.contains(&card) {
+                continue;
+            }
+            done.push(card);
+            g.summon(c.side, card);
+        }
+    }),
+    battlecry("Aessina", T::None, |g, c| {
+        if g.player(c.side).deaths >= 20 {
+            g.damage_split(c.side, Area::AllEnemies, 20);
+        }
+    }),
+    deathrattle("Ysondre", |g, c| {
+        // Ysondre is already in the graveyard by the time her own deathrattle
+        // runs, so this death is one of the ones counted.
+        let times = g
+            .player(c.side)
+            .graveyard
+            .iter()
+            .filter(|card| card.name() == "Ysondre")
+            .count();
+        for _ in 0..times {
+            if !g.summon_random_where(c.side, |d| {
+                d.kind() == super::Kind::Minion && d.races.any(Races::DRAGON)
+            }) {
+                break;
+            }
+        }
+    }),
+    spell("Splintered Reality", T::None, |g, c| {
+        let grown = g
+            .player(c.side)
+            .graveyard
+            .iter()
+            .filter(|card| card.name() == "Treant")
+            .count() as i16;
+        for _ in 0..2 {
+            if g.summon_child(c.side, c.card, 1) == 0 {
+                break;
+            }
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            if grown > 0 {
+                g.buff(Target::Minion(c.side, slot), grown, grown);
+            }
+        }
+    }),
+    spell("Succumb to Madness", T::None, |g, c| {
+        // Discover, as this engine models it: three offered at random, the
+        // biggest taken -- see `Game::discover`. The pick is summoned rather
+        // than put in hand, because the card resummons it.
+        let dead = g.dead_where(c.side, |d| d.races.any(Races::DRAGON));
+        if dead.is_empty() {
+            return;
+        }
+        let mut offered = [0u32; 3];
+        let n = g.rngs.effects.sample_indices(dead.len(), &mut offered);
+        let best = offered[..n]
+            .iter()
+            .map(|&i| dead[i as usize])
+            .reduce(|a, b| if b.def().cost > a.def().cost { b } else { a });
+        if let Some(card) = best {
+            g.summon(c.side, card);
+        }
+    }),
+
     trigger("Truth Seeker", |g, c| {
         if matches!(c.event, Event::AfterAttack { attacker: Target::Hero(s), .. } if s == c.side) {
             for i in 0..g.player(c.side).board.len() {
@@ -4819,10 +4921,6 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Falric",
         "the corpse-doubling clause needs a per-player multiplier the engine          does not have; only the draw is implemented",
-    ),
-    (
-        "Endbringer Umbra",
-        "\"died this game\" needs a graveyard; re-fires the deathrattles of          living friendly minions instead",
     ),
     (
         "Soldier of Al'Akir",

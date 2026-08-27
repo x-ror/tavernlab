@@ -1168,6 +1168,86 @@ impl Game {
             .any(|m| m.races().any(race) || m.races().has(crate::cards::Races::ALL))
     }
 
+    // --------------------------------------------------------- graveyard
+
+    /// The friendly minions that have died this game and match `pred`, as
+    /// card ids in the order they died.
+    ///
+    /// A pool, not a set: two copies of the same minion that both died are
+    /// two entries, and a resurrect that picks at random is twice as likely
+    /// to find one. That is what the real pool does.
+    pub fn dead_where(
+        &self,
+        side: Side,
+        pred: impl Fn(&crate::cards::CardDef) -> bool,
+    ) -> Inline<CardId, { crate::state::GRAVEYARD }> {
+        let mut out = Inline::new();
+        for card in self.player(side).graveyard.iter().copied() {
+            if pred(card.def()) {
+                out.push(card);
+            }
+        }
+        out
+    }
+
+    /// Summon one friendly minion that died this game and matches `pred`,
+    /// picked at random from the pool. Returns whether one was found.
+    pub fn resurrect(&mut self, side: Side, pred: impl Fn(&crate::cards::CardDef) -> bool) -> bool {
+        let pool = self.dead_where(side, pred);
+        if pool.is_empty() {
+            return false;
+        }
+        let pick = self.rngs.effects.index(pool.len());
+        self.summon(side, pool[pick])
+    }
+
+    /// Summon the friendly minion with the highest printed Cost that died
+    /// this game and matches `pred`. Ties go to the one that died first,
+    /// which is the order the pool is kept in.
+    pub fn resurrect_costliest(
+        &mut self,
+        side: Side,
+        pred: impl Fn(&crate::cards::CardDef) -> bool,
+    ) -> bool {
+        let pool = self.dead_where(side, pred);
+        // `max_by_key` would return the *last* maximum; the tie-break here is
+        // the one that died first, so this folds by hand.
+        let Some(best) = pool
+            .iter()
+            .copied()
+            .reduce(|a, b| if b.def().cost > a.def().cost { b } else { a })
+        else {
+            return false;
+        };
+        self.summon(side, best)
+    }
+
+    /// Fire the deathrattle a card carries, with no body on the board.
+    ///
+    /// The Ctx gets a freshly printed copy of the minion as its `dying` body:
+    /// the real one is long gone, and a deathrattle that scales with what it
+    /// was carrying has nothing left to read. Returns whether the card had a
+    /// deathrattle at all.
+    pub fn fire_deathrattle_of(&mut self, side: Side, card: CardId) -> bool {
+        let Some(f) = crate::cards::behaviour_of(card).and_then(|b| b.deathrattle) else {
+            return false;
+        };
+        f(
+            self,
+            &crate::cards::Ctx {
+                card,
+                side,
+                target: None,
+                source: None,
+                outcast: false,
+                dying: Some(crate::state::Permanent::summon(card)),
+                marks: crate::state::Marks::NONE,
+                mana_spent: 0,
+            },
+        );
+        true
+    }
+
     /// A random enemy character, hero included.
     pub fn random_enemy(&mut self, side: Side) -> Option<Target> {
         let foe = side.other();
