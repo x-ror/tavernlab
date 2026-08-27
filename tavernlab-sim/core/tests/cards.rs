@@ -4570,3 +4570,153 @@ fn bone_breaker_only_after_attacking_a_minion() {
         "2 from the weapon swing alone: no bonus for a hero target"
     );
 }
+
+#[test]
+fn mortal_coil_draws_only_on_a_kill() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]).deck(&["Wisp"]); // 6/7
+    f.play("Mortal Coil", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 6, "7 minus 1, survives");
+    assert_eq!(f.g.players[0].hand.len(), 0, "no kill: no draw");
+
+    let mut f = Fix::new().board(FOE, &["Wisp"]).deck(&["Wisp"]); // 1/1, dies to 1
+    f.play("Mortal Coil", foe_minion(0));
+    assert_eq!(f.g.players[0].hand.len(), 1, "killed it: drew a card");
+}
+
+#[test]
+fn spirit_bomb_damages_the_minion_and_its_own_hero() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.g.players[0].hero_hp = 20;
+    f.play("Spirit Bomb", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 3, "7 minus 4");
+    assert_eq!(f.g.players[0].hero_hp, 16, "20 minus 4, its own hero");
+}
+
+#[test]
+fn vulgar_homunculus_damages_its_own_hero() {
+    let mut f = Fix::new();
+    f.g.players[0].hero_hp = 20;
+    f.play("Vulgar Homunculus", None);
+    assert_eq!(f.g.players[0].hero_hp, 18);
+}
+
+#[test]
+fn fiendish_servant_gives_its_attack_to_a_random_friendly_minion() {
+    let mut f = Fix::new().board(ME, &["Fiendish Servant", "Wisp"]); // 2/1 and 1/1
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 1, "only the Wisp is left");
+    assert_eq!(f.mine(0).atk, 3, "1 plus the dead Servant's 2 Attack");
+}
+
+#[test]
+fn gnomeferatu_removes_the_top_of_the_opponents_deck() {
+    let mut f = Fix::new();
+    f.g.players[1].deck.push(by_name("Wisp").unwrap());
+    f.g.players[1].deck.push(by_name("Chillwind Yeti").unwrap()); // top: popped first
+    f.play("Gnomeferatu", None);
+    assert_eq!(f.g.players[1].deck.len(), 1);
+    assert_eq!(
+        f.g.players[1].deck[0].name(),
+        "Wisp",
+        "the top card is gone"
+    );
+}
+
+#[test]
+fn emberroot_destroyer_hits_a_random_enemy_when_its_controller_takes_damage() {
+    let mut f = Fix::new()
+        .board(ME, &["Emberroot Destroyer"])
+        .board(FOE, &["Wisp"]);
+    f.g.deal_damage(Target::Hero(ME), 1);
+    assert_eq!(f.theirs(0).damage, 3, "fired on ME's own turn");
+
+    let mut f = Fix::new()
+        .board(ME, &["Emberroot Destroyer"])
+        .board(FOE, &["Wisp"]);
+    f.g.deal_damage(Target::Hero(FOE), 1);
+    assert_eq!(
+        f.theirs(0).damage,
+        0,
+        "the enemy hero taking damage is not this"
+    );
+}
+
+#[test]
+fn siphon_soul_destroys_and_heals() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0].hero_hp = 20;
+    f.play("Siphon Soul", foe_minion(0));
+    assert_eq!(f.their_board(), 0, "destroyed outright, not just damaged");
+    assert_eq!(f.g.players[0].hero_hp, 23);
+}
+
+#[test]
+fn demonic_assault_damages_and_summons_two_taunt_voidwalkers() {
+    let mut f = Fix::new();
+    f.play("Demonic Assault", None);
+    assert_eq!(f.g.players[1].hero_hp, 27, "3 damage to the enemy hero");
+    assert_eq!(f.g.players[0].board.len(), 2);
+    for i in 0..2 {
+        assert_eq!(f.mine(i).card.name(), "Voidwalker");
+        assert!(f.mine(i).has(Keywords::TAUNT));
+    }
+}
+
+#[test]
+fn blob_of_tar_deathrattle_summons_a_poisonous_blob_and_a_taunt_blob() {
+    let mut f = Fix::new().board(ME, &["Blob of Tar"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 2);
+    assert_eq!(f.mine(0).card.name(), "Lanky Blob");
+    assert!(f.mine(0).has(Keywords::POISONOUS));
+    assert_eq!(f.mine(1).card.name(), "Robust Blob");
+    assert!(f.mine(1).has(Keywords::TAUNT));
+}
+
+#[test]
+fn sporegnasher_deathrattle_deals_one_to_a_random_enemy_minion() {
+    let mut f = Fix::new()
+        .board(ME, &["Sporegnasher"])
+        .board(FOE, &["Chillwind Yeti"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.theirs(0).damage, 1);
+}
+
+#[test]
+fn taelan_fordring_deathrattle_draws_the_highest_cost_minion() {
+    let mut f = Fix::new().board(ME, &["Taelan Fordring"]).deck(&[
+        "Wisp",
+        "Fireball",
+        "Boulderfist Ogre",
+        "Chillwind Yeti",
+    ]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(
+        f.g.players[0].hand[0].card.name(),
+        "Boulderfist Ogre",
+        "cost 6, the highest-cost minion (Fireball is a spell, not eligible)"
+    );
+    assert_eq!(
+        f.g.players[0].deck.len(),
+        3,
+        "only the drawn card left the deck"
+    );
+}
+
+#[test]
+fn doomguard_discards_two_random_cards() {
+    let mut f = Fix::new();
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Wisp").unwrap()));
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("Doomguard", None);
+    assert_eq!(f.g.players[0].hand.len(), 0, "both Wisps discarded");
+}

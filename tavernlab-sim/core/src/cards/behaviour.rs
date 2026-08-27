@@ -365,6 +365,13 @@ mod tokens {
     /// Muster for Battle's own weapon child is a Weapon, so
     /// `summonable_children()` (minions only) can't find it either.
     pub const LIGHTS_JUSTICE: CardId = token("CS2_091");
+    /// Blob of Tar summons one of each, not one of a random child, so
+    /// `summon_child` (which picks a single child) cannot cover both.
+    pub const LANKY_BLOB: CardId = token("TLC_468t1");
+    pub const ROBUST_BLOB: CardId = token("TLC_468t2");
+    /// Voidwalker is itself a real, collectible card; Demonic Assault just
+    /// needs to hand out copies of it.
+    pub const VOIDWALKER: CardId = token("CS2_065");
     pub const GORISHI_STINGER: CardId = token("TLC_630t");
     /// Brood Keeper's "2/2 Sword". A weapon, so it never shows up through
     /// `summonable_children()`, which only ever returns minions.
@@ -3700,6 +3707,97 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         {
             g.deal_damage(Target::Hero(c.side.other()), 2);
         }
+    }),
+    spell("Mortal Coil", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.spell_damage(c.side, Some(t), 1);
+        let dead = match t {
+            Target::Minion(s, i) => g
+                .player(s)
+                .board
+                .get(i as usize)
+                .is_some_and(|m| m.is_dead()),
+            Target::Hero(_) => false,
+        };
+        if dead {
+            g.draw_cards(c.side, 1);
+        }
+    }),
+    spell("Spirit Bomb", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.spell_damage(c.side, Some(t), 4);
+        }
+        g.spell_damage(c.side, Some(Target::Hero(c.side)), 4);
+    }),
+    // Battlecry damage is not boosted by Spell Power (see Fogsail Freebooter
+    // and Mad Bomber above), so this is a raw self-hit.
+    battlecry("Vulgar Homunculus", T::None, |g, c| {
+        g.deal_damage(Target::Hero(c.side), 2);
+    }),
+    // Deathrattles fire once the body has already left the board (see
+    // `Game::sweep_deaths`), so `random_minion` can never pick this minion
+    // itself; `c.dying` carries the last snapshot of it, including the
+    // Attack value the board copy no longer has.
+    deathrattle("Fiendish Servant", |g, c| {
+        let atk = c.dying.map_or(0, |m| m.atk);
+        if atk > 0
+            && let Some(t) = g.random_minion(c.side)
+        {
+            g.buff(t, atk, 0);
+        }
+    }),
+    battlecry("Gnomeferatu", T::None, |g, c| {
+        g.player_mut(c.side.other()).deck.pop();
+    }),
+    trigger("Emberroot Destroyer", |g, c| {
+        if let Event::Damaged {
+            target: Target::Hero(s),
+            ..
+        } = c.event
+            && s == c.side
+            && g.current == c.side
+            && let Some(t) = g.random_minion(c.side.other())
+        {
+            g.deal_damage(t, 3);
+        }
+    }),
+    spell("Siphon Soul", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.destroy(t);
+        }
+        g.heal_hero(c.side, 3);
+    }),
+    spell("Demonic Assault", T::None, |g, c| {
+        g.spell_damage(c.side, Some(Target::Hero(c.side.other())), 3);
+        g.summon_token(c.side, tokens::VOIDWALKER, 2);
+    }),
+    deathrattle("Blob of Tar", |g, c| {
+        g.summon_token(c.side, tokens::LANKY_BLOB, 1);
+        g.summon_token(c.side, tokens::ROBUST_BLOB, 1);
+    }),
+    deathrattle("Sporegnasher", |g, c| {
+        if let Some(t) = g.random_minion(c.side.other()) {
+            g.deal_damage(t, 1);
+        }
+    }),
+    deathrattle("Taelan Fordring", |g, c| {
+        let best = g
+            .player(c.side)
+            .deck
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| id.def().kind() == super::Kind::Minion)
+            .max_by_key(|(_, id)| id.def().cost)
+            .map(|(i, _)| i);
+        if let Some(i) = best
+            && let Some(card) = g.player_mut(c.side).deck.remove(i)
+        {
+            g.give_card(c.side, card);
+        }
+    }),
+    battlecry("Doomguard", T::None, |g, c| {
+        g.discard_random(c.side);
+        g.discard_random(c.side);
     }),
 ];
 
