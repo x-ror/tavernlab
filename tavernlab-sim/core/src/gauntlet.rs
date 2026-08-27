@@ -19,6 +19,7 @@
 use crate::agent::Style;
 use crate::batch::{Contender, Record, play_batch_parallel, seeds};
 use crate::cards::{CardId, Class, by_name, is_implemented};
+use crate::deck::DECK_SIZE;
 use crate::state::Side;
 
 /// One deck in the field.
@@ -36,6 +37,19 @@ pub struct MetaDeck {
     /// Slots that did not resolve to an implemented card, with how many
     /// copies were asked for.
     pub missing: Vec<(String, u32)>,
+    /// Copies in the list as the file wrote it, before a Beatrix sideboard is
+    /// folded in. A deck list is thirty cards; anything else is an incomplete
+    /// entry rather than a deck, and is not fielded.
+    pub listed: u32,
+}
+
+/// Why a deck cannot be fielded.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Unfieldable {
+    /// It holds cards the engine does not implement.
+    Cards,
+    /// The list is not thirty cards.
+    Size,
 }
 
 impl MetaDeck {
@@ -80,12 +94,37 @@ impl MetaDeck {
             cards: list,
             ids,
             missing,
+            listed: cards.iter().map(|(_, n)| n).sum(),
         }
     }
 
     /// Whether the engine can field this deck as written.
     pub fn playable(&self) -> bool {
-        self.missing.is_empty() && !self.ids.is_empty()
+        self.problem().is_none()
+    }
+
+    /// What stops this deck from being fielded, if anything.
+    ///
+    /// Two different answers, and collapsing them would misname the problem:
+    /// a list the engine cannot play is a coverage gap in the engine, while a
+    /// list of twenty cards is an incomplete entry in the gauntlet file.
+    ///
+    /// Size is reported first when both are true, because it is the answer to
+    /// "what would it take to field this": implementing every card in a
+    /// twenty-card list still leaves twenty cards.
+    pub fn problem(&self) -> Option<Unfieldable> {
+        if self.listed != DECK_SIZE as u32 {
+            return Some(Unfieldable::Size);
+        }
+        if !self.missing.is_empty() {
+            return Some(Unfieldable::Cards);
+        }
+        // A thirty-card list that resolved to nothing has to be caught too:
+        // the ids are what actually gets fielded.
+        if self.ids.is_empty() {
+            return Some(Unfieldable::Cards);
+        }
+        None
     }
 
     pub fn contender(&self) -> Contender<'_> {
@@ -233,51 +272,64 @@ mod tests {
         v.iter().map(|(n, c)| ((*n).to_string(), *c)).collect()
     }
 
+    /// A class's curve deck as a written list: thirty cards, all implemented.
+    fn thirty(class: Class) -> Vec<(String, u32)> {
+        let deck = curve_deck(class, Formats::STANDARD).expect("a curve deck");
+        let mut counts: Vec<(String, u32)> = Vec::new();
+        for c in &deck {
+            match counts.iter_mut().find(|(n, _)| n == c.name()) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((c.name().to_string(), 1)),
+            }
+        }
+        counts
+    }
+
     #[test]
     fn a_deck_with_an_unimplemented_card_is_kept_but_not_fielded() {
         let unimpl = crate::cards::all()
             .find(|c| c.def().collectible && c.def().deckable() && !is_implemented(*c))
             .expect("the table has unimplemented cards");
-        let d = MetaDeck::new(
-            "Test",
-            Class::Mage,
-            Style::Midrange,
-            &pairs(&[("Fireball", 2), (unimpl.name(), 1)]),
-            &[],
-        );
-        assert!(!d.playable());
-        assert_eq!(d.missing, vec![(unimpl.name().to_string(), 1)]);
+        let mut list = thirty(Class::Mage);
+        list[0] = (unimpl.name().to_string(), list[0].1);
+        let d = MetaDeck::new("Test", Class::Mage, Style::Midrange, &list, &[]);
+        assert_eq!(d.problem(), Some(Unfieldable::Cards));
+        assert_eq!(d.missing, vec![(unimpl.name().to_string(), list[0].1)]);
         assert!(
             d.ids.is_empty(),
             "a deck with a missing card must not be half-fielded"
         );
-        assert_eq!(d.total(), 3, "the list itself is still readable");
+        assert_eq!(d.total(), 30, "the list itself is still readable");
     }
 
     #[test]
     fn a_sideboard_is_folded_in_only_for_beatrix() {
         // The ten copies are what the engine must field; a deck without
         // Beatrix has a sideboard that belongs to something else entirely.
+        // The count is kept so the list stays a legal thirty; what changes is
+        // that one of its cards is now Beatrix.
+        let mut list = thirty(Class::Mage);
+        list[0] = ("Commander Beatrix".to_string(), list[0].1);
         let with = MetaDeck::new(
             "Beatrix",
             Class::Mage,
             Style::Midrange,
-            &pairs(&[("Commander Beatrix", 1)]),
-            &pairs(&[("Fireball", 1)]),
+            &list,
+            &pairs(&[("Wisp", 1)]),
         );
         assert_eq!(
-            with.cards
-                .iter()
-                .find(|(n, _)| n == "Fireball")
-                .map(|(_, n)| *n),
-            Some(10)
+            with.cards.last().cloned(),
+            Some(("Wisp".to_string(), 10)),
+            "the sideboard card joins as ten copies"
         );
+        assert_eq!(with.total(), with.listed + 10);
+        assert!(with.missing.is_empty(), "and it is a card the engine knows");
 
         let without = MetaDeck::new(
             "Plain",
             Class::Mage,
             Style::Midrange,
-            &pairs(&[("Fireball", 2)]),
+            &thirty(Class::Mage),
             &pairs(&[("Frostbolt", 1)]),
         );
         assert!(without.cards.iter().all(|(n, _)| n != "Frostbolt"));
@@ -289,16 +341,12 @@ mod tests {
             "Playable",
             Class::Mage,
             Style::Midrange,
-            &pairs(&[("Fireball", 2)]),
+            &thirty(Class::Mage),
             &[],
         );
-        let bad = MetaDeck::new(
-            "Broken",
-            Class::Mage,
-            Style::Midrange,
-            &pairs(&[("Not A Real Card", 2)]),
-            &[],
-        );
+        let mut broken = thirty(Class::Mage);
+        broken[0] = ("Not A Real Card".to_string(), broken[0].1);
+        let bad = MetaDeck::new("Broken", Class::Mage, Style::Midrange, &broken, &[]);
         let deck = curve_deck(Class::Mage, Formats::STANDARD).unwrap();
         let me = Contender {
             class: Class::Mage,
@@ -315,21 +363,11 @@ mod tests {
     #[test]
     fn evaluation_is_deterministic_and_symmetric_in_a_mirror() {
         let deck = curve_deck(Class::Mage, Formats::STANDARD).unwrap();
-        let list: Vec<(String, u32)> = {
-            let mut counts: Vec<(String, u32)> = Vec::new();
-            for c in &deck {
-                match counts.iter_mut().find(|(n, _)| n == c.name()) {
-                    Some((_, n)) => *n += 1,
-                    None => counts.push((c.name().to_string(), 1)),
-                }
-            }
-            counts
-        };
         let field = vec![MetaDeck::new(
             "Mirror",
             Class::Mage,
             Style::Midrange,
-            &list,
+            &thirty(Class::Mage),
             &[],
         )];
         assert!(
@@ -348,6 +386,33 @@ mod tests {
         // flip; anything far off it means the pairing is broken.
         let rate = a.average().unwrap();
         assert!((0.35..0.65).contains(&rate), "mirror rate {rate}");
+    }
+
+    #[test]
+    fn a_list_that_is_not_thirty_cards_is_not_a_deck() {
+        // Not a coverage gap: a twenty-card entry is an incomplete gauntlet
+        // file, and it must not be fielded as if a short deck were a deck.
+        let mut short = thirty(Class::Mage);
+        short.truncate(5);
+        let d = MetaDeck::new("Short", Class::Mage, Style::Midrange, &short, &[]);
+        assert!(d.missing.is_empty(), "every card in it resolves");
+        assert_eq!(d.problem(), Some(Unfieldable::Size));
+        assert!(!d.playable());
+
+        // Beatrix's ten sideboard copies push a legal thirty past it, and
+        // that is the one list that may be longer.
+        let mut list = thirty(Class::Mage);
+        list[0] = ("Commander Beatrix".to_string(), list[0].1);
+        let beatrix = MetaDeck::new(
+            "Beatrix",
+            Class::Mage,
+            Style::Midrange,
+            &list,
+            &pairs(&[("Wisp", 1)]),
+        );
+        assert_eq!(beatrix.listed, 30);
+        assert!(beatrix.total() > 30, "the sideboard is folded in");
+        assert_eq!(beatrix.problem(), None);
     }
 
     #[test]

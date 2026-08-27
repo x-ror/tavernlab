@@ -173,6 +173,10 @@ pub const WEAPON_SLOT: u8 = u8::MAX;
 pub const QUEST_SLOT: u8 = u8::MAX - 1;
 /// Slot value marking a reactor as the active Sidequest.
 pub const SIDE_QUEST_SLOT: u8 = u8::MAX - 2;
+/// Slot value marking a reactor as the equipped Hero Power. A Hero Power is
+/// not a permanent either, but one of them reacts: Collapsing Star refreshes
+/// itself whenever its owner summons a Demon.
+pub const HERO_POWER_SLOT: u8 = u8::MAX - 3;
 
 impl Game {
     /// Tell every permanent in play that `event` happened.
@@ -240,6 +244,12 @@ impl Game {
             {
                 reactors.push((side, SIDE_QUEST_SLOT, card));
             }
+            // And the Hero Power, for the same reason: it is always in play
+            // and it is never on the board.
+            let hp = self.players[i].hero_power;
+            if behaviour_of(hp).and_then(|b| b.trigger).is_some() {
+                reactors.push((side, HERO_POWER_SLOT, hp));
+            }
         }
 
         // No early return here: secrets are a separate zone and must get their
@@ -253,6 +263,10 @@ impl Game {
                 self.player(side).quest.is_some_and(|(c, _)| c == card)
             } else if slot == SIDE_QUEST_SLOT {
                 self.player(side).sidequest.is_some_and(|(c, _)| c == card)
+            } else if slot == HERO_POWER_SLOT {
+                // A Hero Power can be replaced mid-sweep (Soul Immolation
+                // swaps one in), so this is checked like any other reactor.
+                self.player(side).hero_power == card
             } else {
                 self.player(side)
                     .board

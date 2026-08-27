@@ -44,8 +44,11 @@ fn meta_deck_slots_resolve_at_least_as_well_as_measured() {
         total, 350,
         "the meta-deck file's own slot count moved; re-measure and update this test deliberately"
     );
+    // Raised from the 224 of the first Rust card batch to what the table
+    // reaches today. Only two slots are left, both `Lunarwing Messenger` in a
+    // deck list that is twenty cards long anyway.
     assert!(
-        ok >= 224,
-        "only {ok}/{total} meta-deck slots resolve; this must not fall below the last measured baseline (docs/RUST_CARDS_PLAN.md §1)"
+        ok >= 348,
+        "only {ok}/{total} meta-deck slots resolve; this must not fall below the last measured baseline"
     );
 }

@@ -331,6 +331,10 @@ mod tokens {
     pub const FLAME_ELEMENTAL: CardId = token("UNG_809t1");
     pub const ARCANE_MISSILES: CardId = token("EX1_277");
     pub const MUGS_MAGIC: CardId = token("JAIL_800hp1");
+    /// Soul Immolation's replacement Hero Power. Its damage lives on the
+    /// player (`hero_power_bonus`), because the power itself is a shared
+    /// table entry that every game reads.
+    pub const COLLAPSING_STAR: CardId = token("JAIL_EVENT_101hp");
     pub const ZEES_MIGHT: CardId = token("JAIL_800hp2");
     pub const NESPIRAH_UNSHACKLED: CardId = token("CATA_527t2");
     /// One of Wickerfang's four Legs (CATA_139t..t4); all four print
@@ -338,6 +342,16 @@ mod tokens {
     /// exactly like one of each.
     pub const WICKERFANGS_LEG: CardId = token("CATA_139t");
     pub const CHARGED_HAND_OF_ALAKIR: CardId = token("CATA_153t");
+    /// Deathwing's four Cataclysms and the 12/12 one of them summons. Each
+    /// Cataclysm is a real spell card in the corpus with its own row below,
+    /// so it can be tested on its own rather than only through Deathwing.
+    pub const DRAGONS_REIGN: CardId = token("CATA_190t10");
+    pub const TOPPLE: CardId = token("CATA_190t11");
+    pub const RAZE: CardId = token("CATA_190t12");
+    pub const ENTHRALL: CardId = token("CATA_190t13");
+    pub const PROGENY_OF_DEATHWING: CardId = token("CATA_190t14");
+    /// Deathwing's Hero Power: +5 Attack this turn.
+    pub const RUTHLESS: CardId = token("CATA_190p");
     pub const SINESTRAS_WING: CardId = token("CATA_154t");
     // Broxigar's Portal to Argus chain: each demon is "for your opponent",
     // and each demon's own deathrattle shuffles the next portal into the
@@ -1726,6 +1740,102 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         if ss == ts && tl.abs_diff(sl) == 1 { (1, 0) } else { (0, 0) }
     }),
 
+    // ----------------------------------------------- Deathwing's Cataclysms
+    // Each is a real spell in the corpus, unleashed by Deathwing's Battlecry
+    // rather than cast from hand. They carry their own rows so each can be
+    // tested as a card, and so Deathwing is the choice and nothing else.
+    spell("Dragon's Reign", T::None, |g, c| {
+        g.summon(c.side, tokens::PROGENY_OF_DEATHWING);
+    }),
+    spell("Raze", T::None, |g, c| {
+        g.spell_damage_area(c.side, Area::EnemyMinions, 4);
+    }),
+    spell("Topple", T::None, |g, c| {
+        let foe = c.side.other();
+        let victim = g
+            .player(foe)
+            .board
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.active() && m.is_minion())
+            // Ties go to the leftmost, which is the older minion: the corpus
+            // says "the highest Health enemy minion" and does not break ties,
+            // so this picks one deterministically rather than by chance.
+            .max_by_key(|(i, m)| (m.health(), -(*i as i32)))
+            .map(|(i, _)| Target::Minion(foe, i as u8));
+        if let Some(t) = victim {
+            g.destroy(t);
+        }
+    }),
+    // Approximate: the five Dragons arrive at their printed cost. "They cost
+    // (1)" needs a per-copy discount that survives in the deck, and a deck
+    // here is a list of card ids with nowhere to write one -- the same limit
+    // Ultraxion's entry in APPROXIMATE records.
+    spell("Enthrall", T::None, |g, c| {
+        for _ in 0..5 {
+            g.shuffle_random_into_deck(c.side, |d| {
+                d.kind() == super::Kind::Minion
+                    && d.races.any(Races::DRAGON)
+                    && d.rarity() == super::Rarity::Legendary
+            });
+        }
+    }),
+    // "Choose N Cataclysms to unleash", where N is 1, and 2 or 3 once you
+    // have Heralded twice or four times. The engine picks for you, the same
+    // way Discover does: the choice belongs to a policy, and effects here are
+    // resolved without one. The scoring is deliberately crude — kill what is
+    // in front of you first, then develop — and it is not a claim about how a
+    // player would choose.
+    battlecry("Deathwing, Worldbreaker", T::None, |g, c| {
+        let herald = g.player(c.side).herald;
+        let picks = 1 + i16::from(herald >= 2) + i16::from(herald >= 4);
+        let mut chosen: Inline<CardId, 4> = Inline::new();
+        for _ in 0..picks {
+            let mut best: Option<(i16, CardId)> = None;
+            for cata in [
+                tokens::RAZE,
+                tokens::TOPPLE,
+                tokens::DRAGONS_REIGN,
+                tokens::ENTHRALL,
+            ] {
+                if chosen.contains(&cata) {
+                    continue;
+                }
+                let score = cataclysm_score(g, c.side, cata);
+                if best.is_none_or(|(b, _)| score > b) {
+                    best = Some((score, cata));
+                }
+            }
+            let Some((_, cata)) = best else { break };
+            chosen.push(cata);
+        }
+        for cata in chosen.iter().copied() {
+            let Some(f) = behaviour_of(cata).and_then(|b| b.spell) else {
+                continue;
+            };
+            f(
+                g,
+                &Ctx {
+                    card: cata,
+                    side: c.side,
+                    target: None,
+                    source: None,
+                    outcast: false,
+                    dying: None,
+                    marks: Marks::NONE,
+                    mana_spent: 0,
+                },
+            );
+            g.sweep_deaths();
+            if g.is_over() {
+                return;
+            }
+        }
+        // Deathwing brings his own Hero Power with him.
+        g.player_mut(c.side).hero_power = tokens::RUTHLESS;
+        g.player_mut(c.side).hero_power_uses = 0;
+    }),
+
     // ------------------------------------------------------- weakest decks
     spell("Preparation", T::None, |g, c| {
         g.player_mut(c.side).next_spell_discount += 2;
@@ -2367,6 +2477,30 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         });
     }),
     // demon hunter
+    // "Your Hero Power becomes 'Collapsing Star'. If it already is, increase
+    // its damage by 1." The second half is why the damage is a player field:
+    // two copies of the spell make one power that hits for 2.
+    spell("Soul Immolation", T::None, |g, c| {
+        let p = g.player_mut(c.side);
+        if p.hero_power == tokens::COLLAPSING_STAR {
+            p.hero_power_bonus += 1;
+        } else {
+            p.hero_power = tokens::COLLAPSING_STAR;
+            // Swapping the power does not spend the turn's use, and does not
+            // hand back one already spent.
+        }
+    }),
+    // "Whenever you summon a Demon, refresh this." A Hero Power is not a
+    // permanent, so it reacts through its own sentinel slot in `Game::fire`
+    // rather than from a board position.
+    trigger("Collapsing Star", |g, c| {
+        if let Event::MinionSummoned { side, card, .. } = c.event
+            && side == c.side
+            && card.def().races.any(Races::DEMON)
+        {
+            g.refresh_hero_power(side);
+        }
+    }),
     spell("Dark Bribe", T::None, |g, c| {
         let before = g.player(c.side).hand.len();
         g.draw_cards(c.side, 3);
@@ -3991,6 +4125,14 @@ pub static BEHAVIOURS: &[Behaviour] = &[
 /// smaller honest one.
 pub const APPROXIMATE: &[(&str, &str)] = &[
     (
+        "Enthrall",
+        "the five Legendary Dragons arrive at their printed cost; \"They cost (1)\" needs a per-copy discount that survives in the deck, and a deck here is a list of card ids with nowhere to write one",
+    ),
+    (
+        "Deathwing, Worldbreaker",
+        "the Cataclysms are picked by a crude board heuristic rather than by the player -- the same limit Discover has, since an effect is resolved without reaching a policy",
+    ),
+    (
         "Storm the Gates",
         "the reward is a fixed old 1/1 Zombeast token rather than a custom          minion crafted from two chosen deck cards, which the engine has no          way to build",
     ),
@@ -4132,6 +4274,42 @@ fn index() -> &'static [u16] {
         }
         out
     })
+}
+
+/// How much a Cataclysm is worth in this position, for Deathwing's pick.
+///
+/// Crude on purpose: enough to prefer clearing a board that is actually there
+/// over shuffling Dragons into a deck the game may never reach, and no more.
+/// A real evaluation belongs to a policy, which effects cannot reach.
+fn cataclysm_score(g: &Game, side: Side, cata: CardId) -> i16 {
+    let foe = side.other();
+    let enemies: Vec<i16> = g
+        .player(foe)
+        .board
+        .iter()
+        .filter(|m| m.active() && m.is_minion())
+        .map(|m| m.health())
+        .collect();
+    match cata {
+        // One point per enemy it damages, two more for each it kills.
+        c if c == tokens::RAZE => enemies
+            .iter()
+            .map(|h| if *h <= 4 { 3 } else { 1 })
+            .sum::<i16>(),
+        // Worth the size of what it removes, and nothing on an empty board.
+        c if c == tokens::TOPPLE => enemies.iter().copied().max().unwrap_or(0),
+        // A 12/12 is a threat wherever the board stands, but there has to be
+        // room for it.
+        c if c == tokens::DRAGONS_REIGN => {
+            if g.player(side).board.is_full() {
+                0
+            } else {
+                6
+            }
+        }
+        // Value for a long game, discounted because it does nothing now.
+        _ => 2,
+    }
 }
 
 /// The behaviour attached to a card, if it has one.

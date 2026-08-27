@@ -435,6 +435,11 @@ pub struct Player {
     pub played_races_last: Races,
     pub hero_power: CardId,
     pub hero_power_uses: u8,
+    /// Extra damage this player's Hero Power deals, for the one power that
+    /// grows: Soul Immolation raises Collapsing Star by 1 every time it is
+    /// cast after the first. Kept on the player rather than on the power
+    /// because the power is a `CardId` in a shared, immutable table.
+    pub hero_power_bonus: i16,
     /// A second, independent Hero Power granted on top of the class one
     /// (Blood Doctor Thal'ena) -- both are usable the same turn, each once,
     /// tracked separately.
@@ -538,6 +543,7 @@ impl Player {
             played_races_last: Races::NONE,
             hero_power,
             hero_power_uses: 0,
+            hero_power_bonus: 0,
             second_hero_power: None,
             second_hero_power_uses: 0,
             spell_tax_active: 0,

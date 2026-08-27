@@ -24,7 +24,7 @@ use tavernlab_core::agent::Style;
 use tavernlab_core::batch::Contender;
 use tavernlab_core::cards::{CardId, Class, Formats, Kind, by_name, is_implemented};
 use tavernlab_core::deckstring::{self, Resolved};
-use tavernlab_core::gauntlet::{self, MetaDeck, class_name};
+use tavernlab_core::gauntlet::{self, MetaDeck, Unfieldable, class_name};
 use tavernlab_core::optimize::{self, Budget};
 use tavernlab_core::tiers;
 use tavernlab_json::{Json, Out, to_string};
@@ -184,25 +184,41 @@ fn write_field_note(o: &mut tavernlab_json::ObjOut<'_>, field: &[MetaDeck]) {
     o.field("field_skipped", |v| {
         v.arr(|a| {
             for deck in field.iter().filter(|d| !d.playable()) {
-                a.item(|v| {
-                    v.obj(|o| {
-                        o.str_field("deck", &deck.name);
-                        o.field("cards", |v| {
-                            v.arr(|a| {
-                                for (name, n) in &deck.missing {
-                                    a.item(|v| {
-                                        v.arr(|a| {
-                                            a.str_item(name);
-                                            a.item(|v| v.int(*n as i64));
-                                        })
-                                    });
-                                }
-                            })
-                        });
-                    })
-                });
+                a.item(|v| write_unfieldable(v, deck));
             }
         })
+    });
+}
+
+/// One deck that is not fielded, and which of the two reasons it is.
+///
+/// `cards` means the engine cannot play something in the list — a coverage
+/// gap. `size` means the list is not thirty cards — an incomplete entry in
+/// the gauntlet file, which implementing cards will never fix. The front end
+/// says them differently because they are different news.
+fn write_unfieldable(o: &mut Out, deck: &MetaDeck) {
+    o.obj(|o| {
+        o.str_field("deck", &deck.name);
+        o.str_field(
+            "why",
+            match deck.problem() {
+                Some(Unfieldable::Size) => "size",
+                _ => "cards",
+            },
+        );
+        o.int_field("listed", deck.listed as i64);
+        o.field("cards", |v| {
+            v.arr(|a| {
+                for (name, n) in &deck.missing {
+                    a.item(|v| {
+                        v.arr(|a| {
+                            a.str_item(name);
+                            a.item(|v| v.int(*n as i64));
+                        })
+                    });
+                }
+            })
+        });
     });
 }
 
@@ -804,6 +820,15 @@ fn write_meta_deck(o: &mut Out, deck: &MetaDeck, format: Formats) {
         o.str_field("cls", class_name(deck.class));
         o.str_field("archetype", gauntlet::style_name(deck.style));
         o.bool_field("playable", deck.playable());
+        o.field("why", |v| {
+            v.opt(deck.problem(), |v, p| {
+                v.str(match p {
+                    Unfieldable::Size => "size",
+                    Unfieldable::Cards => "cards",
+                })
+            })
+        });
+        o.int_field("listed", deck.listed as i64);
         o.int_field("total", deck.total() as i64);
         o.field("cards", |v| {
             v.arr(|a| {
