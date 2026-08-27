@@ -1,7 +1,10 @@
 //! Build-time tooling.
 //!
-//! `cargo run -p xtask -- cards` reads the HearthstoneJSON corpora and writes
+//! `cargo run -p xtask -- cards` reads the card corpora in `data/` and writes
 //! `core/src/cards/table.rs`.
+//!
+//! `cargo run -p xtask -- wild-gauntlet` rebuilds `data/gauntlet_wild.json`
+//! from the cards the engine implements in Wild — see [`wild`].
 //!
 //! The card database is baked into the binary as Rust source rather than parsed
 //! at startup. Three reasons: a batch run starting thousands of games should not
@@ -22,6 +25,7 @@ use std::path::{Path, PathBuf};
 use tavernlab_json::Json;
 
 mod sets;
+mod wild;
 
 /// Mechanics that carry gameplay meaning, in bit order.
 ///
@@ -220,8 +224,15 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Some("wild-gauntlet") => match wild::generate(&repo_root()) {
+            Ok(msg) => println!("{msg}"),
+            Err(e) => {
+                eprintln!("xtask wild-gauntlet: {e}");
+                std::process::exit(1);
+            }
+        },
         other => {
-            eprintln!("usage: cargo run -p xtask -- cards");
+            eprintln!("usage: cargo run -p xtask -- [cards|wild-gauntlet]");
             if let Some(o) = other {
                 eprintln!("unknown command: {o}");
             }
@@ -267,11 +278,11 @@ struct Card {
 
 fn generate_cards() -> Result<String, String> {
     let root = repo_root();
-    let std_path = root.join("hs2/standard_cards.json");
-    let wild_path = root.join("hs2/wild_cards.json");
+    let std_path = root.join("data/standard_cards.json");
+    let wild_path = root.join("data/wild_cards.json");
 
-    // Wild is a delta on top of Standard, the way `carddata._load_corpus`
-    // merges them. Building one table for both formats and tagging each card
+    // Wild is a delta on top of Standard, the way the corpus builder wrote
+    // them. Building one table for both formats and tagging each card
     // with the formats it is legal in means a format switch is a bit test
     // rather than a second corpus and a second set of workers.
     let mut raw: BTreeMap<String, Json> = BTreeMap::new();
@@ -281,7 +292,7 @@ fn generate_cards() -> Result<String, String> {
     }
 
     // Whether the corpus carries the numeric fields at all. One built before
-    // `build_data.py` learned to write them has none, and the card text is
+    // the corpus builder learned to write them has none, and the card text is
     // then the only source. One built after it writes them only where they are
     // non-zero -- so an absent field means zero, and falling back to the text
     // there would reinstate the very bug the field exists to fix: the text

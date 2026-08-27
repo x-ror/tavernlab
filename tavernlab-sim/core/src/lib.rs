@@ -2,9 +2,9 @@
 //!
 //! A Hearthstone engine written for one workload: playing millions of complete
 //! games as fast as the machine allows, and — later — searching forward from a
-//! position. Python's `hs2/` is the behavioural reference for *what the rules
-//! are*, and nothing more; it is not a template for how this is built, and it
-//! is on its way out.
+//! position. It began beside a Python engine that was the behavioural
+//! reference for *what the rules are*, and nothing more; that engine is gone,
+//! and this is the whole simulator now.
 //!
 //! # The one design decision everything follows from
 //!
@@ -40,9 +40,14 @@ pub mod agent;
 pub mod batch;
 pub mod cards;
 pub mod deck;
+pub mod deckstring;
 pub mod effects;
+pub mod gauntlet;
 pub mod events;
 pub mod game;
 pub mod inline;
+pub mod optimize;
 pub mod rng;
 pub mod state;
+pub mod telemetry;
+pub mod tiers;

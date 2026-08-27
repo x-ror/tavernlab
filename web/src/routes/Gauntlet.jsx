@@ -69,7 +69,10 @@ export default function Meta({ open }) {
         <span style={{ flex: '1 1 auto' }} />
         {ordered && (
           <Text UNSAFE_style={{ color: 'var(--tl-muted)', paddingBottom: 6 }}>
-            {t('ui.meta.count', { n: ordered.length })}
+            {t('ui.meta.count', {
+              n: ordered.length,
+              playable: ordered.filter((d) => d.playable !== false).length,
+            })}
           </Text>
         )}
       </Flex>
@@ -173,6 +176,16 @@ function DeckCard({ deck, rate, open }) {
               </span>
             )}
           </span>
+          {/* A deck the engine cannot field is not scored against, and
+              saying so here is the only place the player can find out
+              why their rating averaged over fewer decks. */}
+          {deck.playable === false && (
+            <span style={{ fontSize: '.78rem', color: 'var(--tl-warn)' }}>
+              {t('ui.meta.not_fielded', {
+                cards: (deck.missing || []).map(([name, n]) => `${n}× ${name}`).join(', '),
+              })}
+            </span>
+          )}
         </Flex>
 
         <Curve cards={cards} tone={tone} />
@@ -209,7 +222,7 @@ function DeckCard({ deck, rate, open }) {
           <ActionButton onPress={() => copy(asText(), 'list')}>
             {copied === 'list' ? t('ui.meta.copied') : t('ui.meta.copy_list')}
           </ActionButton>
-          {deck.deckstring && (
+          {deck.deckstring && deck.playable !== false && (
             <ActionButton
               onPress={() => {
                 setDeckCode(deck.deckstring)

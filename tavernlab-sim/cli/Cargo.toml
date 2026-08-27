@@ -12,3 +12,10 @@ tavernlab-json = { workspace = true }
 name = "tavernsim"
 path = "src/main.rs"
 doctest = false
+
+# The end-to-end test starts the real binary and talks HTTP to it, checking
+# the answers with the same JSON reader and the same card table the server
+# used to produce them.
+[[test]]
+name = "serve"
+path = "tests/serve.rs"

@@ -37,9 +37,6 @@
   --tl-accent: var(--tl-gold-lit);
 
   --tl-grid: rgba(201, 162, 39, 0.16);
-  --tl-wp-line: #d8b45a;
-  --tl-wp-fill: rgba(201, 162, 39, 0.08);
-  --tl-wp-hatch: rgba(201, 162, 39, 0.34);
 
   --tl-display: 'Palatino Linotype', 'Book Antiqua', 'Iowan Old Style',
     Palatino, Georgia, 'Times New Roman', serif;
@@ -101,13 +98,6 @@ body {
 .tl-brand em {
   font-style: normal;
   color: var(--tl-gold-lit);
-}
-
-.tl-eyebrow {
-  font-size: 0.7rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--tl-muted);
 }
 
 /* ----------------------------------------------------------------- panels */
@@ -461,71 +451,7 @@ body {
   background: #7fd4f0;
 }
 
-/* --------------------------------------------------------------- the hero
-   banner on the coach home: portrait, name, and a wash of class colour. */
-.tl-banner {
-  position: relative;
-  overflow: hidden;
-  border-radius: 12px;
-  border: 1px solid var(--tl-line);
-  box-shadow: var(--tl-shadow);
-  padding: 26px 30px;
-  min-height: 190px;
-  display: flex;
-  align-items: center;
-  background: linear-gradient(100deg, var(--tl-surface-2) 0%, var(--tl-surface) 55%, var(--tl-bg-2) 100%);
-}
-
-.tl-banner-art {
-  position: absolute;
-  inset: 0 0 0 auto;
-  /* Sharp, and with no medallion in front of it. At this width the
-     block is roughly 1.4:1 rather than a 5:1 strip, so `classFocal()`
-     can put the face in frame for every hero — checked against all
-     eleven arts. The mask fades it into the panel, so there is no hard
-     edge for anything to line up against. */
-  width: 46%;
-  object-fit: cover;
-  opacity: 0.9;
-  mask-image: linear-gradient(90deg, transparent, #000 62%);
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 62%);
-  pointer-events: none;
-}
-
-.tl-banner-name {
-  font-family: var(--tl-display);
-  font-size: 2.6rem;
-  font-weight: 700;
-  line-height: 1.05;
-  letter-spacing: -0.01em;
-  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.65);
-}
-
-.tl-banner-stats {
-  font-size: 0.95rem;
-  color: var(--tl-text);
-  opacity: 0.82;
-}
-
-.tl-banner-stats b {
-  font-variant-numeric: tabular-nums;
-  color: var(--tl-gold-lit);
-  font-weight: 700;
-}
-
 /* ---------------------------------------------------------------- pieces */
-.tl-hero-plate {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border-radius: 999px;
-  padding: 3px 12px 3px 4px;
-  border: 1px solid var(--tl-line-soft);
-  background: rgba(0, 0, 0, 0.35);
-  font-variant-numeric: tabular-nums;
-  font-size: 0.85rem;
-}
-
 .tl-chip {
   display: inline-flex;
   align-items: center;
@@ -544,10 +470,6 @@ body {
   margin: 0;
 }
 
-.tl-scroll {
-  overflow-x: auto;
-}
-
 .tl-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.76rem;
@@ -559,55 +481,6 @@ body {
   border-radius: 6px;
   padding: 8px 10px;
 }
-
-/* A row that behaves like a link without being one. */
-.tl-row {
-  display: block;
-  width: 100%;
-  text-align: start;
-  background: none;
-  border: 0;
-  border-radius: 8px;
-  padding: 8px 10px;
-  margin: 0 -10px;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-  transition: background 120ms ease;
-}
-
-.tl-row:hover,
-.tl-row:focus-visible {
-  background: rgba(201, 162, 39, 0.09);
-}
-
-/* The board sides in the replay. */
-.tl-side {
-  border-radius: 10px;
-  border: 1px solid var(--tl-line-soft);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 90px), var(--tl-surface);
-  padding: 14px 16px;
-  transition: border-color 150ms ease, box-shadow 150ms ease;
-}
-
-.tl-side.is-active {
-  border-color: rgba(201, 162, 39, 0.5);
-  box-shadow: 0 0 0 1px rgba(201, 162, 39, 0.16), var(--tl-shadow);
-}
-
-.tl-empty-board {
-  font-size: 0.8rem;
-  color: var(--tl-faint);
-  font-style: italic;
-  padding: 12px 0;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .tl-row {
-    transition: none;
-  }
-}
-
 
 /* --------------------------------------------------------------- accent
    Spectrum's accent is Adobe blue, which fights the brass everywhere it

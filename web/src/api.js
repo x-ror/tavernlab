@@ -1,12 +1,22 @@
-/* One place that knows the Python app's HTTP shape.
- * `api()` is POST-only on the server side, GET routes need plain fetch —
- * that split is the server's (design §2.7), so it is hidden here. */
+/* One place that knows the server's HTTP shape.
+ *
+ * The server is `tavernsim serve` — the Rust simulator with an HTTP face on
+ * it. Reads are GET, everything that takes a deck code is POST, and the two
+ * runs long enough to want a progress line (rating a deck, computing the
+ * tier matrix) answer with a job id that `pollJob` follows. */
 
 async function parse(res, path) {
   let data = null
-  try { data = await res.json() } catch (e) { data = null }
+  try {
+    data = await res.json()
+  } catch {
+    data = null
+  }
   if (data === null) throw new Error(`HTTP ${res.status} ${path}`)
-  if (data.error && !data.job) throw new Error(data.error)
+  // A body carrying `ok` is a structured answer, not a failure: /api/resolve
+  // says *why* a deck will not load in fields the caller translates, and
+  // throwing its English `error` away would lose them.
+  if (data.error && !data.job && data.ok === undefined) throw new Error(data.error)
   return data
 }
 
@@ -45,21 +55,6 @@ export async function runJob(path, body, onProgress, signal) {
   const started = await post(path, body)
   if (started.error) throw new Error(started.error)
   return pollJob(started.job, onProgress, signal)
-}
-
-export const games = {
-  list: (q = {}) => {
-    const p = new URLSearchParams()
-    p.set('limit', String(q.limit || 100))
-    if (q.cls) p.set('class', q.cls)
-    if (q.result) p.set('result', q.result)
-    return get('/api/games?' + p.toString())
-  },
-  one: (id) => get(`/api/games/${id}`),
-  review: (id) => get(`/api/games/${id}/review`),
-  replay: (id) => get(`/api/games/${id}/replay`),
-  analyze: (id) => post(`/api/games/${id}/analyze`),
-  reparse: (id) => post(`/api/games/${id}/reparse`),
 }
 
 export const settingsApi = {

@@ -26,11 +26,11 @@ fn pairs(v: Option<&Json>) -> Vec<(&str, u32)> {
 fn meta_deck_slots_resolve_at_least_as_well_as_measured() {
     let src = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../hs2/meta_decks_2026.json"
+        "/../../data/gauntlet_standard.json"
     ))
-    .expect("hs2/meta_decks_2026.json should be checked into the repo root");
-    let doc = Json::parse(&src).expect("meta_decks_2026.json should be valid JSON");
-    let decks = doc.as_object().expect("meta_decks_2026.json is a JSON object");
+    .expect("data/gauntlet_standard.json should be checked into the repo root");
+    let doc = Json::parse(&src).expect("gauntlet_standard.json should be valid JSON");
+    let decks = doc.as_object().expect("gauntlet_standard.json is a JSON object");
 
     let mut ok = 0u32;
     let mut total = 0u32;

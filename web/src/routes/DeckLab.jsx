@@ -2,10 +2,7 @@ import { useEffect, useState } from 'react'
 import {
   ActionButton,
   Button,
-  Content,
   Flex,
-  Heading,
-  InlineAlert,
   Item,
   Picker,
   ProgressBar,
@@ -20,7 +17,7 @@ import { go, useApp } from '../store'
 import { useT } from '../i18n'
 import CardCombo from '../components/CardCombo'
 import Gauntlet from './Gauntlet'
-import { Caveats, ErrorNote, Loading, Panel, RateBar, Stat } from '../components/ui'
+import { Caveats, ErrorNote, FieldNote, Loading, Panel, Pill, RateBar, Stat } from '../components/ui'
 import ClassCrest from '../components/ClassCrest'
 import HeroPortrait from '../components/HeroPortrait'
 import { CLASS_KEYS as CLASSES, classColor } from '../classes'
@@ -30,12 +27,12 @@ import { deckProblem, formatName, pct, signedPct } from '../format'
 const TABS = ['rating', 'improve', 'mull', 'opp', 'coach', 'gauntlet']
 
 /* One deck, five questions. The old UI asked for the deck code again on
- * every screen; here it is a single context with a gate — the mulligan
- * and coach tabs cannot even be reached before the telemetry exists,
- * which is exactly what the server would otherwise refuse to do. */
+ * every screen; here it is a single context, and no screen is gated
+ * behind another — the simulator answers each of them from scratch in
+ * well under a second. */
 export default function DeckLab({ tab, sub }) {
   const { t } = useT()
-  const { deckCode, deckInfo, hasTelemetry } = useApp()
+  const { deckCode, deckInfo } = useApp()
   const current = TABS.includes(tab) ? tab : 'rating'
 
   return (
@@ -67,8 +64,6 @@ export default function DeckLab({ tab, sub }) {
         <Rating />
       ) : current === 'improve' ? (
         <Improve />
-      ) : !hasTelemetry ? (
-        <Gate />
       ) : current === 'mull' ? (
         <Mulligan />
       ) : current === 'opp' ? (
@@ -80,26 +75,9 @@ export default function DeckLab({ tab, sub }) {
   )
 }
 
-function Gate() {
-  const { t } = useT()
-  return (
-    <InlineAlert variant="info" width="100%">
-      <Heading>{t('ui.deck.tab_rating')}</Heading>
-      <Content>
-        <Flex direction="column" gap="size-200" alignItems="start">
-          <Text>{t('ui.deck.gate')}</Text>
-          <Button variant="accent" onPress={() => go('deck/rating')}>
-            {t('analyze.run')}
-          </Button>
-        </Flex>
-      </Content>
-    </InlineAlert>
-  )
-}
-
 function DeckBar() {
   const { t } = useT()
-  const { deckCode, setDeckCode, deckInfo, hasTelemetry, deckName } = useApp()
+  const { deckCode, setDeckCode, deckInfo, deckName } = useApp()
   const name = deckInfo?.name || deckName
   const title = name || (deckInfo?.cls ? t(`class.${deckInfo.cls}`) : null)
   const [draft, setDraft] = useState(deckCode)
@@ -122,7 +100,11 @@ function DeckBar() {
           height="size-1200"
         />
         <Flex direction="row" gap="size-150" marginTop="size-200">
-          <Button variant="accent" isDisabled={!draft.trim()} onPress={() => setDeckCode(draft.trim())}>
+          <Button
+            variant="accent"
+            isDisabled={!draft.trim()}
+            onPress={() => setDeckCode(draft.trim())}
+          >
             {t('ui.deck.save')}
           </Button>
           {deckCode && (
@@ -151,23 +133,13 @@ function DeckBar() {
             {/* A deck that will not resolve is still a deck the player
                 chose. Saying "no deck set" here — as this did while the
                 header badge showed the class — reads as data loss. */}
-            {deckInfo?.pending
-              ? t('ui.deck.resolving')
-              : title || t('ui.deck.none')}
+            {deckInfo?.pending ? t('ui.deck.resolving') : title || t('ui.deck.none')}
           </span>
           {deckInfo?.cls && (
             <span style={{ fontSize: '.78rem', color: 'var(--tl-muted)' }}>
               {name ? `${t(`class.${deckInfo.cls}`)} · ` : ''}
               {t('ui.deck.ok', { cls: '', n: deckInfo.total }).replace(/^[,\s]+/, '')} ·{' '}
               {formatName(deckInfo.format, t)}
-              {deckInfo.ok && (
-                <>
-                  {' · '}
-                  <span style={{ color: hasTelemetry ? 'var(--tl-pos)' : 'var(--tl-warn)' }}>
-                    {hasTelemetry ? t('ui.deck.analysed') : t('ui.deck.not_analysed')}
-                  </span>
-                </>
-              )}
             </span>
           )}
         </Flex>
@@ -193,7 +165,11 @@ function Rating() {
     setBusy(true)
     setProgress([])
     try {
-      const result = await api.runJob('/api/analyze', { code: deckCode, games: Number(games) }, setProgress)
+      const result = await api.runJob(
+        '/api/analyze',
+        { code: deckCode, games: Number(games) },
+        setProgress,
+      )
       markAnalysed(deckCode, result)
     } catch (e) {
       setError(e.message)
@@ -242,7 +218,9 @@ function Rating() {
                 value={pct(analysis.avg, 1)}
                 accent={classColor(analysis.cls)}
                 tone={analysis.avg >= 0.5 ? 'pos' : 'neg'}
-                hint={`${formatName(analysis.format, t)} · ${t('analyze.caption', { games: analysis.games })}`}
+                hint={`${formatName(analysis.format, t)} · ${t('analyze.caption', {
+                  games: analysis.games,
+                })}`}
               />
             </Flex>
             <View>
@@ -252,10 +230,11 @@ function Rating() {
                   <RateBar key={name} name={name} value={v} cls={deckClasses[name]} />
                 ))}
             </View>
+            <FieldNote result={analysis} />
             <Caveats items={[t('analyze.ai_caveat')]} />
           </Flex>
         )}
-        {!analysis && !busy && <Text>{t('analyze.caption', { games: games })}</Text>}
+        {!analysis && !busy && <Text>{t('analyze.caption', { games })}</Text>}
       </Panel>
     </Flex>
   )
@@ -324,7 +303,13 @@ function Improve() {
               </Flex>
             </View>
           )}
-          <Caveats items={[t('analyze.ai_caveat')]} />
+          <FieldNote result={result} />
+          <Caveats
+            items={[
+              t('optimize.confirmed', { games: result.confirm_games }),
+              t('analyze.ai_caveat'),
+            ]}
+          />
         </Flex>
       )}
     </Panel>
@@ -333,11 +318,16 @@ function Improve() {
 
 function Swap({ out, inn, delta, muted }) {
   return (
-    <Flex direction="row" alignItems="center" gap="size-150" UNSAFE_style={{ opacity: muted ? 0.7 : 1 }}>
+    <Flex
+      direction="row"
+      alignItems="center"
+      gap="size-150"
+      UNSAFE_style={{ opacity: muted ? 0.7 : 1 }}
+    >
       <Text UNSAFE_style={{ textDecoration: 'line-through', opacity: 0.7 }}>{out}</Text>
       <Text>→</Text>
       <Text UNSAFE_style={{ fontWeight: 600 }}>{inn}</Text>
-      <Badge variant={delta > 0 ? 'positive' : 'neutral'}>{signedPct(delta)}</Badge>
+      <Pill tone={delta > 0 ? 'pos' : 'neutral'}>{signedPct(delta)}</Pill>
     </Flex>
   )
 }
@@ -355,9 +345,7 @@ function Mulligan() {
     setError(null)
     setBusy(true)
     try {
-      const d = await api.post('/api/mull', { code: deckCode, opp, hand })
-      if (d.error) throw new Error(d.error)
-      setResult(d)
+      setResult(await api.post('/api/mull', { code: deckCode, opp, hand }))
     } catch (e) {
       setError(e.message)
       setResult(null)
@@ -400,18 +388,21 @@ function Mulligan() {
       {result && !busy && (
         <Flex direction="column" gap="size-150" marginTop="size-250">
           <Text UNSAFE_style={{ opacity: 0.8 }}>
-            {t('mull.vs', { deck: result.opp_deck, base: Math.round((result.base || 0) * 100) })}
+            {t('mull.vs', { deck: result.opp_deck, base: Math.round((result.base || 0) * 100) })}{' '}
+            {t('mull.sample', { games: result.games })}
           </Text>
           {result.cards.map((c) => (
             <Flex key={c.card} direction="row" gap="size-150" alignItems="center" wrap>
-              <Badge variant={c.keep ? 'positive' : 'negative'}>{c.keep ? t('mull.keep') : t('mull.toss')}</Badge>
+              <Pill tone={c.keep ? 'pos' : 'neg'}>{c.keep ? t('mull.keep') : t('mull.toss')}</Pill>
               <Text UNSAFE_style={{ fontWeight: 600, minWidth: '10rem' }}>
                 ({c.cost}) {c.card}
               </Text>
               <Text UNSAFE_style={{ fontVariantNumeric: 'tabular-nums', minWidth: '4rem' }}>
                 {c.delta === null ? '—' : signedPct(c.delta)}
               </Text>
-              <Text UNSAFE_style={{ fontSize: '.85rem', opacity: 0.8, flex: '1 1 14rem' }}>{c.reason}</Text>
+              <Text UNSAFE_style={{ fontSize: '.85rem', opacity: 0.8, flex: '1 1 14rem' }}>
+                {why(c.why, t)}
+              </Text>
             </Flex>
           ))}
           <Caveats items={[t('coach.note')]} />
@@ -421,21 +412,31 @@ function Mulligan() {
   )
 }
 
+/* The server answers with reason keys rather than a sentence: it serves a
+ * bilingual UI and cannot know which language the screen is in. */
+function why(reasons, t) {
+  return (reasons || [])
+    .map(({ k, n }) =>
+      t(`ui.mull.why_${k}`, { n: k === 'measured' ? signedPct(n) : n }),
+    )
+    .join('; ')
+}
+
 function Opponent() {
   const { t } = useT()
+  const { deckInfo, analysis } = useApp()
   const [opp, setOpp] = useState('ROGUE')
   const [seen, setSeen] = useState([])
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
+  const format = analysis?.format || deckInfo?.format || 'standard'
 
   async function run() {
     setError(null)
     setBusy(true)
     try {
-      const d = await api.post('/api/predict', { opp, seen })
-      if (d.error) throw new Error(d.error)
-      setResult(d)
+      setResult(await api.post('/api/predict', { opp, seen, format }))
     } catch (e) {
       setError(e.message)
       setResult(null)
@@ -484,7 +485,11 @@ function Opponent() {
                 <Flex direction="row" gap="size-150" alignItems="center" wrap>
                   <Text UNSAFE_style={{ fontWeight: 600 }}>{d.deck}</Text>
                   <Text UNSAFE_style={{ opacity: 0.75 }}>
-                    {t('opp.match', { hits: d.hits, seen: d.seen, frac: Math.round(d.frac * 100) })}
+                    {t('opp.match', {
+                      hits: d.hits,
+                      seen: d.seen,
+                      frac: Math.round(d.frac * 100),
+                    })}
                   </Text>
                 </Flex>
                 {d.threats.length > 0 && (
@@ -505,12 +510,49 @@ function Opponent() {
   )
 }
 
+/** `/api/coach`: the matchups that hurt, and the cards the simulations
+ *  like and dislike in *your* list. Computed on demand — nothing has to
+ *  be run before this screen works. */
 function CoachNotes() {
   const { t } = useT()
-  const { analysis } = useApp()
-  const deckClasses = useDeckClasses(analysis?.format)
-  const coach = analysis?.coach
-  if (!coach) return <Gate />
+  const { deckCode } = useApp()
+  const [coach, setCoach] = useState(null)
+  const [error, setError] = useState(null)
+  const deckClasses = useDeckClasses(coach?.format)
+
+  useEffect(() => {
+    let live = true
+    setCoach(null)
+    setError(null)
+    api
+      .post('/api/coach', { code: deckCode })
+      .then((d) => live && setCoach(d))
+      .catch((e) => live && setError(e.message))
+    return () => {
+      live = false
+    }
+  }, [deckCode])
+
+  if (error) return <ErrorNote error={error} />
+  if (!coach) return <Loading />
+
+  const column = (title, rows, colour) => (
+    <View flex="1 1 50%">
+      <Text UNSAFE_style={{ fontWeight: 600, color: colour }}>{title}</Text>
+      <Flex direction="column" gap="size-50" marginTop="size-100">
+        {rows.length === 0 && <Text UNSAFE_style={{ opacity: 0.7 }}>{t('coach.empty')}</Text>}
+        {rows.map(([name, d, n]) => (
+          <Flex key={name} direction="row" justifyContent="space-between" gap="size-150">
+            <Text>{name}</Text>
+            <Text UNSAFE_style={{ fontVariantNumeric: 'tabular-nums' }}>
+              {signedPct(d)}
+              <span style={{ opacity: 0.55, fontSize: '.78rem' }}> · {n}</span>
+            </Text>
+          </Flex>
+        ))}
+      </Flex>
+    </View>
+  )
 
   return (
     <Flex direction="column" gap="size-300">
@@ -526,31 +568,13 @@ function CoachNotes() {
         </View>
 
         <Flex direction={{ base: 'column', M: 'row' }} gap="size-400" marginTop="size-300">
-          <View flex="1 1 50%">
-            <Text UNSAFE_style={{ fontWeight: 600, color: 'var(--tl-pos)' }}>{t('coach.keep')}</Text>
-            <Flex direction="column" gap="size-50" marginTop="size-100">
-              {coach.keep.map(([name, d]) => (
-                <Flex key={name} direction="row" justifyContent="space-between" gap="size-150">
-                  <Text>{name}</Text>
-                  <Text UNSAFE_style={{ fontVariantNumeric: 'tabular-nums' }}>{signedPct(d)}</Text>
-                </Flex>
-              ))}
-            </Flex>
-          </View>
-          <View flex="1 1 50%">
-            <Text UNSAFE_style={{ fontWeight: 600, color: 'var(--tl-neg)' }}>{t('coach.cut')}</Text>
-            <Flex direction="column" gap="size-50" marginTop="size-100">
-              {coach.cut.map(([name, d]) => (
-                <Flex key={name} direction="row" justifyContent="space-between" gap="size-150">
-                  <Text>{name}</Text>
-                  <Text UNSAFE_style={{ fontVariantNumeric: 'tabular-nums' }}>{signedPct(d)}</Text>
-                </Flex>
-              ))}
-            </Flex>
-          </View>
+          {column(t('coach.keep'), coach.keep, 'var(--tl-pos)')}
+          {column(t('coach.cut'), coach.cut, 'var(--tl-neg)')}
         </Flex>
 
-        <Caveats items={[t('coach.note')]} />
+        <Caveats
+          items={[t('coach.sample', { games: coach.games, n: coach.min_n }), t('coach.note')]}
+        />
       </Panel>
     </Flex>
   )

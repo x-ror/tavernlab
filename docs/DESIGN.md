@@ -11,6 +11,19 @@
 
 ---
 
+> **Update — this document is history, not the tree.**
+>
+> The Python engine, its HTTP server and the whole game-review half of
+> the product (`app.py`, `hs2/`, `eval/`, `capture/`, `store/`) have been
+> removed. What ships now is the Rust simulator in `tavernlab-sim/`,
+> served to the same React front end by `tavernsim serve`. Read
+> everything below as the record of *why* decisions were made — the
+> stack lock, the review design, the capture plan and the routes are all
+> about a codebase that no longer exists. The honesty rules it argues
+> for (no silent approximation, every number with its sample, no
+> HSReplay scraping — U24) did survive, and the README states them for
+> the current tree.
+
 > **Update, 2026-08-24 — the UI shipped early and `webui.html` is gone.**
 >
 > The document below plans a vanilla `webui.html` MVP with a Tauri +

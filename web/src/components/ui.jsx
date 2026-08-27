@@ -148,15 +148,15 @@ export function RateBar({ name, value, cls }) {
   )
 }
 
-/** Result pill. Spectrum's Badge reads as an alert; a game result wants
- *  to be quiet and legible in a dense table. */
-export function ResultPill({ result, label }) {
+/** A quiet pill. Spectrum's Badge reads as an alert; a keep/toss verdict
+ *  or a measured delta wants to be legible, not loud. */
+export function Pill({ tone, children }) {
   const map = {
-    win: ['rgba(76,191,138,.16)', 'var(--tl-pos)'],
-    loss: ['rgba(224,82,90,.16)', 'var(--tl-neg)'],
-    tie: ['rgba(232,163,61,.16)', 'var(--tl-warn)'],
+    pos: ['rgba(76,191,138,.16)', 'var(--tl-pos)'],
+    neg: ['rgba(224,82,90,.16)', 'var(--tl-neg)'],
+    warn: ['rgba(232,163,61,.16)', 'var(--tl-warn)'],
   }
-  const [bg, fg] = map[result] || ['rgba(255,255,255,.07)', 'var(--tl-muted)']
+  const [bg, fg] = map[tone] || ['rgba(255,255,255,.07)', 'var(--tl-muted)']
   return (
     <span
       style={{
@@ -171,7 +171,40 @@ export function ResultPill({ result, label }) {
         whiteSpace: 'nowrap',
       }}
     >
-      {label}
+      {children}
     </span>
+  )
+}
+
+/** Which gauntlet decks the answer above could not include, and why.
+ *
+ *  Every rate on these screens is an average over the field. When a deck
+ *  in that field holds a card the engine cannot play it is left out of
+ *  the average entirely, and an average over seven decks presented as an
+ *  average over twelve is a lie by omission — so the server reports the
+ *  gap on every such answer and this prints it. */
+export function FieldNote({ result }) {
+  const { t } = useT()
+  if (!result || result.field_played === undefined) return null
+  const skipped = result.field_skipped || []
+  if (!skipped.length) return null
+  return (
+    <InlineAlert variant="notice" width="100%">
+      <Heading>{t('ui.field.title', { played: result.field_played, all: result.field_decks })}</Heading>
+      <Content>
+        <ul style={{ margin: 0, paddingInlineStart: '1.1em' }}>
+          {skipped.map((d) => (
+            <li key={d.deck}>
+              <Text>
+                {d.deck} — {(d.cards || []).map(([name, n]) => `${n}× ${name}`).join(', ')}
+              </Text>
+            </li>
+          ))}
+        </ul>
+        <Text UNSAFE_style={{ display: 'block', marginTop: '.4rem', fontSize: '.85rem', opacity: 0.8 }}>
+          {t('ui.field.why')}
+        </Text>
+      </Content>
+    </InlineAlert>
   )
 }

@@ -1,17 +1,17 @@
-import { useMemo } from 'react'
 import { Flex, Item, Provider, TabList, Tabs, Text, View, defaultTheme } from '@adobe/react-spectrum'
 import { AppProvider, go, useApp, useRoute } from './store'
 import { I18nProvider, pickLang, useT } from './i18n'
 import DeckBadge from './components/DeckBadge'
 import LangPicker from './components/LangPicker'
-import CoachHome from './routes/CoachHome'
-import Games from './routes/Games'
-import GamePage from './routes/GamePage'
 import DeckLab from './routes/DeckLab'
 import Meta from './routes/Meta'
 import Settings from './routes/Settings'
 
-const SECTIONS = ['coach', 'games', 'deck', 'meta', 'settings']
+/* Three sections, and they are the three questions the simulator can
+ * answer: what is my deck worth, what is the field worth, and where does
+ * this thing keep my data. The game-review half of the app went with the
+ * Python engine that produced it — see the README. */
+const SECTIONS = ['deck', 'meta', 'settings']
 
 export default function App() {
   return (
@@ -40,22 +40,7 @@ function Localised() {
 function Shell() {
   const { t } = useT()
   const { parts } = useRoute()
-  const section = SECTIONS.includes(parts[0]) ? parts[0] : 'coach'
-
-  const games = useMemo(
-    () =>
-      // #/games/<id>[/review|replay]
-      parts[1] ? (
-        <GamePage
-          gameId={Number(parts[1])}
-          view={parts[2] || 'review'}
-          seq={parts[3] ? Number(parts[3]) : null}
-        />
-      ) : (
-        <Games />
-      ),
-    [parts.join('/')],
-  )
+  const section = SECTIONS.includes(parts[0]) ? parts[0] : 'deck'
 
   return (
     <div className="tl-room" style={{ minHeight: '100vh' }}>
@@ -100,8 +85,6 @@ function Shell() {
             marginTop="size-150"
           >
             <TabList>
-              <Item key="coach">{t('ui.nav.coach')}</Item>
-              <Item key="games">{t('ui.nav.games')}</Item>
               <Item key="deck">{t('ui.nav.deck')}</Item>
               <Item key="meta">{t('ui.nav.tiers')}</Item>
               <Item key="settings">{t('ui.nav.settings')}</Item>
@@ -111,8 +94,6 @@ function Shell() {
       </header>
 
       <View paddingX="size-350" paddingY="size-400" maxWidth="1240px" marginX="auto">
-        {section === 'coach' && <CoachHome />}
-        {section === 'games' && games}
         {section === 'deck' && <DeckLab tab={parts[1] || 'rating'} sub={parts[2]} />}
         {section === 'meta' && <Meta />}
         {section === 'settings' && <Settings />}
