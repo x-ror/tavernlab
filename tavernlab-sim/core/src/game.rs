@@ -385,6 +385,12 @@ impl Game {
                 PendingKind::HeroDamage => {
                     self.damage_hero(side, entry.amount);
                 }
+                PendingKind::SplitDamage => {
+                    self.damage_split(side, crate::effects::Area::AllEnemies, entry.amount);
+                }
+                PendingKind::HeroAttack => {
+                    self.hero_attack_bonus(side, entry.amount);
+                }
                 PendingKind::None => {}
             }
         }

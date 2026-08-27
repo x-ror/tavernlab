@@ -374,6 +374,10 @@ pub enum PendingKind {
     SummonToken = 2,
     /// Damage the owner's own hero for `amount`.
     HeroDamage = 3,
+    /// Deal `amount` damage split at random among the owner's enemies.
+    SplitDamage = 4,
+    /// Give the owner's hero `amount` Attack for that turn.
+    HeroAttack = 5,
 }
 
 /// An effect queued against a future one of its owner's own turns —

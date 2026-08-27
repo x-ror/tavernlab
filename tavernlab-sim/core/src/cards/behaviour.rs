@@ -4800,6 +4800,161 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         if g.player(side).overload_now > 0 { (1, 0) } else { (0, 0) }
     }),
 
+    // ---------------------------------------------------- Demon Hunter
+    spell("Sigil of Cinder", T::None, |g, c| {
+        g.player_mut(c.side).pending.push(Pending {
+            kind: PendingKind::SplitDamage,
+            turns_left: 1,
+            amount: 6,
+            card: CardId(0),
+        });
+    }),
+    battlecry("Armored Bloodletter", T::None, |g, c| g.herald(c.side)),
+    deathrattle("Nightmare Dragonkin", |g, c| {
+        if let Some(h) = g.player_mut(c.side).hand.last_mut() {
+            h.cost_delta -= 2;
+        }
+    }),
+    trigger("Defiled Spear", |g, c| {
+        if let Event::AfterAttack { attacker: Target::Hero(s), defender, .. } = c.event
+            && s == c.side
+        {
+            // "another random enemy" — not the one the hero just swung at.
+            let foe = c.side.other();
+            let mut pool: Inline<Target, { MAX_BOARD + 1 }> = Inline::new();
+            for (i, m) in g.player(foe).board.iter().enumerate() {
+                if m.active() && m.is_minion() && Target::Minion(foe, i as u8) != defender {
+                    pool.push(Target::Minion(foe, i as u8));
+                }
+            }
+            if defender != Target::Hero(foe) {
+                pool.push(Target::Hero(foe));
+            }
+            if pool.is_empty() {
+                return;
+            }
+            let atk = g.player(c.side).hero_attack();
+            let pick = g.rngs.effects.index(pool.len());
+            g.deal_damage(pool[pick], atk);
+        }
+    }),
+    battlecry("Scorchreaver", T::None, |g, c| {
+        g.discover(c.side, |d| {
+            d.kind() == super::Kind::Spell && d.school() == super::School::Fel
+        });
+        for h in g.player_mut(c.side).hand.iter_mut() {
+            if h.card.def().kind() == super::Kind::Spell
+                && h.card.def().school() == super::School::Fel
+            {
+                h.cost_delta -= 1;
+            }
+        }
+    }),
+    battlecry("Chronikar", T::None, |g, c| {
+        g.hero_attack_bonus(c.side, 3);
+        // "next turn, and the turn after" — two more of the owner's own turns.
+        g.player_mut(c.side).pending.push(Pending {
+            kind: PendingKind::HeroAttack,
+            turns_left: 2,
+            amount: 3,
+            card: CardId(0),
+        });
+    }),
+    spell("Flash Flood", T::None, |g, c| {
+        let passes = if c.outcast { 2 } else { 1 };
+        for _ in 0..passes {
+            let foe = c.side.other();
+            let n = g.player(foe).board.len();
+            if n == 0 {
+                break;
+            }
+            // Both ends, and the same minion when there is only one.
+            g.spell_damage(c.side, Some(Target::Minion(foe, 0)), 5);
+            if n > 1 {
+                g.spell_damage(c.side, Some(Target::Minion(foe, n as u8 - 1)), 5);
+            }
+            g.sweep_deaths();
+        }
+    }),
+    trigger("Priestess of Fury", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            g.damage_split(c.side, Area::AllEnemies, 6);
+        }
+    }),
+    c(
+        "Perennial Serpent",
+        T::None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(|g, side, _i| {
+            let dormant = (0..2).any(|i| {
+                g.players[i]
+                    .board
+                    .iter()
+                    .any(|m| m.flags.has(Flags::DORMANT))
+            });
+            if dormant { -4 } else { 0 }
+        }),
+        None,
+    ),
+    battlecry("Dread Leviathan", T::EnemyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        for _ in 0..3 {
+            if g.deal_damage(t, 3) {
+                g.heal_hero(c.side, 3);
+            }
+            g.sweep_deaths();
+            if !matches!(t, Target::Minion(s, i)
+                if g.player(s).board.get(i as usize).is_some_and(|m| m.active()))
+            {
+                break;
+            }
+        }
+    }),
+    battlecry("Malevolent Mutant", T::None, |g, c| {
+        // "Choose a Fel spell in your hand": one of them, taken as this engine
+        // takes every choice it cannot put to the policy -- at random.
+        let mut fel: Inline<CardId, MAX_HAND> = Inline::new();
+        for h in g.player(c.side).hand.iter() {
+            let d = h.card.def();
+            if d.kind() == super::Kind::Spell && d.school() == super::School::Fel {
+                fel.push(h.card);
+            }
+        }
+        if fel.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(fel.len());
+        g.give_token(c.side, fel[pick]);
+    }),
+    spell("Solitude", T::None, |g, c| {
+        for _ in 0..2 {
+            g.discover(c.side, |d| d.kind() == super::Kind::Minion);
+        }
+        let empty = !g
+            .player(c.side)
+            .deck
+            .iter()
+            .any(|card| card.def().kind() == super::Kind::Minion);
+        if empty {
+            for h in g.player_mut(c.side).hand.iter_mut() {
+                if h.card.def().kind() == super::Kind::Minion {
+                    h.cost_delta -= 2;
+                }
+            }
+        }
+    }),
+    battlecry("Silithid Queen", T::None, |g, c| {
+        if g.kindred(c.side, Races::BEAST) {
+            g.hero_attack_bonus(c.side, 5);
+        }
+    }),
+
     // ---------------------------------------------------------- Druid
     battlecry("Charred Chameleon", T::FriendlyMinion, |g, c| {
         if g.player(c.side).hero_power_uses > 0

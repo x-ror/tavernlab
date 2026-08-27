@@ -7007,3 +7007,172 @@ fn flipper_friends_offers_one_big_body_or_six_small_ones() {
     assert_eq!(f.g.players[0].board.len(), 6, "the board holds seven");
     assert!(f.g.players[0].board.iter().all(|m| m.has(Keywords::RUSH)));
 }
+
+// -------------------------------------------------------- Demon Hunter
+
+#[test]
+fn sigil_of_cinder_goes_off_next_turn() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Sigil of Cinder", None);
+    assert_eq!(f.theirs(0).damage, 0, "not yet");
+    f.g.end_turn();
+    f.g.begin_turn();
+    let dealt = f.g.players[1].board.first().map_or(7, |m| m.damage) + (30 - f.g.players[1].hero_hp);
+    assert_eq!(dealt, 6, "six points, split somewhere among the enemies");
+}
+
+#[test]
+fn armored_bloodletter_heralds() {
+    let mut f = Fix::new();
+    f.g.players[0].class = Class::DemonHunter;
+    f.play("Armored Bloodletter", None);
+    assert_eq!(f.g.players[0].herald, 1);
+    assert_eq!(f.g.players[0].board.len(), 2, "the Bloodletter and a Soldier");
+}
+
+#[test]
+fn nightmare_dragonkin_discounts_the_card_on_the_right() {
+    let mut f = Fix::new().board(ME, &["Nightmare Dragonkin"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.g.players[0].hand.push(HandCard::new(by_name("Fireball").unwrap()));
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand[0].cost_delta, 0);
+    assert_eq!(f.g.players[0].hand[1].cost_delta, -2, "right-most");
+}
+
+#[test]
+fn defiled_spear_carries_past_the_minion_it_hit() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Defiled Spear", None); // 2/3
+    assert!(f.g.apply(Action::HeroAttack { target: Target::Minion(FOE, 0) }));
+    assert_eq!(f.theirs(0).damage, 2, "the swing itself");
+    assert_eq!(f.g.players[1].hero_hp, 28, "and two more, elsewhere");
+}
+
+#[test]
+fn scorchreaver_finds_fel_and_discounts_the_fel_you_hold() {
+    let mut f = Fix::new();
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Chaos Strike").unwrap())); // a Fel spell
+    f.play("Scorchreaver", None);
+    assert_eq!(f.g.players[0].hand.len(), 2, "one discovered");
+    for h in f.g.players[0].hand.iter() {
+        assert_eq!(h.card.def().school(), tavernlab_core::cards::School::Fel);
+        assert_eq!(h.cost_delta, -1);
+    }
+}
+
+#[test]
+fn chronikar_arms_the_hero_for_three_turns() {
+    let mut f = Fix::new();
+    f.play("Chronikar", None);
+    assert_eq!(f.g.players[0].hero_attack(), 3, "this turn");
+    for turn in 0..2 {
+        f.g.end_turn();
+        f.g.begin_turn();
+        assert_eq!(f.g.players[0].hero_attack(), 3, "turn {turn} after");
+    }
+    f.g.end_turn();
+    f.g.begin_turn();
+    assert_eq!(f.g.players[0].hero_attack(), 0, "and then it stops");
+}
+
+#[test]
+fn flash_flood_hits_both_ends_and_outcast_does_it_twice() {
+    // From the middle of a hand: one pass. The fixture's `play` always puts a
+    // card at the right-hand end, which is an Outcast, so this builds the hand
+    // by hand.
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre", "Chillwind Yeti", "Boulderfist Ogre"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Flash Flood").unwrap()));
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    assert!(f.g.apply(Action::Play {
+        hand: 1,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(f.theirs(0).damage, 5);
+    assert_eq!(f.theirs(1).damage, 0, "the middle is untouched");
+    assert_eq!(f.theirs(2).damage, 5);
+
+    // From the end: Outcast, so both ends take it twice and the 6/7s die.
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre", "Chillwind Yeti", "Boulderfist Ogre"]);
+    f.play("Flash Flood", None);
+    assert_eq!(f.their_board(), 1);
+    assert_eq!(f.theirs(0).card.name(), "Chillwind Yeti");
+    assert_eq!(f.theirs(0).damage, 0);
+}
+
+#[test]
+fn priestess_of_fury_rains_six_a_turn() {
+    let mut f = Fix::new()
+        .board(ME, &["Priestess of Fury"])
+        .board(FOE, &["Boulderfist Ogre"]);
+    f.g.end_turn();
+    let dealt = f.theirs(0).damage + (30 - f.g.players[1].hero_hp);
+    assert_eq!(dealt, 6);
+    assert_eq!(f.mine(0).damage, 0, "\"all enemies\"");
+}
+
+#[test]
+fn perennial_serpent_is_cheaper_while_something_sleeps() {
+    let mut f = Fix::new();
+    let serpent = by_name("Perennial Serpent").unwrap();
+    f.g.players[0].hand.push(HandCard::new(serpent));
+    assert_eq!(f.g.card_cost(ME, 0), 8);
+    let mut dormant = Permanent::summon(by_name("Wisp").unwrap());
+    dormant.flags.insert(Flags::DORMANT);
+    f.g.players[1].board.push(dormant);
+    assert_eq!(f.g.card_cost(ME, 0), 4, "either side's Dormant minion counts");
+}
+
+#[test]
+fn dread_leviathan_drains_three_times() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.g.players[0].hero_hp = 15;
+    f.play("Dread Leviathan", foe_minion(0));
+    assert_eq!(f.their_board(), 0, "nine into a seven-health body");
+    assert_eq!(f.g.players[0].hero_hp, 15 + 9, "three points a time, thrice");
+}
+
+#[test]
+fn malevolent_mutant_copies_a_fel_spell_you_hold() {
+    let mut f = Fix::new();
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Chaos Strike").unwrap()));
+    f.play("Malevolent Mutant", None);
+    let names: Vec<&str> = f.g.players[0].hand.iter().map(|h| h.card.name()).collect();
+    assert_eq!(names, vec!["Chaos Strike", "Chaos Strike"]);
+}
+
+#[test]
+fn solitude_discounts_your_hand_only_with_a_minionless_deck() {
+    let mut f = Fix::new().deck(&["Chillwind Yeti"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("Solitude", None);
+    assert_eq!(f.g.players[0].hand[0].cost_delta, 0, "the deck still has one");
+
+    let mut f = Fix::new().deck(&["Fireball"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("Solitude", None);
+    assert_eq!(f.g.players[0].hand[0].cost_delta, -2);
+    assert!(f.g.players[0].hand.len() >= 3, "and two were discovered");
+}
+
+#[test]
+fn silithid_queen_arms_the_hero_after_a_beast_turn() {
+    let mut f = Fix::new();
+    f.play("Silithid Queen", None);
+    assert_eq!(f.g.players[0].hero_attack(), 0, "no Beast last turn");
+
+    let mut f = Fix::new();
+    f.g.players[0].played_races_last = Races::BEAST;
+    f.play("Silithid Queen", None);
+    assert_eq!(f.g.players[0].hero_attack(), 5);
+}
