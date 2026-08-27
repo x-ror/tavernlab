@@ -3894,3 +3894,128 @@ fn eggbasher_damages_and_buffs_the_same_target() {
     assert_eq!(f.theirs(0).atk, 10, "6 plus 4");
     assert_eq!(f.theirs(0).health(), 6, "7 minus 1");
 }
+
+// ------------------------------------------------------- backlog batch, DK
+
+#[test]
+fn icy_touch_damages_and_freezes() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.play("Icy Touch", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 5);
+    assert!(f.theirs(0).flags.has(Flags::FROZEN));
+}
+
+#[test]
+fn doomsayer_destroys_every_minion_on_its_controllers_turn_start() {
+    let mut f = Fix::new()
+        .board(ME, &["Doomsayer", "Wisp"])
+        .board(FOE, &["Wisp"]);
+    f.g.fire(tavernlab_core::events::Event::TurnStart { side: ME });
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 0);
+    assert_eq!(f.g.players[1].board.len(), 0);
+}
+
+#[test]
+fn plague_strike_summons_a_zombie_only_on_a_kill() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre", "Wisp"]); // 6/7, 1/1
+    f.play("Plague Strike", foe_minion(0));
+    assert_eq!(f.g.players[0].board.len(), 0, "survived: no summon");
+
+    f.play("Plague Strike", foe_minion(1));
+    assert_eq!(f.g.players[0].board.len(), 1, "died: summoned the Zombie");
+    assert_eq!(f.mine(0).card.name(), "Rampaging Zombie");
+}
+
+#[test]
+fn harbinger_of_winter_deathrattle_draws_a_frost_spell() {
+    let mut f = Fix::new()
+        .deck(&["Icy Touch"]) // the one Frost spell available to draw
+        .board(ME, &["Harbinger of Winter"]);
+    f.g.deal_damage(Target::Minion(ME, 0), 5);
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Icy Touch");
+}
+
+#[test]
+fn asphyxiate_destroys_only_the_highest_attack_enemy() {
+    let mut f = Fix::new().board(FOE, &["Wisp", "Boulderfist Ogre", "Chillwind Yeti"]);
+    f.play("Asphyxiate", None);
+    assert_eq!(f.their_board(), 2);
+    assert!(
+        f.g.players[1]
+            .board
+            .iter()
+            .all(|m| m.card.name() != "Boulderfist Ogre"),
+        "the 6-Attack Ogre was the highest and is gone"
+    );
+}
+
+#[test]
+fn chillfallen_baron_draws_on_both_battlecry_and_deathrattle() {
+    let mut f = Fix::new().deck(&["Wisp"]);
+    f.play("Chillfallen Baron", None);
+    assert_eq!(f.g.players[0].hand.len(), 1, "battlecry draw");
+
+    f.g.players[0].deck.push(by_name("Wisp").unwrap());
+    f.g.deal_damage(Target::Minion(ME, 0), 5);
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 2, "deathrattle draw too");
+}
+
+#[test]
+fn stonehill_defender_discovers_a_taunt_minion() {
+    let mut f = Fix::new();
+    f.play("Stonehill Defender", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert!(
+        f.g.players[0].hand[0]
+            .card
+            .def()
+            .keywords
+            .has(Keywords::TAUNT)
+    );
+}
+
+#[test]
+fn acolyte_of_death_draws_only_for_a_friendly_undead() {
+    let mut f = Fix::new()
+        .deck(&["Wisp", "Wisp"])
+        .board(ME, &["Acolyte of Death", "Rampaging Zombie"])
+        .board(FOE, &["Rampaging Zombie"]);
+    f.g.deal_damage(Target::Minion(FOE, 0), 5); // enemy Undead dies
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 0, "not friendly");
+
+    f.g.deal_damage(Target::Minion(ME, 1), 5); // friendly Undead dies
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 1, "friendly Undead: drew");
+}
+
+#[test]
+fn dark_transformation_only_affects_an_undead_target() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti", "Rampaging Zombie"]);
+    f.play("Dark Transformation", my_minion(0));
+    assert_eq!(
+        f.mine(0).card.name(),
+        "Chillwind Yeti",
+        "not Undead: unaffected"
+    );
+
+    f.play("Dark Transformation", my_minion(1));
+    assert_eq!(f.mine(1).card.name(), "Undead Monstrosity");
+}
+
+#[test]
+fn poison_breath_only_affects_an_undead_target() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti", "Rampaging Zombie"]);
+    f.play("Poison Breath", my_minion(0));
+    assert!(
+        !f.mine(0).has(Keywords::POISONOUS),
+        "not Undead: unaffected"
+    );
+
+    f.play("Poison Breath", my_minion(1));
+    assert!(f.mine(1).has(Keywords::POISONOUS));
+}

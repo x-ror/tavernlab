@@ -353,6 +353,8 @@ mod tokens {
     // Warrior backlog batch.
     pub const COLISEUM_CROCOLISK: CardId = token("TIME_873t");
     pub const STEADFAST_SECURITY: CardId = token("TLC_622t");
+    pub const RAMPAGING_ZOMBIE: CardId = token("RLK_018t");
+    pub const UNDEAD_MONSTROSITY: CardId = token("RLK_057t");
     pub const GORISHI_STINGER: CardId = token("TLC_630t");
     /// Brood Keeper's "2/2 Sword". A weapon, so it never shows up through
     /// `summonable_children()`, which only ever returns minions.
@@ -3189,6 +3191,104 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         if let Some(t) = c.target {
             g.deal_damage(t, 1);
             g.buff(t, 4, 0);
+        }
+    }),
+
+    // ------------------------------------------------- backlog batch, DK
+    spell("Icy Touch", T::EnemyCharacter, |g, c| {
+        if let Some(t) = c.target {
+            g.spell_damage(c.side, Some(t), 2);
+            g.freeze(t);
+        }
+    }),
+    trigger("Doomsayer", |g, c| {
+        if matches!(c.event, Event::TurnStart { side } if side == c.side) {
+            g.destroy_area_where(c.side, Area::AllMinions, |_| true);
+        }
+    }),
+    spell("Plague Strike", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.spell_damage(c.side, Some(t), 3);
+        let dead = match t {
+            Target::Minion(s, i) => g
+                .player(s)
+                .board
+                .get(i as usize)
+                .is_some_and(|m| m.is_dead()),
+            Target::Hero(_) => false,
+        };
+        if dead {
+            g.summon_token(c.side, tokens::RAMPAGING_ZOMBIE, 1);
+        }
+    }),
+    deathrattle("Harbinger of Winter", |g, c| {
+        g.draw_matching(c.side, |d| {
+            d.kind() == super::Kind::Spell && d.school() == super::School::Frost
+        });
+    }),
+    // No `highest_attack_enemy` helper exists (only the symmetric
+    // `lowest_health_enemy`), so this scans by hand.
+    spell("Asphyxiate", T::None, |g, c| {
+        let foe = c.side.other();
+        let best = g
+            .player(foe)
+            .board
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.active() && m.is_minion())
+            .max_by_key(|(_, m)| m.atk)
+            .map(|(i, _)| i as u8);
+        if let Some(i) = best {
+            g.destroy(Target::Minion(foe, i));
+        }
+    }),
+    // Both hooks are the same one-line effect, so there is nothing to share
+    // between them beyond the card's own name.
+    c(
+        "Chillfallen Baron",
+        T::None,
+        None,
+        Some(|g, c| g.draw_cards(c.side, 1)),
+        Some(|g, c| g.draw_cards(c.side, 1)),
+        None, None, None, None, None, None,
+    ),
+    battlecry("Stonehill Defender", T::None, |g, c| {
+        g.discover(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.keywords.has(Keywords::TAUNT)
+        });
+    }),
+    trigger("Acolyte of Death", |g, c| {
+        if let Event::MinionDied { side, card } = c.event
+            && side == c.side
+            && card.def().races.any(Races::UNDEAD)
+        {
+            g.draw_cards(c.side, 1);
+        }
+    }),
+    // Both of these ask for "a friendly Undead" specifically, which
+    // `TargetSpec` cannot express (no race-filtered variant exists). Offered
+    // as any friendly minion; a non-Undead target simply does nothing,
+    // rather than risk the wrong race check silently excluding the right
+    // targets, since "an Undead-only spell doing nothing on a non-Undead"
+    // is the same outcome the real card has for that mistake anyway.
+    spell("Dark Transformation", T::FriendlyMinion, |g, c| {
+        if let Some(t @ Target::Minion(s, i)) = c.target
+            && g.player(s)
+                .board
+                .get(i as usize)
+                .is_some_and(|m| m.races().any(Races::UNDEAD))
+        {
+            g.transform(t, tokens::UNDEAD_MONSTROSITY);
+        }
+    }),
+    spell("Poison Breath", T::FriendlyMinion, |g, c| {
+        if let Some(t @ Target::Minion(s, i)) = c.target
+            && g.player(s)
+                .board
+                .get(i as usize)
+                .is_some_and(|m| m.races().any(Races::UNDEAD))
+        {
+            g.grant(t, Keywords::POISONOUS);
         }
     }),
 ];
