@@ -331,6 +331,15 @@ fn describe(g: &Game, a: tavernlab_core::game::Action) -> String {
                     .unwrap_or_default()
             )
         }
+        Trade { hand } => {
+            let c = g
+                .me()
+                .hand
+                .get(hand as usize)
+                .map(|h| h.card.name())
+                .unwrap_or("?");
+            format!("trade {c}")
+        }
         Prepare { hand } => {
             let c = g
                 .me()
