@@ -469,7 +469,40 @@ impl Game {
                 m.aura_hp = 0;
             }
         }
-        // 2. collect live sources; a silenced minion projects nothing
+        // 2. what each minion grants itself ("Has +3 Attack while damaged").
+        // Every bonus is read before any is applied, so one minion's grant
+        // cannot be an input to another's -- see `Bonus` on why that matters.
+        // The count of live sources is kept on the game so the damage path can
+        // skip this whole pass with a single comparison.
+        let mut grants: Inline<(usize, usize, i16, i16), { MAX_BOARD * 2 }> = Inline::new();
+        let mut conditional = 0u8;
+        for i in 0..2 {
+            let side = Side::from_index(i);
+            for slot in 0..self.players[i].board.len() {
+                let m = self.players[i].board[slot];
+                if !m.active() || m.flags.has(Flags::SILENCED) {
+                    continue;
+                }
+                let Some(f) = crate::cards::behaviour_of(m.card).and_then(|b| b.bonus) else {
+                    continue;
+                };
+                conditional += 1;
+                let (a, h) = f(self, side, slot as u8, &m);
+                if a != 0 || h != 0 {
+                    grants.push((i, slot, a, h));
+                }
+            }
+        }
+        self.conditional = conditional;
+        for (i, slot, a, h) in grants.iter().copied() {
+            let m = &mut self.players[i].board[slot];
+            m.atk += a;
+            m.max_hp += h;
+            m.aura_atk += a;
+            m.aura_hp += h;
+        }
+
+        // 3. collect live aura sources; a silenced minion projects nothing
         // Stored as the source card rather than its function: a bare `fn`
         // pointer has no `Default`, and re-reading it is one array index.
         let mut sources: Inline<(Side, u8, CardId), { MAX_BOARD * 2 }> = Inline::new();
@@ -487,7 +520,7 @@ impl Game {
         if sources.is_empty() {
             return;
         }
-        // 3. apply
+        // 4. apply
         for (src_side, src_slot, src_card) in sources.iter().copied() {
             let Some(f) = crate::cards::behaviour_of(src_card).and_then(|b| b.aura) else {
                 continue;

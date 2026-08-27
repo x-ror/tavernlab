@@ -704,6 +704,11 @@ pub struct Game {
     /// Set by Counterspell while a spell is being cast; the cast is abandoned
     /// and the flag cleared by the same call that raised it.
     pub countered: bool,
+    /// How many minions in play carry a [`Bonus`](crate::cards::Bonus) -- a
+    /// continuous effect on themselves. Maintained by `recompute_auras`, and
+    /// read on the damage and healing paths so a board with none of them pays
+    /// one comparison rather than a recomputation.
+    pub conditional: u8,
 }
 
 impl Game {
