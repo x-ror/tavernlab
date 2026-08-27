@@ -376,6 +376,10 @@ mod tokens {
     /// copy" effect), just not collectible, so it gets its own `spell` row
     /// below rather than being a summon token.
     pub const SECOND_FLAME: CardId = token("SW_108t");
+    /// Widow's Bite escalates through two more non-collectible spells,
+    /// each handing out the next: Feast, then Banquet.
+    pub const WIDOWS_FEAST: CardId = token("JAIL_436t");
+    pub const WIDOWS_BANQUET: CardId = token("JAIL_436t2");
     pub const GORISHI_STINGER: CardId = token("TLC_630t");
     /// Brood Keeper's "2/2 Sword". A weapon, so it never shows up through
     /// `summonable_children()`, which only ever returns minions.
@@ -3880,6 +3884,97 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         }
         let pick = g.rngs.effects.index(pool.len());
         g.give_card(c.side, pool[pick]);
+    }),
+    choose(
+        "Living Roots",
+        &[
+            m(T::AnyCharacter, |g, c| {
+                if let Some(t) = c.target {
+                    g.spell_damage(c.side, Some(t), 2);
+                }
+            }),
+            m(T::None, |g, c| {
+                g.summon_child(c.side, c.card, 2);
+            }),
+        ],
+    ),
+    choose(
+        "Raven Idol",
+        &[
+            m(T::None, |g, c| {
+                g.discover(c.side, |d| d.kind() == super::Kind::Minion);
+            }),
+            m(T::None, |g, c| {
+                g.discover(c.side, |d| d.kind() == super::Kind::Spell);
+            }),
+        ],
+    ),
+    choose(
+        "Feral Rage",
+        &[
+            m(T::None, |g, c| {
+                g.hero_attack_bonus(c.side, 4);
+            }),
+            m(T::None, |g, c| {
+                g.gain_armor(c.side, 8);
+            }),
+        ],
+    ),
+    // "Bottom" is index 0: `Fix::deck`'s own convention (and `Game::draw`'s
+    // `deck.pop()`) treats the end of the vec as the top of the deck.
+    spell("Contingency", T::None, |g, c| {
+        for _ in 0..2 {
+            if let Some(card) = g.player_mut(c.side).deck.remove(0) {
+                g.give_card(c.side, card);
+            }
+        }
+    }),
+    spell("Widow's Bite", T::None, |g, c| {
+        g.hero_attack_bonus(c.side, 1);
+        g.gain_armor(c.side, 1);
+        g.give_card(c.side, tokens::WIDOWS_FEAST);
+    }),
+    spell("Widow's Feast", T::None, |g, c| {
+        g.hero_attack_bonus(c.side, 2);
+        g.gain_armor(c.side, 2);
+        g.give_card(c.side, tokens::WIDOWS_BANQUET);
+    }),
+    spell("Widow's Banquet", T::None, |g, c| {
+        g.hero_attack_bonus(c.side, 4);
+        g.gain_armor(c.side, 4);
+    }),
+    // Battlecry damage is not boosted by Spell Power (see Fogsail
+    // Freebooter/Mad Bomber above), so this is a raw `deal_damage`.
+    battlecry("Savage Striker", T::EnemyMinion, |g, c| {
+        let atk = g.player(c.side).hero_attack();
+        if let Some(t) = c.target
+            && atk > 0
+        {
+            g.deal_damage(t, atk);
+        }
+    }),
+    deathrattle("Skyscreamer Eggs", |g, c| {
+        g.summon_child(c.side, c.card, 4);
+    }),
+    deathrattle("Longneck Egg", |g, c| {
+        g.summon_child(c.side, c.card, 1);
+        g.buff_area(c.side, Area::FriendlyMinions, 1, 1);
+    }),
+    // No area helper takes a per-target predicate ("2 or less Attack") or
+    // excludes the source, so this repeats `buff_area`'s loop by hand.
+    battlecry("Hatchery Helper", T::None, |g, c| {
+        let Some(src) = c.source else { return };
+        let side = c.side;
+        for i in 0..g.player(side).board.len() {
+            if i == src as usize {
+                continue;
+            }
+            if g.player(side).board[i].atk <= 2 {
+                let t = Target::Minion(side, i as u8);
+                g.buff(t, 1, 1);
+                g.grant(t, Keywords::TAUNT);
+            }
+        }
     }),
 ];
 

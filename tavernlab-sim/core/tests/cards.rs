@@ -4819,3 +4819,139 @@ fn scrappy_scavenger_discovers_a_card_costing_its_remaining_mana() {
     assert_eq!(f.g.players[0].hand.len(), 1);
     assert_eq!(f.g.players[0].hand[0].card.def().cost, 3);
 }
+
+#[test]
+fn living_roots_two_modes_do_different_things() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.play_mode("Living Roots", 0, foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 5, "mode 0 is 2 damage");
+    assert_eq!(f.g.players[0].board.len(), 0);
+
+    let mut f = Fix::new();
+    f.play_mode("Living Roots", 1, None);
+    assert_eq!(f.g.players[0].board.len(), 2, "mode 1 is two Saplings");
+    assert_eq!(f.mine(0).card.name(), "Sapling");
+}
+
+#[test]
+fn raven_idol_two_modes_discover_different_kinds() {
+    let mut f = Fix::new();
+    f.play_mode("Raven Idol", 0, None);
+    assert_eq!(f.g.players[0].hand[0].card.def().kind(), Kind::Minion);
+
+    let mut f = Fix::new();
+    f.play_mode("Raven Idol", 1, None);
+    assert_eq!(f.g.players[0].hand[0].card.def().kind(), Kind::Spell);
+}
+
+#[test]
+fn feral_rage_two_modes_do_different_things() {
+    let mut f = Fix::new();
+    f.play_mode("Feral Rage", 0, None);
+    assert_eq!(f.g.players[0].hero_bonus_atk, 4, "mode 0 is +4 Attack");
+    assert_eq!(f.g.players[0].armor, 0);
+
+    let mut f = Fix::new();
+    f.play_mode("Feral Rage", 1, None);
+    assert_eq!(f.g.players[0].hero_bonus_atk, 0);
+    assert_eq!(f.g.players[0].armor, 8, "mode 1 is 8 Armor");
+}
+
+#[test]
+fn contingency_draws_the_bottom_two_of_the_deck() {
+    // `Fix::deck` pushes in order given, and the deck's own convention
+    // treats the end of the vec as the top -- so "Wisp" here is the bottom.
+    let mut f = Fix::new().deck(&["Wisp", "Chillwind Yeti", "Boulderfist Ogre"]);
+    f.play("Contingency", None);
+    assert_eq!(f.g.players[0].hand.len(), 2);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Wisp");
+    assert_eq!(f.g.players[0].hand[1].card.name(), "Chillwind Yeti");
+    assert_eq!(f.g.players[0].deck.len(), 1, "the top card is untouched");
+}
+
+#[test]
+fn widows_bite_chain_escalates_through_feast_and_banquet() {
+    // `Fix::play` always pushes a fresh copy and plays that -- wrong here,
+    // since each step must play the very card the previous step handed out,
+    // not an unrelated extra copy. `Action::Play` at the existing hand index
+    // does that instead.
+    let mut f = Fix::new();
+    f.play("Widow's Bite", None);
+    assert_eq!(f.g.players[0].hero_bonus_atk, 1);
+    assert_eq!(f.g.players[0].armor, 1);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Widow's Feast");
+
+    assert!(f.g.apply(Action::Play {
+        hand: 0,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(f.g.players[0].hero_bonus_atk, 3, "1 plus 2");
+    assert_eq!(f.g.players[0].armor, 3, "1 plus 2");
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Widow's Banquet");
+
+    assert!(f.g.apply(Action::Play {
+        hand: 0,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(f.g.players[0].hero_bonus_atk, 7, "3 plus 4");
+    assert_eq!(f.g.players[0].armor, 7, "3 plus 4");
+    assert_eq!(f.g.players[0].hand.len(), 0, "the chain ends here");
+}
+
+#[test]
+fn savage_striker_damages_by_its_own_heros_attack() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.g.players[0].weapon = Some(tavernlab_core::state::Weapon::equip(
+        by_name("Fiery War Axe").unwrap(),
+    )); // 3 Attack
+    f.play("Savage Striker", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 4, "7 minus the hero's 3 Attack");
+}
+
+#[test]
+fn skyscreamer_eggs_deathrattle_summons_four_hatchlings() {
+    let mut f = Fix::new().board(ME, &["Skyscreamer Eggs"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 4);
+    for i in 0..4 {
+        assert_eq!(f.mine(i).card.name(), "Skyscreamer Hatchling");
+    }
+}
+
+#[test]
+fn longneck_egg_deathrattle_summons_a_beast_and_buffs_the_board() {
+    let mut f = Fix::new().board(ME, &["Longneck Egg", "Wisp"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(
+        f.g.players[0].board.len(),
+        2,
+        "the Wisp plus the summoned Beast"
+    );
+    assert_eq!(f.mine(0).atk, 2, "Wisp: 1 plus the +1/+1");
+    assert_eq!(f.mine(1).card.name(), "Little Longneck");
+    assert_eq!(f.mine(1).atk, 4, "3 plus the +1/+1, buffed after it landed");
+}
+
+#[test]
+fn hatchery_helper_buffs_low_attack_others_but_not_itself() {
+    let mut f = Fix::new().board(ME, &["Wisp", "Boulderfist Ogre"]); // 1/1 and 6/7
+    f.play("Hatchery Helper", None);
+    assert_eq!(f.mine(0).atk, 2, "1 Attack: 1 plus 1");
+    assert!(f.mine(0).has(Keywords::TAUNT));
+    assert_eq!(f.mine(1).atk, 6, "6 Attack: unaffected");
+    assert!(!f.mine(1).has(Keywords::TAUNT));
+    let helper = f.g.players[0]
+        .board
+        .iter()
+        .find(|m| m.card.name() == "Hatchery Helper")
+        .unwrap();
+    assert_eq!(helper.atk, 2, "itself excluded despite 2 or less Attack");
+}
