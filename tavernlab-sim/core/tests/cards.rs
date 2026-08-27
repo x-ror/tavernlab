@@ -4524,10 +4524,16 @@ fn reluctant_wrangler_deathrattle_summons_a_taunt_beast() {
     let mut f = Fix::new().board(ME, &["Reluctant Wrangler"]);
     f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
     f.g.sweep_deaths();
-    assert_eq!(f.g.players[0].board.len(), 1);
+    // The Beast from the deathrattle, and then the Wrangler itself: the card
+    // is printed "Reborn Deathrattle: …" and both halves resolve, rattle
+    // first.
+    assert_eq!(f.g.players[0].board.len(), 2);
     assert_eq!(f.mine(0).atk, 2);
     assert_eq!(f.mine(0).max_hp, 2);
     assert!(f.mine(0).has(Keywords::TAUNT));
+    assert_eq!(f.mine(1).card.name(), "Reluctant Wrangler");
+    assert_eq!(f.mine(1).health(), 1);
+    assert!(!f.mine(1).has(Keywords::REBORN), "Reborn is once only");
 }
 
 #[test]
@@ -5431,4 +5437,344 @@ fn time_skipper_hands_the_coin_to_whoever_just_finished() {
     f.g.current = FOE;
     f.g.end_turn();
     assert_eq!(f.g.players[1].hand.len(), 1, "their turn ended, their Coin");
+}
+
+// ------------------------------------------------- class backlog batch
+// One test per card, in the order the rows appear in the table.
+
+#[test]
+fn monstrous_mosquito_buffs_the_rest_of_the_board_at_end_of_turn() {
+    let mut f = Fix::new().board(ME, &["Monstrous Mosquito", "Chillwind Yeti"]);
+    let before = f.mine(0).atk;
+    f.g.end_turn();
+    assert_eq!(f.mine(0).atk, before, "\"your other minions\" — not itself");
+    assert_eq!(f.mine(1).atk, 5, "a 4/5 Yeti went to 5");
+}
+
+#[test]
+fn thassarian_hits_on_the_way_in_and_on_the_way_out() {
+    let mut f = Fix::new();
+    f.play("Thassarian", None);
+    assert_eq!(f.g.players[1].hero_hp, 28, "battlecry, no minions to pick");
+
+    let slot = f.g.players[0].board.len() - 1;
+    f.g.players[0].board[slot].damage = f.g.players[0].board[slot].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[1].hero_hp, 26, "deathrattle, same two damage");
+    // Reborn, so the body is back at one Health.
+    assert_eq!(f.mine(0).card.name(), "Thassarian");
+    assert_eq!(f.mine(0).health(), 1);
+}
+
+#[test]
+fn death_strike_heals_for_what_it_deals() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.g.players[0].hero_hp = 20;
+    f.play("Death Strike", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 1);
+    assert_eq!(f.g.players[0].hero_hp, 26, "Lifesteal for the full 6");
+}
+
+#[test]
+fn death_strikes_lifesteal_follows_spell_damage() {
+    let mut f = Fix::new()
+        .board(ME, &["Kobold Geomancer"]) // Spell Damage +1
+        .board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0].hero_hp = 20;
+    f.play("Death Strike", foe_minion(0));
+    assert_eq!(f.g.players[0].hero_hp, 27, "6 + 1 dealt is 6 + 1 healed");
+}
+
+#[test]
+fn remorseless_winter_sweeps_the_enemy_side_and_draws() {
+    let mut f = Fix::new()
+        .board(ME, &["Chillwind Yeti"])
+        .board(FOE, &["Chillwind Yeti"])
+        .deck(&["Fireball"]);
+    f.play("Remorseless Winter", None);
+    assert_eq!(f.mine(0).damage, 0, "\"all enemies\" spares my own board");
+    assert_eq!(f.theirs(0).damage, 2);
+    assert_eq!(f.g.players[1].hero_hp, 28, "the enemy hero is an enemy");
+    assert_eq!(f.g.players[0].hand.len(), 1);
+}
+
+#[test]
+fn chaos_strike_arms_the_hero_for_one_turn_and_draws() {
+    let mut f = Fix::new().deck(&["Fireball"]);
+    f.play("Chaos Strike", None);
+    assert_eq!(f.g.players[0].hero_attack(), 2);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    f.g.end_turn();
+    assert_eq!(f.g.players[0].hero_attack(), 0, "\"this turn\"");
+}
+
+#[test]
+fn felrattler_rattles_over_the_enemy_board_only() {
+    let mut f = Fix::new()
+        .board(ME, &["Felrattler", "Wisp"])
+        .board(FOE, &["Wisp", "Chillwind Yeti"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.their_board(), 1, "the 1/1 died, the Yeti did not");
+    assert_eq!(f.theirs(0).damage, 1);
+    assert_eq!(f.mine(0).card.name(), "Wisp", "my own board is untouched");
+    assert_eq!(f.mine(0).damage, 0);
+}
+
+#[test]
+fn wrathspike_brute_answers_the_attacker_and_the_whole_board() {
+    let mut f = Fix::new()
+        .board(ME, &["Wrathspike Brute"]) // 3/6 Taunt
+        .board(FOE, &["Chillwind Yeti", "Wisp"]);
+    f.g.current = FOE;
+    assert!(f.g.apply(Action::Attack { from: 0, target: Target::Minion(ME, 0) }));
+    assert_eq!(f.their_board(), 1, "the Wisp took its point and died");
+    assert_eq!(f.theirs(0).damage, 3 + 1, "the Yeti took the Brute and the point");
+    assert_eq!(f.g.players[1].hero_hp, 29, "\"all enemies\" reaches the hero");
+}
+
+#[test]
+fn immortalized_in_stone_summons_one_of_each_statue() {
+    let mut f = Fix::new();
+    f.play("Immortalized in Stone", None);
+    let got: Vec<(i16, i16)> = f.g.players[0]
+        .board
+        .iter()
+        .map(|m| (m.atk, m.max_hp))
+        .collect();
+    assert_eq!(got, vec![(1, 2), (2, 4), (4, 8)]);
+    assert!(f.g.players[0].board.iter().all(|m| m.has(Keywords::TAUNT)));
+    assert!(
+        f.g.players[0]
+            .board
+            .iter()
+            .all(|m| m.races().any(Races::ELEMENTAL))
+    );
+}
+
+#[test]
+fn haunt_gives_stats_taunt_and_a_second_life() {
+    let mut f = Fix::new().board(ME, &["Wisp"]); // 1/1
+    f.play("Haunt", my_minion(0));
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (3, 4));
+    assert!(f.mine(0).has(Keywords::TAUNT));
+    assert!(f.mine(0).has(Keywords::REBORN));
+
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    // Reborn returns the printed body, not the buffed one.
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (1, 1));
+    assert_eq!(f.mine(0).health(), 1);
+}
+
+#[test]
+fn natalie_seline_takes_the_health_off_what_she_kills() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.g.players[1].board[0].damage = 2; // 5 left
+    f.play("Natalie Seline", foe_minion(0));
+    assert_eq!(f.their_board(), 0);
+    assert_eq!(
+        (f.mine(0).atk, f.mine(0).max_hp),
+        (7, 1 + 5),
+        "a 7/1 gains what the body still had"
+    );
+}
+
+#[test]
+fn story_of_amara_puts_the_hero_above_the_starting_total() {
+    let mut f = Fix::new();
+    f.g.players[0].hero_hp = 12;
+    f.play("Story of Amara", None);
+    assert_eq!(f.g.players[0].hero_hp, 40);
+    // And a later heal must not cap it back down to thirty.
+    f.g.heal_hero(ME, 3);
+    assert_eq!(f.g.players[0].hero_hp, 40);
+}
+
+#[test]
+fn si7_supplier_draws_after_it_swings() {
+    let mut f = Fix::new().board(ME, &["SI:7 Supplier"]).deck(&["Fireball"]);
+    assert_eq!(f.g.players[0].hand.len(), 0);
+    assert!(f.g.apply(Action::Attack { from: 0, target: Target::Hero(FOE) }));
+    assert_eq!(f.g.players[0].hand.len(), 1, "one card, after the attack");
+}
+
+#[test]
+fn troubled_double_copies_itself_only_on_combo() {
+    let mut f = Fix::new();
+    f.play("Troubled Double", None);
+    assert_eq!(f.g.players[0].board.len(), 1, "first card of the turn");
+
+    let mut f = Fix::new();
+    f.play("Wisp", None);
+    f.play("Troubled Double", None);
+    let doubles = f.g.players[0]
+        .board
+        .iter()
+        .filter(|m| m.card.name() == "Troubled Double")
+        .count();
+    assert_eq!(doubles, 2);
+}
+
+#[test]
+fn crazed_chemist_only_pays_out_on_combo() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.play("Crazed Chemist", my_minion(0));
+    assert_eq!(f.mine(0).atk, 4, "no combo, no buff");
+
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.play("Wisp", None);
+    f.play("Crazed Chemist", my_minion(0));
+    assert_eq!(f.mine(0).atk, 8);
+}
+
+#[test]
+fn wailing_vapor_grows_on_elementals_but_not_on_itself() {
+    let mut f = Fix::new();
+    f.play("Wailing Vapor", None); // an Elemental itself
+    assert_eq!(f.mine(0).atk, 1, "its own play does not count");
+    f.play("Wisp", None);
+    assert_eq!(f.mine(0).atk, 1, "a Wisp is not an Elemental");
+    f.play("Wailing Vapor", None);
+    assert_eq!(f.mine(0).atk, 2);
+}
+
+#[test]
+fn fire_breath_burns_one_target_and_grows_your_elementals() {
+    let mut f = Fix::new()
+        .board(ME, &["Wailing Vapor", "Chillwind Yeti"])
+        .board(FOE, &["Boulderfist Ogre"]);
+    f.play("Fire Breath", foe_minion(0));
+    assert_eq!(f.theirs(0).damage, 4);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (2, 4), "the Elemental");
+    assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (4, 5), "the Yeti is not");
+}
+
+#[test]
+fn hammer_of_twilight_leaves_an_elemental_when_it_breaks() {
+    let mut f = Fix::new();
+    f.play("Hammer of Twilight", None);
+    assert_eq!(f.g.players[0].weapon.map(|w| (w.atk, w.durability)), Some((4, 2)));
+    f.g.destroy_weapon(ME);
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (4, 2));
+    assert!(f.mine(0).races().any(Races::ELEMENTAL));
+}
+
+#[test]
+fn rotheart_dryad_pulls_a_big_minion_and_nothing_smaller() {
+    let mut f = Fix::new()
+        .board(ME, &["Rotheart Dryad"])
+        .deck(&["Wisp", "Deathwing"]); // 0-cost and 10-cost
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Deathwing");
+}
+
+#[test]
+fn twisting_nether_clears_both_boards_locations_included() {
+    let mut f = Fix::new()
+        .board(ME, &["Chillwind Yeti", "Wisp"])
+        .board(FOE, &["Boulderfist Ogre"]);
+    let loc = by_name("Tranquil Clearing").expect("a Location in the corpus");
+    assert_eq!(loc.def().kind(), Kind::Location);
+    f.g.players[1].board.push(Permanent::summon(loc));
+    f.play("Twisting Nether", None);
+    assert_eq!(f.g.players[0].board.len(), 0);
+    assert_eq!(f.their_board(), 0);
+}
+
+#[test]
+fn sky_raider_finds_a_pirate() {
+    let mut f = Fix::new();
+    f.play("Sky Raider", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    let got = f.g.players[0].hand[0].card;
+    assert!(got.def().races.any(Races::PIRATE), "{}", got.name());
+}
+
+#[test]
+fn ravaging_ghoul_spares_only_itself() {
+    let mut f = Fix::new()
+        .board(ME, &["Wisp"])
+        .board(FOE, &["Wisp", "Chillwind Yeti"]);
+    f.play("Ravaging Ghoul", None);
+    assert_eq!(f.g.players[0].board.len(), 1, "my Wisp died, the Ghoul lived");
+    assert_eq!(f.mine(0).card.name(), "Ravaging Ghoul");
+    assert_eq!(f.mine(0).damage, 0);
+    assert_eq!(f.their_board(), 1);
+    assert_eq!(f.theirs(0).damage, 1);
+}
+
+#[test]
+fn ironforge_portal_armours_up_and_brings_a_body() {
+    let mut f = Fix::new();
+    f.play("Ironforge Portal", None);
+    assert_eq!(f.g.players[0].armor, 4);
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!(f.mine(0).card.def().cost, 4);
+    assert_eq!(f.mine(0).kind(), Kind::Minion);
+}
+
+#[test]
+fn guard_duty_summons_one_taunt_at_each_printed_cost() {
+    let mut f = Fix::new();
+    f.play("Guard Duty", None);
+    let got: Vec<i16> = f.g.players[0]
+        .board
+        .iter()
+        .map(|m| m.card.def().cost)
+        .collect();
+    assert_eq!(got, vec![6, 4, 2]);
+    assert!(f.g.players[0].board.iter().all(|m| m.has(Keywords::TAUNT)));
+}
+
+// --------------------------------------------------------------- Reborn
+// The rule itself, rather than any one card that carries it.
+
+#[test]
+fn reborn_brings_a_minion_back_once_at_one_health() {
+    let mut f = Fix::new().board(ME, &["Sinful Steed"]);
+    assert!(f.mine(0).has(Keywords::REBORN));
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!(f.mine(0).health(), 1);
+    assert!(!f.mine(0).has(Keywords::REBORN), "once, not forever");
+
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 0, "the second death is final");
+}
+
+#[test]
+fn reborn_needs_room_left_after_the_deathrattle() {
+    // The body has left the board by the time Reborn returns it, so there is
+    // normally room by construction. A deathrattle that fills the vacated
+    // slot is the case where there is not.
+    let mut f = Fix::new().board(ME, &["Reluctant Wrangler"]);
+    while f.g.players[0].board.len() < 7 {
+        f.g.players[0].board.push(Permanent::summon(by_name("Wisp").unwrap()));
+    }
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 7);
+    assert!(
+        f.g.players[0]
+            .board
+            .iter()
+            .all(|m| m.card.name() != "Reluctant Wrangler"),
+        "the rattle took the last slot, so the return had nowhere to go"
+    );
+}
+
+#[test]
+fn a_card_being_played_does_not_react_to_its_own_play() {
+    let mut f = Fix::new();
+    f.play("Questing Adventurer", None); // 2/2, "whenever you play a card"
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (2, 2));
+    f.play("Wisp", None);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (3, 3));
 }

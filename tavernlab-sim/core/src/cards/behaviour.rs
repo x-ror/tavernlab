@@ -415,6 +415,15 @@ mod tokens {
     pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
     /// Imp Gang Stooge's "8/8 Demon with Taunt and Lifesteal".
     pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
+    /// Immortalized in Stone's three Taunt Elementals: 1/2, 2/4 and 4/8.
+    /// Named one by one because the card summons one of each rather than a
+    /// random child.
+    pub const WORN_STATUE: CardId = token("TSC_076t");
+    pub const LIVING_STATUE: CardId = token("TSC_076t2");
+    pub const PRISTINE_STATUE: CardId = token("TSC_076t3");
+    /// Hammer of Twilight's "4/2 Elemental". A weapon has no `childIds` link
+    /// to it in this snapshot, so it is named here.
+    pub const TWILIGHT_ELEMENTAL: CardId = token("OG_031a");
     /// Sigil of the Seas' "3/3 Naga with Taunt".
     pub const NAGA_MONSTROSITY: CardId = token("CATA_528t");
     /// Emergency Surgery's "3/1 Undead with Lifesteal".
@@ -4259,6 +4268,204 @@ pub static BEHAVIOURS: &[Behaviour] = &[
                 g.buff(t, 1, 1);
                 g.grant(t, Keywords::TAUNT);
             }
+        }
+    }),
+
+    // ------------------------------------------------- class backlog batch
+    // One pass over the per-class backlogs (`tavernsim backlog <class>`),
+    // taking only cards whose whole text the engine can already say exactly.
+    // Nothing here invents a number the corpus does not carry.
+
+    // Death Knight.
+    trigger("Monstrous Mosquito", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            // "your other minions" — the Mosquito buffs the board, not itself.
+            let me = c.me();
+            let mut hits: Inline<Target, MAX_BOARD> = Inline::new();
+            g.collect_area(c.side, Area::FriendlyMinions, &mut hits);
+            for t in hits.iter() {
+                if *t != me {
+                    g.buff(*t, 1, 0);
+                }
+            }
+        }
+    }),
+    c(
+        "Thassarian",
+        T::None,
+        None,
+        // "Battlecry and Deathrattle" is one line of text and two hooks.
+        Some(|g, c| {
+            if let Some(t) = g.random_enemy(c.side) {
+                g.deal_damage(t, 2);
+            }
+        }),
+        Some(|g, c| {
+            if let Some(t) = g.random_enemy(c.side) {
+                g.deal_damage(t, 2);
+            }
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    spell("Death Strike", T::AnyMinion, |g, c| {
+        // Lifesteal on a spell is not a keyword the kernel applies; the heal
+        // is the damage the spell would deal, Spell Damage included.
+        let dealt = 6 + g.player(c.side).spell_power();
+        g.spell_damage(c.side, c.target, 6);
+        g.heal_hero(c.side, dealt);
+    }),
+    spell("Remorseless Winter", T::None, |g, c| {
+        g.spell_damage_area(c.side, Area::AllEnemies, 2);
+        g.draw_cards(c.side, 1);
+    }),
+
+    // Demon Hunter.
+    spell("Chaos Strike", T::None, |g, c| {
+        g.hero_attack_bonus(c.side, 2);
+        g.draw_cards(c.side, 1);
+    }),
+    deathrattle("Felrattler", |g, c| {
+        g.damage_area(c.side, Area::EnemyMinions, 1);
+    }),
+    trigger("Wrathspike Brute", |g, c| {
+        // "After this is attacked" — it is the defender, whoever swung.
+        if matches!(c.event, Event::AfterAttack { defender, .. } if defender == c.me()) {
+            g.damage_area(c.side, Area::AllEnemies, 1);
+        }
+    }),
+
+    // Paladin.
+    spell("Immortalized in Stone", T::None, |g, c| {
+        // Printed largest first; summoned smallest first, which is the order
+        // the card's own childIds carry.
+        g.summon_token(c.side, tokens::WORN_STATUE, 1);
+        g.summon_token(c.side, tokens::LIVING_STATUE, 1);
+        g.summon_token(c.side, tokens::PRISTINE_STATUE, 1);
+    }),
+
+    // Priest.
+    spell("Haunt", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.buff(t, 2, 3);
+        g.grant(t, Keywords::REBORN);
+        g.grant(t, Keywords::TAUNT);
+    }),
+    battlecry("Natalie Seline", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(s, i) = t else { return };
+        // "gain its Health" is what the minion has left, read before it dies.
+        let Some(health) = g.player(s).board.get(i as usize).map(|m| m.health()) else {
+            return;
+        };
+        g.destroy(t);
+        if let Some(src) = c.source {
+            g.buff(Target::Minion(c.side, src), 0, health);
+        }
+    }),
+    spell("Story of Amara", T::None, |g, c| {
+        // Set, not healed: this is the one effect that can put a hero above
+        // the starting total, and `heal_hero` respects that afterwards.
+        g.player_mut(c.side).hero_hp = 40;
+    }),
+
+    // Rogue.
+    trigger("SI:7 Supplier", |g, c| {
+        if matches!(c.event, Event::AfterAttack { attacker, .. } if attacker == c.me()) {
+            g.draw_cards(c.side, 1);
+        }
+    }),
+    battlecry("Troubled Double", T::None, |g, c| {
+        if g.combo_active(c.side) {
+            g.summon_copy(c.side, c.card);
+        }
+    }),
+    battlecry("Crazed Chemist", T::FriendlyMinion, |g, c| {
+        if g.combo_active(c.side)
+            && let Some(t) = c.target
+        {
+            g.buff(t, 4, 0);
+        }
+    }),
+
+    // Shaman.
+    trigger("Wailing Vapor", |g, c| {
+        if let Event::CardPlayed { side, card } = c.event
+            && side == c.side
+            && card.def().kind() == super::Kind::Minion
+            && card.def().races.any(Races::ELEMENTAL)
+        {
+            g.buff(c.me(), 1, 0);
+        }
+    }),
+    spell("Fire Breath", T::AnyCharacter, |g, c| {
+        g.spell_damage(c.side, c.target, 4);
+        g.sweep_deaths();
+        let mut hits: Inline<Target, MAX_BOARD> = Inline::new();
+        g.collect_area(c.side, Area::FriendlyMinions, &mut hits);
+        for t in hits.iter() {
+            if let Target::Minion(s, i) = *t
+                && g.player(s).board[i as usize].races().any(Races::ELEMENTAL)
+            {
+                g.buff(*t, 1, 1);
+            }
+        }
+    }),
+    deathrattle("Hammer of Twilight", |g, c| {
+        g.summon_token(c.side, tokens::TWILIGHT_ELEMENTAL, 1);
+    }),
+
+    // Warlock.
+    deathrattle("Rotheart Dryad", |g, c| {
+        g.draw_matching(c.side, |d| d.kind() == super::Kind::Minion && d.cost >= 7);
+    }),
+    spell("Twisting Nether", T::None, |g, _c| {
+        // Locations sit on the board next to the minions and are named by the
+        // card too, so this walks the boards rather than going through
+        // `collect_area`, which returns minions alone.
+        for i in 0..2 {
+            let side = Side::from_index(i);
+            for slot in 0..g.player(side).board.len() {
+                g.destroy(Target::Minion(side, slot as u8));
+            }
+        }
+    }),
+
+    // Warrior.
+    battlecry("Sky Raider", T::None, |g, c| {
+        g.add_random_to_hand(c.side, |d| d.races.any(Races::PIRATE));
+    }),
+    battlecry("Ravaging Ghoul", T::None, |g, c| {
+        let me = c.source.map(|s| Target::Minion(c.side, s));
+        let mut hits: Inline<Target, { MAX_BOARD * 2 }> = Inline::new();
+        g.collect_area(c.side, Area::AllMinions, &mut hits);
+        for t in hits.iter() {
+            if Some(*t) != me {
+                g.deal_damage(*t, 1);
+            }
+        }
+    }),
+    spell("Ironforge Portal", T::None, |g, c| {
+        g.gain_armor(c.side, 4);
+        g.summon_random_of_cost(c.side, 4, 1);
+    }),
+    spell("Guard Duty", T::None, |g, c| {
+        for pred in [
+            (|d: &super::CardDef| {
+                d.kind() == super::Kind::Minion && d.cost == 6 && d.keywords.has(Keywords::TAUNT)
+            }) as fn(&super::CardDef) -> bool,
+            |d: &super::CardDef| {
+                d.kind() == super::Kind::Minion && d.cost == 4 && d.keywords.has(Keywords::TAUNT)
+            },
+            |d: &super::CardDef| {
+                d.kind() == super::Kind::Minion && d.cost == 2 && d.keywords.has(Keywords::TAUNT)
+            },
+        ] {
+            g.summon_random_where(c.side, pred);
         }
     }),
 ];
