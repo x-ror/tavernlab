@@ -362,6 +362,9 @@ mod tokens {
     pub const STATIC_SHOCK: CardId = token("TIME_218");
     pub const PLAYFUL_PUP: CardId = token("EDR_850pe");
     pub const WEBSPINNER: CardId = token("FP1_011");
+    /// Muster for Battle's own weapon child is a Weapon, so
+    /// `summonable_children()` (minions only) can't find it either.
+    pub const LIGHTS_JUSTICE: CardId = token("CS2_091");
     pub const GORISHI_STINGER: CardId = token("TLC_630t");
     /// Brood Keeper's "2/2 Sword". A weapon, so it never shows up through
     /// `summonable_children()`, which only ever returns minions.
@@ -3498,6 +3501,115 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         g.buff(t, 2, 2);
         g.grant(t, Keywords::RUSH);
     }),
+    battlecry("Argent Protector", T::FriendlyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.grant(t, Keywords::DIVINE_SHIELD);
+        }
+    }),
+    // Battlecry damage is not boosted by Spell Power in Hearthstone -- only
+    // Spells and Hero Powers are -- so this is a raw `deal_damage`, not
+    // `spell_damage`.
+    battlecry("Fogsail Freebooter", T::None, |g, c| {
+        if g.player(c.side).weapon.is_some() {
+            g.deal_damage(Target::Hero(c.side.other()), 2);
+        }
+    }),
+    // Same Spell-Power exemption as Fogsail Freebooter above, plus "all
+    // OTHER characters" excludes the minion itself -- `damage_split` covers
+    // neither, so this repeats its loop by hand.
+    battlecry("Mad Bomber", T::None, |g, c| {
+        let Some(src) = c.source else { return };
+        let me = Target::Minion(c.side, src);
+        for _ in 0..3 {
+            let mut pool: Inline<Target, { MAX_BOARD * 2 + 2 }> = Inline::new();
+            g.collect_area(c.side, Area::Everything, &mut pool);
+            let mut others: Inline<Target, { MAX_BOARD * 2 + 2 }> = Inline::new();
+            for t in pool.iter() {
+                if *t != me {
+                    others.push(*t);
+                }
+            }
+            if others.is_empty() {
+                break;
+            }
+            let pick = g.rngs.effects.index(others.len());
+            g.deal_damage(others[pick], 1);
+            g.sweep_deaths();
+            if g.is_over() {
+                break;
+            }
+        }
+    }),
+    battlecry("Brightwing", T::None, |g, c| {
+        g.add_random_to_hand(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.rarity() == super::Rarity::Legendary
+        });
+    }),
+    deathrattle("Tranquil Treant", |g, _c| {
+        g.gain_crystal(Side::Player0, 1);
+        g.gain_crystal(Side::Player1, 1);
+    }),
+    // Silver Hand Recruit is the spell's own child, read from its `childIds`
+    // rather than a hardcoded token -- the two just-summoned recruits are
+    // the last two board slots, since `summon` always appends.
+    spell("Convalescence", T::None, |g, c| {
+        let before = g.player(c.side).board.len();
+        let made = g.summon_child(c.side, c.card, 2);
+        for i in before..before + made {
+            g.grant(Target::Minion(c.side, i as u8), Keywords::DIVINE_SHIELD);
+        }
+    }),
+    spell("Silvermoon Portal", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.buff(t, 2, 2);
+        }
+        g.summon_random_of_cost(c.side, 2, 1);
+    }),
+    choose(
+        "Ancient Stegodon",
+        &[
+            m(T::None, |g, c| {
+                if let Some(s) = c.source {
+                    g.grant(Target::Minion(c.side, s), Keywords::TAUNT);
+                }
+            }),
+            m(T::None, |g, c| {
+                if let Some(s) = c.source {
+                    g.grant(Target::Minion(c.side, s), Keywords::POISONOUS);
+                }
+            }),
+            m(T::None, |g, c| {
+                if let Some(s) = c.source {
+                    g.buff(Target::Minion(c.side, s), 1, 1);
+                }
+            }),
+        ],
+    ),
+    trigger("Barkshield Sentinel", |g, c| {
+        if matches!(c.event, Event::HeroPowerUsed { side } if side == c.side) {
+            g.buff(c.me(), 0, 2);
+        }
+    }),
+    spell("Holy Bola!", T::None, |g, c| {
+        let before = g.player(c.side).hand.len();
+        g.draw_cards(c.side, 1);
+        let drew = g.player(c.side).hand.len() > before;
+        if drew
+            && g.player(c.side)
+                .hand
+                .last()
+                .is_some_and(|h| h.card.def().cost <= 2)
+        {
+            g.draw_cards(c.side, 1);
+        }
+    }),
+    // Same childIds pattern as Convalescence above for the recruits; the
+    // weapon child is a Weapon, which `summonable_children()` never returns,
+    // so it needs its own token to name.
+    spell("Muster for Battle", T::None, |g, c| {
+        g.summon_child(c.side, c.card, 3);
+        g.equip(c.side, tokens::LIGHTS_JUSTICE);
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -3797,8 +3909,14 @@ mod tests {
                     "{} has both modes and a plain effect",
                     b.name
                 );
+                let card = by_name(b.name).unwrap();
+                // The classic "Choose One -" wording sets CHOOSE_ONE. Newer
+                // templated wording ("Battlecry: Choose to gain X, Y, or Z.",
+                // e.g. Ancient Stegodon) offers the same discrete pick but the
+                // corpus never tags it with the mechanic, only the text.
                 assert!(
-                    by_name(b.name).unwrap().def().keywords.has(Keywords::CHOOSE_ONE),
+                    card.def().keywords.has(Keywords::CHOOSE_ONE)
+                        || card.info().text.contains("Choose to"),
                     "{} has modes but the card is not a Choose One",
                     b.name
                 );

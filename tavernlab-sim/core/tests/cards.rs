@@ -4329,3 +4329,143 @@ fn herbivore_assistant_buffs_only_a_beast() {
     assert_eq!(f.mine(0).max_hp, 3, "1 plus 2");
     assert!(f.mine(0).has(Keywords::RUSH));
 }
+
+#[test]
+fn argent_protector_grants_divine_shield() {
+    let mut f = Fix::new().board(ME, &["Wisp"]);
+    f.play("Argent Protector", my_minion(0));
+    assert!(f.mine(0).has(Keywords::DIVINE_SHIELD));
+}
+
+#[test]
+fn fogsail_freebooter_damages_only_with_a_weapon() {
+    let mut f = Fix::new();
+    f.play("Fogsail Freebooter", None);
+    assert_eq!(f.g.players[1].hero_hp, 30, "no weapon: no damage");
+
+    let mut f = Fix::new();
+    f.g.players[0].weapon = Some(tavernlab_core::state::Weapon::equip(
+        by_name("Light's Justice").unwrap(),
+    ));
+    f.play("Fogsail Freebooter", None);
+    assert_eq!(
+        f.g.players[1].hero_hp, 28,
+        "2 damage with a weapon equipped"
+    );
+}
+
+#[test]
+fn mad_bomber_splits_three_among_all_other_characters() {
+    let mut f = Fix::new()
+        .board(ME, &["Boulderfist Ogre"]) // 6/7
+        .board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.play("Mad Bomber", None);
+    let mad_bomber = f.g.players[0]
+        .board
+        .iter()
+        .find(|m| m.card.name() == "Mad Bomber")
+        .unwrap();
+    assert_eq!(mad_bomber.damage, 0, "Mad Bomber itself is excluded");
+    let total_damage = f.g.players[0].board[0].damage
+        + f.g.players[1].board[0].damage
+        + (30 - f.g.players[0].hero_hp)
+        + (30 - f.g.players[1].hero_hp);
+    assert_eq!(total_damage, 3, "all 3 points landed on other characters");
+}
+
+#[test]
+fn brightwing_adds_a_random_legendary_minion() {
+    let mut f = Fix::new();
+    f.play("Brightwing", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    let got = f.g.players[0].hand[0].card.def();
+    assert_eq!(got.kind(), Kind::Minion);
+    assert_eq!(got.rarity(), tavernlab_core::cards::Rarity::Legendary);
+}
+
+#[test]
+fn tranquil_treant_grants_both_players_a_crystal() {
+    let mut f = Fix::new().board(ME, &["Tranquil Treant"]);
+    f.g.players[0].crystals = 5;
+    f.g.players[1].crystals = 3;
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].crystals, 6);
+    assert_eq!(f.g.players[1].crystals, 4);
+}
+
+#[test]
+fn convalescence_summons_two_shielded_recruits() {
+    let mut f = Fix::new();
+    f.play("Convalescence", None);
+    assert_eq!(f.g.players[0].board.len(), 2);
+    for i in 0..2 {
+        assert_eq!(f.mine(i).card.name(), "Silver Hand Recruit");
+        assert!(f.mine(i).has(Keywords::DIVINE_SHIELD));
+    }
+}
+
+#[test]
+fn silvermoon_portal_buffs_and_summons() {
+    let mut f = Fix::new().board(ME, &["Wisp"]);
+    f.play("Silvermoon Portal", my_minion(0));
+    assert_eq!(f.mine(0).atk, 3, "1 plus 2");
+    assert_eq!(f.mine(0).max_hp, 3, "1 plus 2");
+    assert_eq!(
+        f.g.players[0].board.len(),
+        2,
+        "plus the summoned 2-Cost minion"
+    );
+    assert_eq!(f.mine(1).card.def().cost, 2);
+}
+
+#[test]
+fn ancient_stegodon_choose_modes() {
+    let mut f = Fix::new();
+    f.play_mode("Ancient Stegodon", 0, None);
+    assert!(f.mine(0).has(Keywords::TAUNT), "mode 0 is Taunt");
+
+    let mut f = Fix::new();
+    f.play_mode("Ancient Stegodon", 1, None);
+    assert!(f.mine(0).has(Keywords::POISONOUS), "mode 1 is Poisonous");
+
+    let mut f = Fix::new();
+    f.play_mode("Ancient Stegodon", 2, None);
+    assert_eq!(f.mine(0).atk, 2, "mode 2 is +1/+1: 1 plus 1");
+    assert_eq!(f.mine(0).max_hp, 6, "mode 2 is +1/+1: 5 plus 1");
+}
+
+#[test]
+fn barkshield_sentinel_grows_after_its_controllers_hero_power_only() {
+    let mut f = Fix::new().board(ME, &["Barkshield Sentinel"]);
+    assert!(f.g.apply(Action::HeroPower {
+        target: Some(Target::Hero(FOE)),
+        second: false,
+    }));
+    assert_eq!(f.mine(0).max_hp, 4, "2 base plus 2");
+}
+
+#[test]
+fn holy_bolas_draws_a_second_card_only_if_the_first_was_cheap() {
+    let mut f = Fix::new().deck(&["Boulderfist Ogre"]); // cost 6
+    f.play("Holy Bola!", None);
+    assert_eq!(f.g.players[0].hand.len(), 1, "6-cost draw: no second");
+
+    let mut f = Fix::new().deck(&["Wisp", "Wisp"]); // cost 0 each
+    f.play("Holy Bola!", None);
+    assert_eq!(f.g.players[0].hand.len(), 2, "0-cost draw: drew a second");
+}
+
+#[test]
+fn muster_for_battle_summons_recruits_and_equips_the_weapon() {
+    let mut f = Fix::new();
+    f.play("Muster for Battle", None);
+    assert_eq!(f.g.players[0].board.len(), 3);
+    for i in 0..3 {
+        assert_eq!(f.mine(i).card.name(), "Silver Hand Recruit");
+    }
+    let w = f.g.players[0].weapon.expect("equipped a weapon");
+    assert_eq!(w.card.name(), "Light's Justice");
+    assert_eq!(w.atk, 1);
+    assert_eq!(w.durability, 4);
+}
