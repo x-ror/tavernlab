@@ -3336,6 +3336,98 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     deathrattle("Cinderfin", |g, c| {
         g.summon_token(c.side, tokens::SIZZLING_CINDER, 1);
     }),
+
+    // --------------------------------------------------- backlog batch, Priest
+    spell("Mend", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.restore_full(t);
+        }
+        g.draw_cards(c.side, 1);
+    }),
+    battlecry("Amber Priestess", T::AnyCharacter, |g, c| {
+        let Some(slot) = c.source else { return };
+        let hp = g.player(c.side).board[slot as usize].health();
+        if let Some(t) = c.target {
+            g.heal(t, hp);
+        }
+    }),
+    // "Restore Health to the enemy hero" is unusual for a Priest removal
+    // spell, but the corpus text is explicit and unambiguous, so it is
+    // implemented exactly as printed rather than assumed to be a typo.
+    spell("Purifying Breath", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.spell_damage(c.side, Some(t), 5);
+        let dead = match t {
+            Target::Minion(s, i) => g
+                .player(s)
+                .board
+                .get(i as usize)
+                .is_some_and(|m| m.is_dead()),
+            Target::Hero(_) => false,
+        };
+        if dead {
+            g.heal_hero(c.side.other(), 5);
+        }
+    }),
+    battlecry("Crystalsmith Cultist", T::None, |g, c| {
+        let holding_shadow = g.player(c.side).hand.iter().any(|hc| {
+            hc.card.def().kind() == super::Kind::Spell
+                && hc.card.def().school() == super::School::Shadow
+        });
+        if holding_shadow && let Some(slot) = c.source {
+            g.buff(Target::Minion(c.side, slot), 1, 1);
+        }
+    }),
+    // Lifesteal is the minion's own printed combat keyword (already
+    // auto-applied to its normal attacks); whether it also heals from this
+    // self-damaging Battlecry is a real ambiguity this does not resolve, so
+    // the Battlecry is implemented without an extra heal here.
+    battlecry("Injured Attendant", T::None, |g, c| {
+        if let Some(slot) = c.source {
+            g.deal_damage(Target::Minion(c.side, slot), 4);
+        }
+    }),
+    // Unlike the two Battlecry cases above, "Lifesteal" here is the spell's
+    // own explicit clause, not a minion's combat keyword riding along on an
+    // unrelated effect -- healing on cast is squarely what the card says.
+    spell("Void Shard", T::AnyCharacter, |g, c| {
+        if let Some(t) = c.target
+            && g.spell_damage(c.side, Some(t), 4)
+        {
+            g.heal_hero(c.side, 4);
+        }
+    }),
+    battlecry("Cleansing Lightspawn", T::EnemyMinion, |g, c| {
+        let Some(slot) = c.source else { return };
+        let hp = g.player(c.side).board[slot as usize].health();
+        if let Some(t) = c.target {
+            g.deal_damage(t, hp);
+        }
+    }),
+    spell("Greater Healing Potion", T::FriendlyCharacter, |g, c| {
+        if let Some(t) = c.target {
+            g.heal(t, 12);
+        }
+        g.draw_cards(c.side, 1);
+    }),
+    // IMMUNE_TO_SPELLPOWER: `damage_split` always adds Spell Power with no
+    // way to opt out, so this repeats its loop by hand at a flat 4 instead
+    // of going through it, the same reason Torch uses raw `deal_damage`
+    // rather than `spell_damage`. The Lifesteal heal is unconditionally the
+    // full 4, which can overheal if the split ran out of live targets
+    // early and some of the 4 points went nowhere -- see APPROXIMATE.
+    spell("Devouring Plague", T::None, |g, c| {
+        for _ in 0..4 {
+            let mut pool: Inline<Target, { MAX_BOARD * 2 + 2 }> = Inline::new();
+            g.collect_area(c.side, Area::EnemyMinions, &mut pool);
+            if pool.is_empty() {
+                break;
+            }
+            let pick = g.rngs.effects.index(pool.len());
+            g.deal_damage(pool[pick], 1);
+        }
+        g.heal_hero(c.side, 4);
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -3457,6 +3549,10 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Azalina Soulsever",
         "\"Your starting Health is 40\" and \"your deck is 20 cards, plus 20 copied from your enemy\" are both deck-construction/game-setup effects, outside this engine's scope; only the Battlecry (draw until your hand is full) is implemented",
+    ),
+    (
+        "Devouring Plague",
+        "the Lifesteal heal is always the full 4, which can overheal if the random split ran out of live enemy minions before all 4 points landed -- the one entry here besides Archmage Kalec and Cursed Catacombs that can read stronger than the card, not weaker",
     ),
 ];
 

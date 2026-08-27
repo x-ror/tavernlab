@@ -4094,3 +4094,98 @@ fn cinderfin_deathrattle_summons_sizzling_cinder() {
     assert_eq!(f.g.players[0].board.len(), 1);
     assert_eq!(f.mine(0).card.name(), "Sizzling Cinder");
 }
+
+// ---------------------------------------------------- backlog batch, Priest
+
+#[test]
+fn mend_restores_full_health_and_draws() {
+    let mut f = Fix::new().deck(&["Wisp"]).board(ME, &["Boulderfist Ogre"]); // 6/7
+    f.g.players[0].board[0].damage = 5;
+    f.play("Mend", my_minion(0));
+    assert_eq!(f.mine(0).health(), 7, "fully restored");
+    assert_eq!(f.g.players[0].hand.len(), 1);
+}
+
+#[test]
+fn amber_priestess_heals_by_its_own_health() {
+    let mut f = Fix::new();
+    f.g.players[0].hero_hp = 20;
+    f.play("Amber Priestess", Some(Target::Hero(ME))); // 1/4
+    assert_eq!(f.g.players[0].hero_hp, 24, "healed by 4, its own Health");
+}
+
+#[test]
+fn purifying_breath_heals_the_enemy_hero_only_on_a_kill() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre", "Wisp"]); // 6/7, 1/1
+    f.g.players[1].hero_hp = 20; // room to heal, below the 30 cap
+    f.play("Purifying Breath", foe_minion(0));
+    assert_eq!(f.g.players[1].hero_hp, 20, "survived: no heal");
+
+    f.play("Purifying Breath", foe_minion(1));
+    assert_eq!(f.g.players[1].hero_hp, 25, "died: healed the enemy hero 5");
+}
+
+#[test]
+fn crystalsmith_cultist_buffs_only_while_holding_a_shadow_spell() {
+    let mut f = Fix::new();
+    f.play("Crystalsmith Cultist", None);
+    assert_eq!(f.mine(0).atk, 1, "no Shadow spell in hand: unbuffed");
+
+    let mut f = Fix::new();
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Devouring Plague").unwrap())); // Shadow school
+    f.play("Crystalsmith Cultist", None);
+    assert_eq!(f.mine(0).atk, 2, "1 base plus 1");
+    assert_eq!(f.mine(0).max_hp, 3, "2 base plus 1");
+}
+
+#[test]
+fn injured_attendant_damages_itself() {
+    let mut f = Fix::new();
+    f.play("Injured Attendant", None);
+    assert_eq!(f.mine(0).health(), 4, "8 max minus 4 self-damage");
+}
+
+#[test]
+fn void_shard_damages_and_heals_its_own_hero() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.g.players[0].hero_hp = 20;
+    f.play("Void Shard", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 3, "7 minus 4");
+    assert_eq!(f.g.players[0].hero_hp, 24, "healed for the 4 dealt");
+}
+
+#[test]
+fn cleansing_lightspawn_damages_by_its_own_health() {
+    let mut f = Fix::new()
+        .board(ME, &["Cleansing Lightspawn"]) // 2/3
+        .board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.play("Cleansing Lightspawn", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 4, "7 minus 3, its own Health");
+}
+
+#[test]
+fn greater_healing_potion_heals_and_draws() {
+    let mut f = Fix::new().deck(&["Wisp"]);
+    f.g.players[0].hero_hp = 10;
+    f.play("Greater Healing Potion", Some(Target::Hero(ME)));
+    assert_eq!(
+        f.g.players[0].hero_hp, 22,
+        "10 plus 12, capped well under 30"
+    );
+    assert_eq!(f.g.players[0].hand.len(), 1, "drew a card");
+}
+
+#[test]
+fn devouring_plague_deals_four_total_split_and_heals_its_own_hero() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7, the only target
+    f.g.players[0].hero_hp = 20;
+    f.play("Devouring Plague", None);
+    assert_eq!(
+        f.theirs(0).health(),
+        3,
+        "all 4 points landed on the one target"
+    );
+    assert_eq!(f.g.players[0].hero_hp, 24);
+}
