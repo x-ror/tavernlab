@@ -465,6 +465,12 @@ mod tokens {
     pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
     /// Imp Gang Stooge's "8/8 Demon with Taunt and Lifesteal".
     pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
+    /// Shaman backlog: Ritual of Power's Breezling, Spirits of the Forest's
+    /// two halves, and the Lightning Bolt Rehgar hands out (a real card).
+    pub const BREEZLING: CardId = token("CATA_561t");
+    pub const SPIRIT_WOLF: CardId = token("EX1_tk11");
+    pub const SPIRIT_FALCON: CardId = token("EDR_233t2");
+    pub const LIGHTNING_BOLT: CardId = token("EX1_238");
     /// Druid backlog: Mossbinding's Golem, Ravenous Flock's Hatchling and
     /// Flipper Friends' two halves. The Golem and Hatchling are children of
     /// their own cards; the Orca and Otter are children of Flipper Friends'
@@ -4798,6 +4804,138 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         // The crystals locked for *this* turn, not the Overload queued for the
         // next one -- those are not yet Overloaded Mana Crystals.
         if g.player(side).overload_now > 0 { (1, 0) } else { (0, 0) }
+    }),
+
+    // --------------------------------------------------------- Shaman
+    spell("Blazing Invocation", T::None, |g, c| {
+        if g.discover(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.keywords.has(Keywords::BATTLECRY)
+        }) && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            h.cost_delta -= 1;
+        }
+    }),
+    spell("Flames of the Firelord", T::None, |g, c| {
+        let big = g
+            .player(c.side)
+            .hand
+            .iter()
+            .any(|h| h.card.def().cost >= 8);
+        let n = if big { 8 } else { 4 };
+        if let Some(t) = g.random_minion(c.side.other()) {
+            g.spell_damage(c.side, Some(t), n);
+        }
+    }),
+    spell("Ritual of Power", T::None, |g, c| {
+        g.herald(c.side);
+        g.give_token(c.side, tokens::BREEZLING);
+        g.give_token(c.side, tokens::BREEZLING);
+    }),
+    battlecry("Emberscarred Whelp", T::None, |g, c| {
+        g.discover(c.side, |d| d.cost == 5);
+        g.player_mut(c.side).pending.push(Pending {
+            kind: PendingKind::TempCrystal,
+            turns_left: 1,
+            amount: 1,
+            card: CardId(0),
+        });
+    }),
+    spell("Lava Flow", T::None, |g, c| {
+        // Re-picked each time: the first two points can finish something off.
+        for _ in 0..3 {
+            let Some(t) = g.lowest_health_enemy(c.side) else { break };
+            g.spell_damage(c.side, Some(t), 2);
+            g.sweep_deaths();
+        }
+    }),
+    battlecry("Chillspine Stegodon", T::None, |g, c| {
+        let freeze = g.kindred(c.side, Races::BEAST) || g.kindred(c.side, Races::ELEMENTAL);
+        let foe = c.side.other();
+        let mut pool: Inline<Target, MAX_BOARD> = Inline::new();
+        for (i, m) in g.player(foe).board.iter().enumerate() {
+            if m.active() && m.is_minion() {
+                pool.push(Target::Minion(foe, i as u8));
+            }
+        }
+        let mut picks = [0u32; 2];
+        let n = g.rngs.effects.sample_indices(pool.len(), &mut picks[..2.min(pool.len())]);
+        for &p in picks.iter().take(n) {
+            let t = pool[p as usize];
+            g.deal_damage(t, 2);
+            if freeze {
+                g.freeze(t);
+            }
+        }
+    }),
+    trigger("Mechanized Magma", |g, c| {
+        if let Event::SpellCast { side, card } = c.event
+            && side == c.side
+            && card.def().school() == super::School::Fire
+        {
+            let n = card.def().cost;
+            g.buff(c.me(), n, n);
+        }
+    }),
+    trigger("Rehgar Earthfury", |g, c| {
+        if let Event::AfterAttack { attacker: Target::Minion(s, i), .. } = c.event
+            && s == c.side
+            && (i == c.slot || i + 1 == c.slot || i == c.slot + 1)
+        {
+            g.give_token(c.side, tokens::LIGHTNING_BOLT);
+        }
+    }),
+    battlecry("Slagclaw", T::None, |g, c| {
+        let made = g.summon_token(c.side, tokens::SIZZLING_CINDER, 2);
+        if made == 0 || !(g.kindred(c.side, Races::ELEMENTAL) || g.kindred(c.side, Races::DRAGON)) {
+            return;
+        }
+        // "Trigger your Sizzling Cinders' Deathrattles" -- every one you have,
+        // not only the two that just landed. They stay on the board.
+        let cinders = g
+            .player(c.side)
+            .board
+            .iter()
+            .filter(|m| m.card == tokens::SIZZLING_CINDER)
+            .count();
+        for _ in 0..cinders {
+            g.fire_deathrattle_of(c.side, tokens::SIZZLING_CINDER);
+        }
+    }),
+    choose("Spirits of the Forest", &[
+        m(T::None, |g, c| {
+            g.summon_token(c.side, tokens::SPIRIT_WOLF, 3);
+        }),
+        m(T::None, |g, c| {
+            g.summon_token(c.side, tokens::SPIRIT_FALCON, 2);
+        }),
+    ]),
+    spell("Glaciate", T::None, |g, c| {
+        // Discover, but the pick is summoned rather than drawn.
+        let pool = super::discover_pool(|d| d.kind() == super::Kind::Minion && d.cost == 8);
+        if pool.is_empty() {
+            return;
+        }
+        let mut offered = [0u32; 3];
+        let n = g.rngs.effects.sample_indices(pool.len(), &mut offered);
+        let Some(pick) = offered[..n].iter().map(|&i| pool[i as usize]).next() else {
+            return;
+        };
+        if g.summon(c.side, pick) {
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.freeze(Target::Minion(c.side, slot));
+        }
+    }),
+    spell("Sizzling Swarm", T::AnyCharacter, |g, c| {
+        g.spell_damage(c.side, c.target, 3);
+        g.summon_token(c.side, tokens::SIZZLING_CINDER, 3);
+    }),
+    trigger("Tortotem", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            g.add_random_to_hand(c.side, |d| {
+                d.kind() == super::Kind::Minion
+                    && (d.races.0.count_ones() > 1 || d.races.has(Races::ALL))
+            });
+        }
     }),
 
     // ---------------------------------------------------- Demon Hunter
