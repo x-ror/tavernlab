@@ -372,6 +372,10 @@ mod tokens {
     /// Voidwalker is itself a real, collectible card; Demonic Assault just
     /// needs to hand out copies of it.
     pub const VOIDWALKER: CardId = token("CS2_065");
+    /// Second Flame is a real playable spell (First Flame's own "get a
+    /// copy" effect), just not collectible, so it gets its own `spell` row
+    /// below rather than being a summon token.
+    pub const SECOND_FLAME: CardId = token("SW_108t");
     pub const GORISHI_STINGER: CardId = token("TLC_630t");
     /// Brood Keeper's "2/2 Sword". A weapon, so it never shows up through
     /// `summonable_children()`, which only ever returns minions.
@@ -3798,6 +3802,84 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     battlecry("Doomguard", T::None, |g, c| {
         g.discard_random(c.side);
         g.discard_random(c.side);
+    }),
+    spell("First Flame", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.spell_damage(c.side, Some(t), 2);
+        }
+        g.give_card(c.side, tokens::SECOND_FLAME);
+    }),
+    spell("Second Flame", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.spell_damage(c.side, Some(t), 2);
+        }
+    }),
+    spell("Cold Snap", T::EnemyCharacter, |g, c| {
+        if let Some(t) = c.target {
+            g.freeze(t);
+        }
+        g.add_random_to_hand(c.side, |d| {
+            d.kind() == super::Kind::Spell && d.school() == super::School::Frost
+        });
+    }),
+    // No TargetSpec for "a friendly Wisp specifically" exists, so this
+    // offers the broadest matching spec and no-ops on anything else, the
+    // same conservative pattern as Dark Transformation and Herbivore
+    // Assistant.
+    spell("Divination", T::FriendlyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        if let Target::Minion(s, i) = t
+            && g.player(s).board[i as usize].card.name() == "Wisp"
+        {
+            g.destroy(t);
+            g.draw_cards(c.side, 3);
+        }
+    }),
+    // IMMUNE_TO_SPELLPOWER, same reason as Devouring Plague above: raw
+    // `deal_damage`, not `spell_damage`.
+    secret("Explosive Runes", |g, owner, ev| {
+        if let Event::MinionSummoned { side, slot, .. } = ev
+            && side == owner.other()
+        {
+            let t = Target::Minion(side, slot);
+            let health = g
+                .player(side)
+                .board
+                .get(slot as usize)
+                .map_or(0, |m| m.health());
+            g.deal_damage(t, 6);
+            if 6 > health {
+                g.deal_damage(Target::Hero(side), 6 - health);
+            }
+            return true;
+        }
+        false
+    }),
+    battlecry("Winterspring Whelp", T::None, |g, c| {
+        g.discover(c.side, |d| d.cost == 1 && d.kind() == super::Kind::Spell);
+    }),
+    battlecry("Babbling Bookcase", T::None, |g, c| {
+        for _ in 0..2 {
+            g.add_random_to_hand(c.side, |d| {
+                d.kind() == super::Kind::Spell && d.class() == super::Class::Mage
+            });
+        }
+    }),
+    // `discover`'s predicate is a plain `fn` pointer and cannot capture the
+    // caster's live mana total, so this repeats its body by hand with
+    // `discover_pool` (which takes `impl Fn`) instead -- the same workaround
+    // used earlier this session for Al'Akir. Every match has the same cost
+    // by construction of the predicate, so there is no "prefer the highest
+    // cost" tiebreak to replicate from `discover` -- a flat random pick
+    // among them is equivalent.
+    battlecry("Scrappy Scavenger", T::None, |g, c| {
+        let mana = g.player(c.side).mana;
+        let pool = crate::cards::discover_pool(move |d| d.cost == mana);
+        if pool.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(pool.len());
+        g.give_card(c.side, pool[pick]);
     }),
 ];
 

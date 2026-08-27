@@ -4720,3 +4720,102 @@ fn doomguard_discards_two_random_cards() {
     f.play("Doomguard", None);
     assert_eq!(f.g.players[0].hand.len(), 0, "both Wisps discarded");
 }
+
+#[test]
+fn first_flame_damages_and_gives_a_second_flame() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.play("First Flame", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 5, "7 minus 2");
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Second Flame");
+}
+
+#[test]
+fn second_flame_deals_two_damage() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.play("Second Flame", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 5, "7 minus 2");
+}
+
+#[test]
+fn cold_snap_freezes_and_gets_a_random_frost_spell() {
+    let mut f = Fix::new().board(FOE, &["Wisp"]);
+    f.play("Cold Snap", foe_minion(0));
+    assert!(f.theirs(0).flags.has(Flags::FROZEN));
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(
+        f.g.players[0].hand[0].card.def().school(),
+        tavernlab_core::cards::School::Frost
+    );
+}
+
+#[test]
+fn divination_destroys_a_wisp_to_draw_three() {
+    let mut f = Fix::new()
+        .board(ME, &["Chillwind Yeti"])
+        .deck(&["Wisp", "Wisp", "Wisp"]);
+    f.play("Divination", my_minion(0));
+    assert_eq!(f.g.players[0].board.len(), 1, "not a Wisp: no destroy");
+    assert_eq!(f.g.players[0].hand.len(), 0, "no draw either");
+
+    let mut f = Fix::new()
+        .board(ME, &["Wisp"])
+        .deck(&["Wisp", "Wisp", "Wisp"]);
+    f.play("Divination", my_minion(0));
+    assert_eq!(f.g.players[0].board.len(), 0, "the Wisp is destroyed");
+    assert_eq!(f.g.players[0].hand.len(), 3, "drew 3");
+}
+
+#[test]
+fn explosive_runes_damages_the_minion_and_spills_excess_to_its_owner() {
+    let mut f = Fix::new();
+    arm(&mut f, FOE, "Explosive Runes");
+    f.play("Boulderfist Ogre", None); // 6/7, survives with no excess
+    assert_eq!(f.mine(0).health(), 1, "7 minus 6");
+    assert_eq!(
+        f.g.players[0].hero_hp, 30,
+        "no excess: 6 damage fit inside 7 health"
+    );
+
+    let mut f = Fix::new();
+    arm(&mut f, FOE, "Explosive Runes");
+    f.play("Wisp", None); // 1/1
+    assert_eq!(
+        f.g.players[0].board.len(),
+        0,
+        "6 damage kills a 1-health minion"
+    );
+    assert_eq!(
+        f.g.players[0].hero_hp, 25,
+        "30 minus the 5 excess (6 minus 1 health)"
+    );
+}
+
+#[test]
+fn winterspring_whelp_discovers_a_one_cost_spell() {
+    let mut f = Fix::new();
+    f.play("Winterspring Whelp", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.def().cost, 1);
+    assert_eq!(f.g.players[0].hand[0].card.def().kind(), Kind::Spell);
+}
+
+#[test]
+fn babbling_bookcase_adds_two_random_mage_spells() {
+    let mut f = Fix::new();
+    f.play("Babbling Bookcase", None);
+    assert_eq!(f.g.players[0].hand.len(), 2);
+    for h in &f.g.players[0].hand {
+        assert_eq!(h.card.def().kind(), Kind::Spell);
+        assert_eq!(h.card.def().class(), Class::Mage);
+    }
+}
+
+#[test]
+fn scrappy_scavenger_discovers_a_card_costing_its_remaining_mana() {
+    let mut f = Fix::new();
+    f.g.players[0].mana = 4; // minus this card's own cost of 1 leaves 3
+    f.play("Scrappy Scavenger", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.def().cost, 3);
+}
