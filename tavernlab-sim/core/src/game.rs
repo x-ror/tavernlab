@@ -374,7 +374,13 @@ impl Game {
             match entry.kind {
                 PendingKind::TempCrystal => self.gain_temp_mana(side, entry.amount),
                 PendingKind::SummonToken => {
-                    self.summon(side, entry.card);
+                    // `amount` is how many, with zero meaning one: the field
+                    // was unused by the first card that queued a summon.
+                    for _ in 0..entry.amount.max(1) {
+                        if !self.summon(side, entry.card) {
+                            break;
+                        }
+                    }
                 }
                 PendingKind::HeroDamage => {
                     self.damage_hero(side, entry.amount);

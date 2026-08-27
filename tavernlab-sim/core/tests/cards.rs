@@ -6831,3 +6831,179 @@ fn shellnado_spends_armor_up_to_five() {
     assert_eq!(f.g.players[0].armor, 4, "at most five");
     assert_eq!(f.theirs(0).damage, 5);
 }
+
+// --------------------------------------------------------------- Druid
+
+#[test]
+fn charred_chameleon_waits_for_the_hero_power() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.play("Charred Chameleon", my_minion(0));
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (4, 5), "power unused");
+
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.g.players[0].hero_power_uses = 1;
+    f.play("Charred Chameleon", my_minion(0));
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (5, 7));
+    assert!(f.mine(0).has(Keywords::RUSH));
+}
+
+#[test]
+fn crystalspine_cub_grows_when_the_last_crystal_goes() {
+    let mut f = Fix::new().board(ME, &["Crystalspine Cub"]);
+    f.g.players[0].mana = 5;
+    f.play("Wisp", None);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (1, 1), "mana left over");
+    f.g.players[0].mana = 0;
+    f.play("Wisp", None);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (2, 2));
+}
+
+#[test]
+fn life_cycle_replaces_the_minion_on_its_own_side() {
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti"]); // 4-cost
+    f.play("Life Cycle", foe_minion(0));
+    assert_eq!(f.g.players[0].board.len(), 0, "\"to replace it\"");
+    assert_eq!(f.their_board(), 1);
+    assert_eq!(f.theirs(0).card.def().cost, 4);
+    assert_ne!(f.theirs(0).card.name(), "Chillwind Yeti");
+}
+
+#[test]
+fn symbiosis_looks_outside_your_own_class() {
+    let mut f = Fix::new(); // a Mage fixture
+    f.play("Symbiosis", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    let got = f.g.players[0].hand[0].card;
+    assert!(got.def().keywords.has(Keywords::CHOOSE_ONE), "{}", got.name());
+    assert_ne!(got.def().class(), Class::Mage);
+    assert_ne!(got.def().class(), Class::Neutral);
+}
+
+#[test]
+fn mossbinding_pours_the_rest_of_your_mana_into_two_golems() {
+    let mut f = Fix::new();
+    f.g.players[0].mana = 5; // 2 goes on the spell, 3 left
+    f.play("Mossbinding", None);
+    assert_eq!(f.g.players[0].mana, 0);
+    assert_eq!(f.g.players[0].board.len(), 2);
+    for i in 0..2 {
+        assert_eq!((f.mine(i).atk, f.mine(i).max_hp), (1 + 3, 2 + 3));
+    }
+}
+
+#[test]
+fn ravenous_flock_arrives_next_turn() {
+    let mut f = Fix::new();
+    f.play("Ravenous Flock", None);
+    assert_eq!(f.g.players[0].board.len(), 0, "not yet");
+    f.g.end_turn();
+    f.g.begin_turn();
+    assert_eq!(f.g.players[0].board.len(), 3);
+    for i in 0..3 {
+        assert_eq!((f.mine(i).atk, f.mine(i).max_hp), (2, 1));
+    }
+}
+
+#[test]
+fn tranquil_clearing_taunts_a_minion_and_puts_it_to_sleep() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.play("Tranquil Clearing", None);
+    let loc = f.g.players[0].board.len() - 1;
+    assert!(f.g.apply(Action::UseLocation {
+        slot: loc as u8,
+        target: my_minion(0),
+    }));
+    assert_eq!(f.mine(0).max_hp, 7);
+    assert!(f.mine(0).has(Keywords::TAUNT));
+    assert!(f.mine(0).flags.has(Flags::DORMANT), "asleep");
+}
+
+#[test]
+fn commissary_crook_spends_the_rest_of_the_turn() {
+    let mut f = Fix::new();
+    f.g.players[0].mana = 8; // 3 on the Crook, 5 left
+    f.play("Commissary Crook", None);
+    assert_eq!(f.g.players[0].mana, 0);
+    assert_eq!(f.g.players[0].board.len(), 2);
+    assert_eq!(f.mine(1).card.def().cost, 5);
+}
+
+#[test]
+fn overheat_pays_twice_when_it_finds_a_nature_spell() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.play("Overheat", None);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (5, 6), "nothing to discard");
+
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Healing Rain").unwrap())); // a Nature spell
+    f.play("Overheat", None);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (6, 7));
+    assert_eq!(f.g.players[0].hand.len(), 0, "the Nature spell went");
+}
+
+#[test]
+fn spiteful_chef_reads_your_crystals() {
+    let mut f = Fix::new();
+    f.g.players[0].crystals = 5;
+    f.play("Spiteful Chef", None);
+    assert_eq!(f.mine(1).card.def().cost, 2);
+    assert!(f.mine(1).has(Keywords::TAUNT));
+
+    let mut f = Fix::new();
+    f.g.players[0].crystals = 10;
+    f.play("Spiteful Chef", None);
+    assert_eq!(f.mine(1).card.def().cost, 6);
+    assert!(f.mine(1).has(Keywords::TAUNT));
+}
+
+#[test]
+fn oaken_summons_pulls_a_body_out_of_the_deck() {
+    let mut f = Fix::new().deck(&["Boulderfist Ogre", "Chillwind Yeti"]);
+    f.play("Oaken Summons", None);
+    assert_eq!(f.g.players[0].armor, 6);
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!(f.mine(0).card.name(), "Chillwind Yeti", "the 6-cost is too big");
+    assert_eq!(f.g.players[0].deck.len(), 1, "and it left the deck");
+}
+
+#[test]
+fn boomkins_two_modes_do_different_things() {
+    let mut f = Fix::new();
+    f.g.players[0].hero_hp = 20;
+    f.play_mode("Boomkin", 0, None);
+    assert_eq!(f.g.players[0].hero_hp, 28);
+
+    let mut f = Fix::new();
+    f.play_mode("Boomkin", 1, Some(Target::Hero(FOE)));
+    assert_eq!(f.g.players[1].hero_hp, 26);
+}
+
+#[test]
+fn endangered_dodo_doubles_up_when_you_are_low() {
+    let mut f = Fix::new();
+    f.play("Endangered Dodo", None);
+    assert_eq!(f.g.players[0].board.len(), 1, "at full health, just a body");
+
+    let mut f = Fix::new();
+    f.g.players[0].hero_hp = 10;
+    f.play("Endangered Dodo", None);
+    assert_eq!(f.g.players[0].board.len(), 2);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (10, 10));
+    assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (5, 5), "the copy is printed");
+}
+
+#[test]
+fn flipper_friends_offers_one_big_body_or_six_small_ones() {
+    let mut f = Fix::new();
+    f.play_mode("Flipper Friends", 0, None);
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (6, 6));
+    assert!(f.mine(0).has(Keywords::TAUNT));
+
+    let mut f = Fix::new();
+    f.play_mode("Flipper Friends", 1, None);
+    assert_eq!(f.g.players[0].board.len(), 6, "the board holds seven");
+    assert!(f.g.players[0].board.iter().all(|m| m.has(Keywords::RUSH)));
+}

@@ -465,6 +465,13 @@ mod tokens {
     pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
     /// Imp Gang Stooge's "8/8 Demon with Taunt and Lifesteal".
     pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
+    /// Druid backlog: Mossbinding's Golem, Ravenous Flock's Hatchling and
+    /// Flipper Friends' two halves. The Golem and Hatchling are children of
+    /// their own cards; the Orca and Otter are children of Flipper Friends'
+    /// Choose One halves rather than of the card, so they are named here.
+    pub const ORCA: CardId = token("TSC_650t");
+    pub const OTTER: CardId = token("TSC_650t4");
+    pub const SKYSCREAMER_HATCHLING: CardId = token("TLC_237t");
     /// Tirion's Ashbringer, Veteran Warmedic's Battlefield Medic and
     /// Halazzi's Lynx. None of the three is reachable through `childIds` on
     /// the printing this table resolves.
@@ -4793,6 +4800,127 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         if g.player(side).overload_now > 0 { (1, 0) } else { (0, 0) }
     }),
 
+    // ---------------------------------------------------------- Druid
+    battlecry("Charred Chameleon", T::FriendlyMinion, |g, c| {
+        if g.player(c.side).hero_power_uses > 0
+            && let Some(t) = c.target
+        {
+            g.buff(t, 1, 2);
+            g.grant(t, Keywords::RUSH);
+        }
+    }),
+    trigger("Crystalspine Cub", |g, c| {
+        // "spend your last Mana Crystal" — something you paid for left you at
+        // zero. Both a card and a Hero Power can do it.
+        if matches!(c.event, Event::CardPlayed { side, .. } | Event::HeroPowerUsed { side }
+            if side == c.side)
+            && g.player(c.side).mana == 0
+        {
+            g.buff(c.me(), 1, 1);
+        }
+    }),
+    spell("Life Cycle", T::AnyMinion, |g, c| {
+        let Some(Target::Minion(s, i)) = c.target else { return };
+        let Some(cost) = g.player(s).board.get(i as usize).map(|m| m.card.def().cost) else {
+            return;
+        };
+        g.destroy(Target::Minion(s, i));
+        g.sweep_deaths();
+        // "to replace it" — on the board it was destroyed from, not yours.
+        g.summon_random_of_cost(s, cost, 1);
+    }),
+    spell("Symbiosis", T::None, |g, c| {
+        let mine = g.player(c.side).class;
+        g.discover_where(c.side, |d| {
+            d.keywords.has(Keywords::CHOOSE_ONE)
+                && d.class() != super::Class::Neutral
+                && d.class() != mine
+        });
+    }),
+    spell("Mossbinding", T::None, |g, c| {
+        let made = g.summon_child(c.side, c.card, 2);
+        let spent = g.player(c.side).mana.max(0);
+        g.player_mut(c.side).mana = 0;
+        if spent == 0 || made == 0 {
+            return;
+        }
+        let last = g.player(c.side).board.len();
+        for slot in (last - made)..last {
+            g.buff(Target::Minion(c.side, slot as u8), spent, spent);
+        }
+    }),
+    spell("Ravenous Flock", T::None, |g, c| {
+        g.player_mut(c.side).pending.push(Pending {
+            kind: PendingKind::SummonToken,
+            turns_left: 1,
+            amount: 3,
+            card: tokens::SKYSCREAMER_HATCHLING,
+        });
+    }),
+    // A Location's activated ability lives in the `spell` hook; see
+    // `Game::use_location`.
+    spell("Tranquil Clearing", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.buff(t, 0, 2);
+        g.grant(t, Keywords::TAUNT);
+        // "Falls asleep until the end of your next turn": it sits out that
+        // whole turn and is back for the one after.
+        g.make_dormant(t, 2);
+    }),
+    battlecry("Commissary Crook", T::None, |g, c| {
+        let spent = g.player(c.side).mana.max(0);
+        g.player_mut(c.side).mana = 0;
+        g.summon_random_of_cost(c.side, spent, 1);
+    }),
+    spell("Overheat", T::None, |g, c| {
+        g.buff_area(c.side, Area::FriendlyMinions, 1, 1);
+        if g.discard_random_where(c.side, |d| {
+            d.kind() == super::Kind::Spell && d.school() == super::School::Nature
+        }) {
+            g.buff_area(c.side, Area::FriendlyMinions, 1, 1);
+        }
+    }),
+    battlecry("Spiteful Chef", T::None, |g, c| {
+        // "10 or more Mana" can only mean crystals: the card costs 3, so the
+        // mana left after paying for it never reaches ten.
+        if g.player(c.side).crystals >= 10 {
+            g.summon_random_where(c.side, |d| {
+                d.kind() == super::Kind::Minion && d.cost == 6 && d.keywords.has(Keywords::TAUNT)
+            });
+        } else {
+            g.summon_random_where(c.side, |d| {
+                d.kind() == super::Kind::Minion && d.cost == 2 && d.keywords.has(Keywords::TAUNT)
+            });
+        }
+    }),
+    spell("Oaken Summons", T::None, |g, c| {
+        g.gain_armor(c.side, 6);
+        g.summon_from_deck(c.side, |d| d.cost <= 4);
+    }),
+    choose("Boomkin", &[
+        m(T::None, |g, c| g.heal_hero(c.side, 8)),
+        m(T::AnyCharacter, |g, c| {
+            if let Some(t) = c.target {
+                g.deal_damage(t, 4);
+            }
+        }),
+    ]),
+    battlecry("Endangered Dodo", T::None, |g, c| {
+        if g.player(c.side).hero_hp <= 10
+            && let Some(src) = c.source
+        {
+            g.buff(Target::Minion(c.side, src), 5, 5);
+            g.summon_copy(c.side, c.card);
+        }
+    }),
+    choose("Flipper Friends", &[
+        m(T::None, |g, c| {
+            g.summon_token(c.side, tokens::ORCA, 1);
+        }),
+        m(T::None, |g, c| {
+            g.summon_token(c.side, tokens::OTTER, 6);
+        }),
+    ]),
     // ------------------------------------------ class backlog, third pass
 
     // End of turn.
