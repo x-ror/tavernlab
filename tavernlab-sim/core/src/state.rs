@@ -530,6 +530,11 @@ pub struct Player {
     /// to fatigue, and not visible to anything that reads the deck (a
     /// Discover, an opponent's "look at their deck" effect).
     pub void: Inline<CardId, MAX_DECK>,
+    /// Damage dealt to the opposing hero at the end of each of this player's
+    /// turns, for the rest of the game (Alexandros Mograine). A field rather
+    /// than a queued `Pending`, because `Pending` fires at the *start* of a
+    /// turn and this is printed for the end of one.
+    pub end_turn_burn: i16,
     /// Every friendly minion that has died this game, oldest first — the pool
     /// "Resurrect a minion that died this game" draws from, and the record
     /// "for each friendly minion that died this game" counts.
@@ -596,6 +601,7 @@ impl Player {
             godfrey_active: false,
             overdrawn: Inline::new(),
             graveyard: Inline::new(),
+            end_turn_burn: 0,
             deaths: 0,
             dragon_discounted_turn: false,
             void: Inline::new(),

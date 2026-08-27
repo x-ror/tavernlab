@@ -391,6 +391,7 @@ impl Game {
                 PendingKind::HeroAttack => {
                     self.hero_attack_bonus(side, entry.amount);
                 }
+
                 PendingKind::None => {}
             }
         }
@@ -405,6 +406,10 @@ impl Game {
         // Fired before anything is cleaned up, so an end-of-turn effect sees
         // the board as the player left it.
         self.fire(Event::TurnEnd { side });
+        let burn = self.player(side).end_turn_burn;
+        if burn > 0 {
+            self.damage_hero(side.other(), burn);
+        }
         let p = self.player_mut(side);
         // Frozen characters thaw at the end of their controller's turn, unless
         // they were frozen during it.

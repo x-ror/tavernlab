@@ -8534,3 +8534,251 @@ fn bronze_redeemer_prints_itself_a_dragon() {
     assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (5, 5));
     assert!(f.mine(1).races().any(Races::DRAGON));
 }
+
+// -------------------------------------------------------- Death Knight
+
+/// A Death Knight fixture with a pile of Corpses to spend.
+fn dk(corpses: i16) -> Fix {
+    let mut f = Fix::new();
+    f.g.players[0].class = Class::DeathKnight;
+    f.g.players[0].corpses = corpses;
+    f
+}
+
+#[test]
+fn battlefield_necromancer_raises_one_a_turn() {
+    let mut f = dk(1).board(ME, &["Battlefield Necromancer"]);
+    f.g.end_turn();
+    assert_eq!(f.g.players[0].board.len(), 2);
+    assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (1, 3));
+    assert!(f.mine(1).has(Keywords::TAUNT));
+    assert_eq!(f.g.players[0].corpses, 0);
+    f.g.end_turn();
+    assert_eq!(f.g.players[0].board.len(), 2, "no Corpse, no Footman");
+}
+
+#[test]
+fn deaths_advance_freezes_and_digs() {
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti"]);
+    f.play("Death's Advance", foe_minion(0));
+    assert!(f.theirs(0).flags.has(Flags::FROZEN));
+    assert_eq!(f.g.players[0].hand[0].card.def().kind(), Kind::Spell);
+}
+
+#[test]
+fn corpse_farm_buys_a_body_at_the_pile_it_can_afford() {
+    let mut f = dk(5);
+    f.play("Corpse Farm", None);
+    assert_eq!(f.g.players[0].corpses, 0);
+    assert_eq!(f.mine(0).card.def().cost, 5);
+}
+
+#[test]
+fn glacial_advance_discounts_the_next_spell() {
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Fireball").unwrap()));
+    f.play("Glacial Advance", Some(Target::Hero(FOE)));
+    assert_eq!(f.g.players[1].hero_hp, 26);
+    assert_eq!(f.g.card_cost(ME, 0), 2, "Fireball at four, less two");
+}
+
+#[test]
+fn corpse_flower_answers_their_summons() {
+    let mut f = dk(2).board(ME, &["Corpse Flower"]);
+    f.g.current = FOE;
+    f.g.summon(FOE, by_name("Chillwind Yeti").unwrap());
+    assert_eq!(f.theirs(0).damage, 3);
+    assert_eq!(f.g.players[0].corpses, 0);
+}
+
+#[test]
+fn consumption_draws_for_each_body_it_takes() {
+    let mut f = Fix::new()
+        .board(FOE, &["Wisp", "Wisp"])
+        .deck(&["Fireball", "Fireball"]);
+    f.play("Consumption", None);
+    assert_eq!(f.their_board(), 0);
+    assert_eq!(f.g.players[0].hand.len(), 2);
+}
+
+#[test]
+fn dread_raptor_makes_it_free_on_kindred() {
+    let mut f = Fix::new().deck(&["Cairne Bloodhoof", "Fae Trickster"]);
+    f.play("Dread Raptor", None);
+    let h = &f.g.players[0].hand[0];
+    assert_eq!(h.card.name(), "Fae Trickster", "the 3-cost Deathrattle one");
+    assert_eq!(h.cost_delta, 0);
+
+    let mut f = Fix::new().deck(&["Fae Trickster"]);
+    f.g.players[0].played_races_last = Races::UNDEAD;
+    f.play("Dread Raptor", None);
+    assert_eq!(f.g.card_cost(ME, 0), 0);
+}
+
+#[test]
+fn grave_strength_pays_triple_for_five_corpses() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.play("Grave Strength", None);
+    assert_eq!(f.mine(0).atk, 5);
+
+    let mut f = dk(5).board(ME, &["Chillwind Yeti"]);
+    f.play("Grave Strength", None);
+    assert_eq!(f.mine(0).atk, 7);
+    assert_eq!(f.g.players[0].corpses, 0);
+}
+
+#[test]
+fn lady_deathwhisper_copies_the_frost_you_hold() {
+    let mut f = Fix::new().board(ME, &["Lady Deathwhisper"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("Death's Advance").unwrap())); // Frost
+    f.g.players[0].hand.push(HandCard::new(by_name("Fireball").unwrap())); // Fire
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    let frosts = f.g.players[0]
+        .hand
+        .iter()
+        .filter(|h| h.card.name() == "Death's Advance")
+        .count();
+    assert_eq!(frosts, 2);
+    assert_eq!(f.g.players[0].hand.len(), 3);
+}
+
+#[test]
+fn malignant_horror_clones_itself_for_four_corpses() {
+    let mut f = dk(4).board(ME, &["Malignant Horror"]);
+    f.g.end_turn();
+    assert_eq!(f.g.players[0].board.len(), 2);
+    assert_eq!(f.g.players[0].corpses, 0);
+}
+
+#[test]
+fn might_of_menethil_freezes_one_per_corpse() {
+    let mut f = dk(2).board(FOE, &["Wisp", "Wisp", "Wisp"]);
+    f.play("Might of Menethil", None);
+    let frozen = f.g.players[1]
+        .board
+        .iter()
+        .filter(|m| m.flags.has(Flags::FROZEN))
+        .count();
+    assert_eq!(frozen, 2);
+    assert_eq!(f.g.players[0].corpses, 0);
+}
+
+#[test]
+fn army_of_the_dead_raises_one_ghoul_per_corpse() {
+    let mut f = dk(3);
+    f.play("Army of the Dead", None);
+    assert_eq!(f.g.players[0].board.len(), 3);
+    for i in 0..3 {
+        assert_eq!((f.mine(i).atk, f.mine(i).max_hp), (2, 2));
+        assert!(f.mine(i).has(Keywords::RUSH));
+    }
+}
+
+#[test]
+fn corpse_bride_scales_the_groom_with_the_pile() {
+    let mut f = dk(7);
+    f.play("Corpse Bride", None);
+    assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (7, 7));
+    assert!(f.mine(1).has(Keywords::TAUNT));
+    assert_eq!(f.g.players[0].corpses, 0);
+}
+
+#[test]
+fn hollow_direhorn_buys_reborn_with_a_death() {
+    // The Wisp's own death banks a Corpse first, so two in hand is enough.
+    let mut f = dk(2).board(ME, &["Hollow Direhorn", "Wisp"]);
+    f.g.players[0].board[1].damage = f.g.players[0].board[1].max_hp;
+    f.g.sweep_deaths();
+    assert!(f.mine(0).has(Keywords::REBORN));
+    assert_eq!(f.g.players[0].corpses, 0);
+}
+
+#[test]
+fn bonechill_stegodon_picks_three_distinct_enemies() {
+    let mut f = Fix::new()
+        .board(ME, &["Bonechill Stegodon"])
+        .board(FOE, &["Chillwind Yeti", "Chillwind Yeti"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.their_board(), 0, "both 4/5s went");
+    assert_eq!(f.g.players[1].hero_hp, 24, "and the hero took the third six");
+}
+
+#[test]
+fn experimental_animation_heralds_and_sweeps() {
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti", "Wisp"]);
+    f.g.players[0].class = Class::DeathKnight;
+    f.play("Experimental Animation", None);
+    assert_eq!(f.their_board(), 1, "the Wisp went, the 4/5 did not");
+    assert_eq!(f.theirs(0).damage, 4);
+    assert_eq!(f.g.players[0].herald, 1);
+}
+
+#[test]
+fn marrow_manipulator_shoots_twice_per_corpse_pair() {
+    let mut f = dk(3);
+    f.play("Marrow Manipulator", None);
+    assert_eq!(f.g.players[1].hero_hp, 24, "three shots of two");
+    assert_eq!(f.g.players[0].corpses, 0);
+}
+
+#[test]
+fn alexandros_mograine_burns_for_the_rest_of_the_game() {
+    let mut f = Fix::new();
+    f.play("Alexandros Mograine", None);
+    f.g.end_turn();
+    assert_eq!(f.g.players[1].hero_hp, 27);
+    f.g.end_turn();
+    assert_eq!(f.g.players[1].hero_hp, 24, "and again, body or no body");
+}
+
+#[test]
+fn story_of_umbra_summons_and_pops_it() {
+    let mut f = Fix::new();
+    f.play("Story of Umbra", None);
+    assert!(!f.g.players[0].board.is_empty());
+    let first = f.mine(0).card;
+    assert!(first.def().cost >= 5 || f.g.players[0].board.len() > 1);
+}
+
+#[test]
+fn boneguard_commander_raises_up_to_six() {
+    let mut f = dk(10);
+    f.play("Boneguard Commander", None);
+    assert_eq!(f.g.players[0].board.len(), 7, "the Commander and six Footmen");
+    assert_eq!(f.g.players[0].corpses, 4);
+}
+
+#[test]
+fn chow_down_rushes_the_drakes_for_eight_corpses() {
+    let mut f = Fix::new();
+    f.play("Chow Down", None);
+    assert_eq!(f.g.players[0].board.len(), 5);
+    assert!(!f.mine(0).has(Keywords::RUSH), "no Corpses, no Rush");
+
+    let mut f = dk(8);
+    f.play("Chow Down", None);
+    assert!(f.g.players[0].board.iter().all(|m| m.has(Keywords::RUSH)));
+}
+
+#[test]
+fn the_scourge_fills_the_board_with_undead() {
+    let mut f = Fix::new();
+    f.play("The Scourge", None);
+    assert_eq!(f.g.players[0].board.len(), 7);
+    assert!(
+        f.g.players[0]
+            .board
+            .iter()
+            .all(|m| m.races().any(Races::UNDEAD))
+    );
+}
+
+#[test]
+fn volcoross_takes_the_biggest_pile_it_can_pay() {
+    let mut f = dk(25);
+    f.play("Volcoross", None);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (25, 25), "5/5 plus twenty");
+    assert_eq!(f.g.players[0].corpses, 5);
+}

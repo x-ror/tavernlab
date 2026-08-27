@@ -474,6 +474,11 @@ mod tokens {
     pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
     /// Imp Gang Stooge's "8/8 Demon with Taunt and Lifesteal".
     pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
+    /// Death Knight backlog: the Corpse-raised bodies.
+    pub const RISEN_FOOTMAN: CardId = token("RLK_061t");
+    pub const RISEN_GHOUL: CardId = token("RLK_008t");
+    pub const RISEN_GROOM: CardId = token("RLK_506t");
+    pub const HUNGRY_DRAKE: CardId = token("CATA_465t");
     /// Bronze Redeemer's Dragon, resized to match its parent.
     pub const BRONZE_BRUTE: CardId = token("CATA_478t");
     /// Web of Deception's 4/4.
@@ -4829,6 +4834,249 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         // The crystals locked for *this* turn, not the Overload queued for the
         // next one -- those are not yet Overloaded Mana Crystals.
         if g.player(side).overload_now > 0 { (1, 0) } else { (0, 0) }
+    }),
+
+    // ---------------------------------------------------- Death Knight
+    trigger("Battlefield Necromancer", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side)
+            && g.spend_corpses(c.side, 1)
+        {
+            g.summon_token(c.side, tokens::RISEN_FOOTMAN, 1);
+        }
+    }),
+    spell("Death's Advance", T::AnyCharacter, |g, c| {
+        if let Some(t) = c.target {
+            g.freeze(t);
+        }
+        g.discover(c.side, |d| d.kind() == super::Kind::Spell);
+    }),
+    spell("Corpse Farm", T::None, |g, c| {
+        let spend = g.player(c.side).corpses.min(8);
+        if spend > 0 && g.spend_corpses(c.side, spend) {
+            g.summon_random_of_cost(c.side, spend, 1);
+        }
+    }),
+    spell("Glacial Advance", T::AnyCharacter, |g, c| {
+        g.spell_damage(c.side, c.target, 4);
+        g.player_mut(c.side).next_spell_discount += 2;
+    }),
+    trigger("Corpse Flower", |g, c| {
+        if let Event::MinionSummoned { side, slot, .. } = c.event
+            && side == c.side.other()
+            && g.spend_corpses(c.side, 2)
+        {
+            g.deal_damage(Target::Minion(side, slot), 3);
+        }
+    }),
+    spell("Consumption", T::None, |g, c| {
+        let foe = c.side.other();
+        let mut pool: Inline<Target, MAX_BOARD> = Inline::new();
+        for (i, m) in g.player(foe).board.iter().enumerate() {
+            if m.active() && m.is_minion() {
+                pool.push(Target::Minion(foe, i as u8));
+            }
+        }
+        let mut picks = [0u32; 2];
+        let n = g.rngs.effects.sample_indices(pool.len(), &mut picks[..2.min(pool.len())]);
+        let mut killed = 0;
+        for &p in picks.iter().take(n) {
+            let t = pool[p as usize];
+            g.spell_damage(c.side, Some(t), 3);
+            if matches!(t, Target::Minion(s, i)
+                if g.player(s).board.get(i as usize).is_some_and(|m| m.is_dead()))
+            {
+                killed += 1;
+            }
+        }
+        g.sweep_deaths();
+        g.draw_cards(c.side, killed);
+    }),
+    battlecry("Dread Raptor", T::None, |g, c| {
+        let free = g.kindred(c.side, Races::UNDEAD) || g.kindred(c.side, Races::BEAST);
+        if g.draw_matching(c.side, |d| {
+            d.kind() == super::Kind::Minion
+                && d.cost <= 3
+                && d.keywords.has(Keywords::DEATHRATTLE)
+        }) && free
+            && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            h.cost_delta = -h.card.def().cost;
+        }
+    }),
+    spell("Grave Strength", T::None, |g, c| {
+        let n = if g.spend_corpses(c.side, 5) { 3 } else { 1 };
+        g.buff_area(c.side, Area::FriendlyMinions, n, 0);
+    }),
+    deathrattle("Lady Deathwhisper", |g, c| {
+        let frost: Inline<CardId, MAX_HAND> = g
+            .player(c.side)
+            .hand
+            .iter()
+            .filter(|h| h.card.def().school() == super::School::Frost)
+            .map(|h| h.card)
+            .collect();
+        for card in frost.iter().copied() {
+            g.give_token(c.side, card);
+        }
+    }),
+    trigger("Malignant Horror", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side)
+            && g.spend_corpses(c.side, 4)
+            && let Some(card) = g.player(c.side).board.get(c.slot as usize).map(|m| m.card)
+        {
+            g.summon_copy(c.side, card);
+        }
+    }),
+    battlecry("Might of Menethil", T::None, |g, c| {
+        let mut spent = 0;
+        while spent < 3 && g.spend_corpses(c.side, 1) {
+            spent += 1;
+        }
+        let foe = c.side.other();
+        let mut pool: Inline<Target, MAX_BOARD> = Inline::new();
+        for (i, m) in g.player(foe).board.iter().enumerate() {
+            if m.active() && m.is_minion() {
+                pool.push(Target::Minion(foe, i as u8));
+            }
+        }
+        let mut picks = [0u32; MAX_BOARD];
+        let take = (spent as usize).min(pool.len());
+        let n = g.rngs.effects.sample_indices(pool.len(), &mut picks[..take]);
+        for &p in picks.iter().take(n) {
+            g.freeze(pool[p as usize]);
+        }
+    }),
+    battlecry("Obsessive Technician", T::None, |g, c| g.herald(c.side)),
+    spell("Army of the Dead", T::None, |g, c| {
+        let mut raised = 0;
+        while raised < 5 && g.spend_corpses(c.side, 1) {
+            if g.summon_token(c.side, tokens::RISEN_GHOUL, 1) == 0 {
+                break;
+            }
+            raised += 1;
+        }
+    }),
+    battlecry("Corpse Bride", T::None, |g, c| {
+        let spend = g.player(c.side).corpses.min(10);
+        if spend <= 0 || !g.spend_corpses(c.side, spend) {
+            return;
+        }
+        if g.summon_token(c.side, tokens::RISEN_GROOM, 1) > 0 {
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.set_attack(Target::Minion(c.side, slot), spend);
+            g.set_health(Target::Minion(c.side, slot), spend);
+            g.grant(Target::Minion(c.side, slot), Keywords::TAUNT);
+        }
+    }),
+    trigger("Hollow Direhorn", |g, c| {
+        if let Event::MinionDied { side, .. } = c.event
+            && side == c.side
+            && !g.player(c.side)
+                .board
+                .get(c.slot as usize)
+                .is_some_and(|m| m.has(Keywords::REBORN))
+            && g.spend_corpses(c.side, 3)
+        {
+            g.grant(c.me(), Keywords::REBORN);
+        }
+    }),
+    deathrattle("Bonechill Stegodon", |g, c| {
+        let foe = c.side.other();
+        let mut pool: Inline<Target, { MAX_BOARD + 1 }> = Inline::new();
+        for (i, m) in g.player(foe).board.iter().enumerate() {
+            if m.active() && m.is_minion() {
+                pool.push(Target::Minion(foe, i as u8));
+            }
+        }
+        pool.push(Target::Hero(foe));
+        let mut picks = [0u32; 3];
+        let take = 3.min(pool.len());
+        let n = g.rngs.effects.sample_indices(pool.len(), &mut picks[..take]);
+        for &p in picks.iter().take(n) {
+            g.deal_damage(pool[p as usize], 6);
+        }
+    }),
+    spell("Experimental Animation", T::None, |g, c| {
+        g.herald(c.side);
+        g.spell_damage_area(c.side, Area::EnemyMinions, 4);
+    }),
+    battlecry("Marrow Manipulator", T::None, |g, c| {
+        let mut spent = 0;
+        while spent < 5 && g.spend_corpses(c.side, 1) {
+            spent += 1;
+        }
+        for _ in 0..spent {
+            let Some(t) = g.random_enemy(c.side) else { break };
+            g.deal_damage(t, 2);
+            g.sweep_deaths();
+        }
+    }),
+    battlecry("Alexandros Mograine", T::None, |g, c| {
+        g.player_mut(c.side).end_turn_burn += 3;
+    }),
+    spell("Story of Umbra", T::None, |g, c| {
+        let pool = super::discover_pool(|d| {
+            d.kind() == super::Kind::Minion
+                && d.cost >= 5
+                && d.keywords.has(Keywords::DEATHRATTLE)
+        });
+        if pool.is_empty() {
+            return;
+        }
+        let mut offered = [0u32; 3];
+        let n = g.rngs.effects.sample_indices(pool.len(), &mut offered);
+        let Some(pick) = offered[..n].iter().map(|&i| pool[i as usize]).next() else {
+            return;
+        };
+        if g.summon(c.side, pick) {
+            g.fire_deathrattle_of(c.side, pick);
+        }
+    }),
+    battlecry("Boneguard Commander", T::None, |g, c| {
+        let mut raised = 0;
+        while raised < 6 && g.spend_corpses(c.side, 1) {
+            if g.summon_token(c.side, tokens::RISEN_FOOTMAN, 1) == 0 {
+                break;
+            }
+            raised += 1;
+        }
+    }),
+    spell("Chow Down", T::None, |g, c| {
+        let made = g.summon_token(c.side, tokens::HUNGRY_DRAKE, 5);
+        if made == 0 || !g.spend_corpses(c.side, 8) {
+            return;
+        }
+        let last = g.player(c.side).board.len();
+        for slot in (last - made)..last {
+            g.grant(Target::Minion(c.side, slot as u8), Keywords::RUSH);
+        }
+    }),
+    spell("The Scourge", T::None, |g, c| {
+        while !g.player(c.side).board.is_full() {
+            if !g.summon_random_where(c.side, |d| {
+                d.kind() == super::Kind::Minion && d.races.any(Races::UNDEAD)
+            }) {
+                break;
+            }
+        }
+    }),
+    battlecry("Volcoross", T::None, |g, c| {
+        // "Choose to spend 10, 20, or 30": the biggest the pile allows.
+        let have = g.player(c.side).corpses;
+        let spend = if have >= 30 {
+            30
+        } else if have >= 20 {
+            20
+        } else if have >= 10 {
+            10
+        } else {
+            0
+        };
+        if spend > 0 && g.spend_corpses(c.side, spend)
+            && let Some(src) = c.source
+        {
+            g.buff(Target::Minion(c.side, src), spend, spend);
+        }
     }),
 
     // -------------------------------------------------------- Paladin
