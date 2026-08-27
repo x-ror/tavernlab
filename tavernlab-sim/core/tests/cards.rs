@@ -7649,3 +7649,197 @@ fn mystic_misdirection_turns_the_attacker_into_a_sheep() {
     assert_eq!((f.theirs(0).atk, f.theirs(0).max_hp), (1, 1));
     assert_eq!(f.g.players[0].secrets.len(), 0, "spent");
 }
+
+// -------------------------------------------------------------- Priest
+
+#[test]
+fn psychic_conjurer_copies_out_of_their_deck() {
+    let mut f = Fix::new();
+    f.g.players[1].deck.push(by_name("Boulderfist Ogre").unwrap());
+    f.play("Psychic Conjurer", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Boulderfist Ogre");
+    assert_eq!(f.g.players[1].deck.len(), 1, "a copy, not a theft");
+}
+
+#[test]
+fn shadow_ascendant_feeds_someone_else() {
+    let mut f = Fix::new().board(ME, &["Shadow Ascendant", "Chillwind Yeti"]);
+    f.g.end_turn();
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (2, 3), "\"another\"");
+    assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (5, 6));
+}
+
+#[test]
+fn spirit_of_the_kaldorei_waits_for_the_hero_power() {
+    let mut f = Fix::new();
+    f.play("Spirit of the Kaldorei", None);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (1, 3));
+
+    let mut f = Fix::new();
+    f.g.players[0].hero_power_uses = 1;
+    f.play("Spirit of the Kaldorei", None);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (4, 6));
+}
+
+#[test]
+fn twilight_influence_kills_the_small_or_makes_a_two_drop() {
+    let mut f = Fix::new().board(FOE, &["Bloodfen Raptor"]); // 3 attack
+    f.play_mode("Twilight Influence", 0, foe_minion(0));
+    assert_eq!(f.their_board(), 0);
+
+    let mut f = Fix::new();
+    f.play_mode("Twilight Influence", 1, None);
+    assert_eq!(f.mine(0).card.def().cost, 2);
+}
+
+#[test]
+fn weaver_of_the_cycle_needs_an_expensive_spell_in_hand() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Weaver of the Cycle", foe_minion(0));
+    assert_eq!(f.theirs(0).damage, 0);
+
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("Pyroblast").unwrap()));
+    f.play("Weaver of the Cycle", foe_minion(0));
+    assert_eq!(f.theirs(0).damage, 3);
+}
+
+#[test]
+fn specter_specialist_grants_reborn_or_copies_it() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.play("Specter Specialist", my_minion(0));
+    assert!(f.mine(0).has(Keywords::REBORN));
+    assert_eq!(f.g.players[0].board.len(), 2, "no copy the first time");
+
+    let mut f = Fix::new().board(ME, &["Sinful Steed"]); // already Reborn
+    f.play("Specter Specialist", my_minion(0));
+    let steeds = f.g.players[0]
+        .board
+        .iter()
+        .filter(|m| m.card.name() == "Sinful Steed")
+        .count();
+    assert_eq!(steeds, 2);
+}
+
+#[test]
+fn incensed_matriarch_only_grows_while_unhurt() {
+    let mut f = Fix::new().board(ME, &["Incensed Matriarch"]);
+    f.g.end_turn();
+    assert_eq!(f.mine(0).max_hp, 6);
+    f.g.deal_damage(Target::Minion(ME, 0), 1);
+    f.g.end_turn();
+    assert_eq!(f.mine(0).max_hp, 6, "damaged, so nothing");
+}
+
+#[test]
+fn lingering_spirit_sends_the_overheal_at_the_enemy() {
+    let mut f = Fix::new().board(ME, &["Lingering Spirit"]);
+    f.g.players[0].hero_hp = 29; // only one point of the three can land
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hero_hp, 30);
+    assert_eq!(f.g.players[1].hero_hp, 28, "two points had nowhere to heal");
+}
+
+#[test]
+fn medivhs_triumph_is_a_flat_one_with_a_legendary_out() {
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Medivh's Triumph").unwrap()));
+    assert_eq!(f.g.card_cost(ME, 0), 5);
+    let f2 = Fix::new().board(ME, &["Deathwing"]); // a Legendary
+    f.g.players[0].board = f2.g.players[0].board;
+    assert_eq!(f.g.card_cost(ME, 0), 1);
+}
+
+#[test]
+fn eternus_only_takes_what_it_outlives() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 7 health
+    f.play("Eternus", foe_minion(0)); // Eternus has 2
+    assert_eq!(f.their_board(), 1, "too healthy to steal");
+
+    let mut f = Fix::new().board(FOE, &["Wisp"]);
+    f.play("Eternus", foe_minion(0));
+    assert_eq!(f.their_board(), 0);
+    assert_eq!(f.g.players[0].board.len(), 2);
+}
+
+#[test]
+fn atlasaurus_leaves_a_big_taunt() {
+    let mut f = Fix::new().board(ME, &["Atlasaurus"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert!(f.mine(0).has(Keywords::TAUNT));
+    assert!(f.mine(0).card.def().cost >= 5);
+}
+
+#[test]
+fn ritual_of_life_lands_a_shrunken_three_drop() {
+    let mut f = Fix::new();
+    f.play("Ritual of Life", None);
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!(f.mine(0).card.def().cost, 3);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (2, 3));
+}
+
+#[test]
+fn archaios_tops_up_whoever_swings() {
+    // The rescue: a Yeti down to one Health goes in on six instead, and comes
+    // back out alive.
+    let mut f = Fix::new()
+        .board(ME, &["Archaios", "Chillwind Yeti"]) // 1/6 and 4/5
+        .board(FOE, &["Bloodfen Raptor"]); // 3/2
+    f.g.players[0].board[1].damage = 4;
+    assert_eq!(f.mine(1).health(), 1);
+    assert!(f.g.apply(Action::Attack { from: 1, target: Target::Minion(FOE, 0) }));
+    assert_eq!(f.mine(1).health(), 3, "six, then the Raptor's three");
+    assert_eq!(f.their_board(), 0);
+}
+
+#[test]
+fn hold_them_off_makes_a_lifestealing_threat() {
+    let mut f = Fix::new().board(ME, &["Wisp"]);
+    f.play("Hold Them Off!", my_minion(0));
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (6, 6));
+    assert!(f.mine(0).has(Keywords::LIFESTEAL));
+}
+
+#[test]
+fn gladesong_siren_costs_one_after_both_schools() {
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Gladesong Siren").unwrap()));
+    assert_eq!(f.g.card_cost(ME, 0), 6);
+    f.play("Holy Light", None); // Holy
+    assert_eq!(f.g.card_cost(ME, 0), 6, "one school is not two");
+    f.play("Undeath Sentence", None); // Shadow
+    assert_eq!(f.g.card_cost(ME, 0), 1);
+}
+
+#[test]
+fn glade_ecologist_leaves_vines_that_cut_both_ways() {
+    let mut f = Fix::new().board(ME, &["Glade Ecologist"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Purifying Vines");
+
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.play("Purifying Vines", my_minion(0));
+    assert_eq!(f.mine(0).max_hp, 7);
+
+    let mut f = Fix::new().board(FOE, &["Bloodfen Raptor"]); // 3/2
+    f.play("Purifying Vines", foe_minion(0));
+    assert_eq!(f.their_board(), 0, "-2 Health kills a two-health body");
+}
+
+#[test]
+fn holy_embrace_leaves_its_dark_half_in_hand() {
+    let mut f = Fix::new();
+    f.g.players[0].hero_hp = 20;
+    f.play("Holy Embrace", Some(Target::Hero(ME)));
+    assert_eq!(f.g.players[0].hero_hp, 24);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Dark Embrace");
+    f.play("Dark Embrace", Some(Target::Hero(FOE)));
+    assert_eq!(f.g.players[1].hero_hp, 26);
+}
