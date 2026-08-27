@@ -8,7 +8,7 @@
 //! Each test builds a fixed position, plays exactly one card, and states what
 //! should have changed.
 
-use tavernlab_core::cards::{Class, Keywords, Kind, behaviour_of, by_name};
+use tavernlab_core::cards::{Class, Keywords, Kind, Races, behaviour_of, by_name};
 use tavernlab_core::game::{Action, Agent};
 use tavernlab_core::state::{Flags, Game, HandCard, MAX_HAND, Permanent, Side, Target};
 
@@ -4188,4 +4188,144 @@ fn devouring_plague_deals_four_total_split_and_heals_its_own_hero() {
         "all 4 points landed on the one target"
     );
     assert_eq!(f.g.players[0].hero_hp, 24);
+}
+
+#[test]
+fn quick_shot_deals_three_and_draws_only_from_an_empty_hand() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.play("Quick Shot", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 4, "7 minus 3");
+    assert_eq!(
+        f.g.players[0].hand.len(),
+        0,
+        "hand was already empty: no draw"
+    );
+
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]).deck(&["Wisp"]);
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("Quick Shot", foe_minion(0));
+    assert_eq!(
+        f.g.players[0].hand.len(),
+        1,
+        "hand had a card: no draw triggered"
+    );
+}
+
+#[test]
+fn bursting_shot_hits_all_three_enemies_for_two() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre", "Boulderfist Ogre"]); // 6/7 x2
+    f.play("Bursting Shot", None);
+    assert_eq!(f.theirs(0).health(), 5, "7 minus 2");
+    assert_eq!(f.theirs(1).health(), 5, "7 minus 2");
+    assert_eq!(
+        f.g.players[1].hero_hp, 28,
+        "the enemy hero is the third of exactly three enemies"
+    );
+}
+
+#[test]
+fn headhunters_hatchet_gains_durability_only_with_a_beast() {
+    let mut f = Fix::new();
+    f.play("Headhunter's Hatchet", None);
+    assert_eq!(
+        f.g.players[0].weapon.unwrap().durability,
+        2,
+        "no Beast on board: base durability only"
+    );
+
+    let mut f = Fix::new().board(ME, &["Webspinner"]); // a Beast
+    f.play("Headhunter's Hatchet", None);
+    assert_eq!(
+        f.g.players[0].weapon.unwrap().durability,
+        3,
+        "2 base plus 1 for controlling a Beast"
+    );
+}
+
+#[test]
+fn ticking_timebomb_destroys_a_random_enemy_minion_on_death() {
+    let mut f = Fix::new()
+        .board(ME, &["Ticking Timebomb"])
+        .board(FOE, &["Wisp"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.their_board(), 0, "the only enemy minion was destroyed");
+}
+
+#[test]
+fn arrow_retriever_draws_up_to_three_but_not_past_it() {
+    let mut f = Fix::new().deck(&["Wisp", "Wisp", "Wisp"]);
+    f.play("Arrow Retriever", None);
+    assert_eq!(f.g.players[0].hand.len(), 3, "drew up to 3");
+
+    let mut f = Fix::new().deck(&["Wisp", "Wisp", "Wisp"]);
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Wisp").unwrap()));
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Wisp").unwrap()));
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("Arrow Retriever", None);
+    assert_eq!(
+        f.g.players[0].hand.len(),
+        3,
+        "already had 3 once Arrow Retriever itself left the hand: no extra draw"
+    );
+}
+
+#[test]
+fn spirit_bond_summons_a_wolf_only_on_a_kill() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.play("Spirit Bond", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 4, "7 minus 3, survives");
+    assert_eq!(f.g.players[0].board.len(), 0, "no kill: no Wolf");
+
+    let mut f = Fix::new().board(FOE, &["Wisp"]); // 1/1, dies to 3
+    f.play("Spirit Bond", foe_minion(0));
+    assert_eq!(
+        f.g.players[0].board.len(),
+        1,
+        "killed it: summoned the Wolf"
+    );
+    assert_eq!(f.mine(0).atk, 3);
+    assert_eq!(f.mine(0).max_hp, 2);
+}
+
+#[test]
+fn ball_of_spiders_summons_three_webspinners() {
+    let mut f = Fix::new();
+    f.play("Ball of Spiders", None);
+    assert_eq!(f.g.players[0].board.len(), 3);
+    assert_eq!(f.mine(0).card.name(), "Webspinner");
+    assert_eq!(f.mine(0).atk, 1);
+    assert_eq!(f.mine(0).max_hp, 1);
+}
+
+#[test]
+fn webspinner_deathrattle_gets_a_random_beast() {
+    let mut f = Fix::new().board(ME, &["Webspinner"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 1, "got a card");
+    let got = f.g.players[0].hand[0].card.def();
+    assert!(got.races.any(Races::BEAST), "the random card is a Beast");
+}
+
+#[test]
+fn herbivore_assistant_buffs_only_a_beast() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]); // 4/5, not a Beast
+    f.play("Herbivore Assistant", my_minion(0));
+    assert_eq!(f.mine(0).atk, 4, "not a Beast: no buff");
+    assert_eq!(f.mine(0).max_hp, 5);
+
+    let mut f = Fix::new().board(ME, &["Webspinner"]); // 1/1, a Beast
+    f.play("Herbivore Assistant", my_minion(0));
+    assert_eq!(f.mine(0).atk, 3, "1 plus 2");
+    assert_eq!(f.mine(0).max_hp, 3, "1 plus 2");
+    assert!(f.mine(0).has(Keywords::RUSH));
 }

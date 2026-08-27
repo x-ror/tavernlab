@@ -360,6 +360,8 @@ mod tokens {
     /// Static Shock is itself a real, collectible card (implemented below);
     /// Thunderquake just needs to hand out a copy of it.
     pub const STATIC_SHOCK: CardId = token("TIME_218");
+    pub const PLAYFUL_PUP: CardId = token("EDR_850pe");
+    pub const WEBSPINNER: CardId = token("FP1_011");
     pub const GORISHI_STINGER: CardId = token("TLC_630t");
     /// Brood Keeper's "2/2 Sword". A weapon, so it never shows up through
     /// `summonable_children()`, which only ever returns minions.
@@ -3427,6 +3429,74 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.deal_damage(pool[pick], 1);
         }
         g.heal_hero(c.side, 4);
+    }),
+    spell("Quick Shot", T::AnyCharacter, |g, c| {
+        if let Some(t) = c.target {
+            g.spell_damage(c.side, Some(t), 3);
+        }
+        if g.player(c.side).hand.is_empty() {
+            g.draw_cards(c.side, 1);
+        }
+    }),
+    // No helper covers "N distinct random enemies including the hero" --
+    // `damage_random_enemy_minions` is minions-only -- so this collects the
+    // whole enemy side by hand and samples distinct offers from it.
+    spell("Bursting Shot", T::None, |g, c| {
+        let mut pool: Inline<Target, { MAX_BOARD * 2 + 2 }> = Inline::new();
+        g.collect_area(c.side, Area::AllEnemies, &mut pool);
+        let mut offered = [0u32; 3];
+        let n = g.rngs.effects.sample_indices(pool.len(), &mut offered);
+        for &i in &offered[..n] {
+            g.deal_damage(pool[i as usize], 2);
+        }
+    }),
+    battlecry("Headhunter's Hatchet", T::None, |g, c| {
+        if g.controls_race(c.side, Races::BEAST)
+            && let Some(w) = g.player_mut(c.side).weapon.as_mut()
+        {
+            w.durability += 1;
+        }
+    }),
+    deathrattle("Ticking Timebomb", |g, c| {
+        if let Some(t) = g.random_minion(c.side.other()) {
+            g.destroy(t);
+        }
+    }),
+    battlecry("Arrow Retriever", T::None, |g, c| {
+        let have = g.player(c.side).hand.len();
+        if have < 3 {
+            g.draw_cards(c.side, 3 - have);
+        }
+    }),
+    spell("Spirit Bond", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.spell_damage(c.side, Some(t), 3);
+        let dead = match t {
+            Target::Minion(s, i) => g
+                .player(s)
+                .board
+                .get(i as usize)
+                .is_some_and(|m| m.is_dead()),
+            Target::Hero(_) => false,
+        };
+        if dead {
+            g.summon_token(c.side, tokens::PLAYFUL_PUP, 1);
+        }
+    }),
+    spell("Ball of Spiders", T::None, |g, c| {
+        g.summon_token(c.side, tokens::WEBSPINNER, 3);
+    }),
+    deathrattle("Webspinner", |g, c| {
+        g.add_random_to_hand(c.side, |d| d.races.any(Races::BEAST));
+    }),
+    battlecry("Herbivore Assistant", T::FriendlyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(s, i) = t else { return };
+        if !g.player(s).board[i as usize].races().any(Races::BEAST) {
+            return;
+        }
+        g.buff(t, 2, 2);
+        g.grant(t, Keywords::RUSH);
     }),
 ];
 
