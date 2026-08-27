@@ -5778,3 +5778,368 @@ fn a_card_being_played_does_not_react_to_its_own_play() {
     f.play("Wisp", None);
     assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (3, 3));
 }
+
+// ------------------------------------------ class backlog, second pass
+
+#[test]
+fn cairne_bloodhoof_leaves_baine() {
+    let mut f = Fix::new().board(ME, &["Cairne Bloodhoof"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!(f.mine(0).card.name(), "Baine Bloodhoof");
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (5, 5));
+}
+
+#[test]
+fn voidlord_leaves_three_taunting_demons() {
+    let mut f = Fix::new().board(ME, &["Voidlord"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 3);
+    for i in 0..3 {
+        assert_eq!((f.mine(i).atk, f.mine(i).max_hp), (1, 3));
+        assert!(f.mine(i).has(Keywords::TAUNT));
+        assert!(f.mine(i).races().any(Races::DEMON));
+    }
+}
+
+#[test]
+fn mountain_bear_leaves_two_cubs() {
+    let mut f = Fix::new().board(ME, &["Mountain Bear"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 2);
+    for i in 0..2 {
+        assert_eq!((f.mine(i).atk, f.mine(i).max_hp), (2, 4));
+        assert!(f.mine(i).has(Keywords::TAUNT));
+    }
+}
+
+#[test]
+fn eternal_bloodpetal_and_its_seedling_trade_places() {
+    let mut f = Fix::new().board(ME, &["Eternal Bloodpetal"]); // 5/1
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.mine(0).card.name(), "Eternal Seedling");
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (0, 1));
+
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.mine(0).card.name(), "Eternal Bloodpetal", "and back again");
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (5, 1));
+}
+
+#[test]
+fn sneeds_old_shredder_leaves_a_legendary() {
+    let mut f = Fix::new().board(ME, &["Sneed's Old Shredder"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 1);
+    let got = f.mine(0).card;
+    assert_eq!(
+        got.def().rarity(),
+        tavernlab_core::cards::Rarity::Legendary,
+        "{}",
+        got.name()
+    );
+}
+
+#[test]
+fn drakeadon_mongrel_leaves_two_four_drops() {
+    let mut f = Fix::new().board(ME, &["Drakeadon Mongrel"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 2);
+    assert!(f.g.players[0].board.iter().all(|m| m.card.def().cost == 4));
+}
+
+#[test]
+fn obsidian_statue_takes_one_enemy_with_it() {
+    let mut f = Fix::new()
+        .board(ME, &["Obsidian Statue"])
+        .board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.their_board(), 0, "destroyed outright, health ignored");
+}
+
+#[test]
+fn avatar_of_destruction_takes_the_enemy_board_with_it() {
+    let mut f = Fix::new()
+        .board(ME, &["Avatar of Destruction", "Chillwind Yeti"])
+        .board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.their_board(), 0);
+    assert_eq!(f.mine(0).damage, 0, "\"enemy minions\" only");
+    assert_eq!(f.g.players[1].hero_hp, 30, "and not the hero");
+}
+
+#[test]
+fn sewer_imp_hits_everything_on_the_far_side() {
+    let mut f = Fix::new()
+        .board(ME, &["Sewer Imp"])
+        .board(FOE, &["Wisp", "Chillwind Yeti"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.their_board(), 1, "the 1/1 died");
+    assert_eq!(f.theirs(0).damage, 2);
+    assert_eq!(f.g.players[1].hero_hp, 28);
+}
+
+#[test]
+fn fae_trickster_pulls_an_expensive_spell() {
+    let mut f = Fix::new()
+        .board(ME, &["Fae Trickster"])
+        .deck(&["Moonfire", "Pyroblast"]); // 0-cost and 10-cost spells
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Pyroblast");
+}
+
+#[test]
+fn tormented_dreadwing_pulls_two_cheaper_dragons() {
+    let mut f = Fix::new()
+        .board(ME, &["Tormented Dreadwing"])
+        .deck(&["Wisp", "Faerie Dragon", "Twilight Drake"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 2);
+    for h in f.g.players[0].hand.iter() {
+        assert!(h.card.def().races.any(Races::DRAGON), "{}", h.card.name());
+        assert_eq!(h.cost_delta, -1);
+    }
+}
+
+#[test]
+fn seeding_dragon_leaves_a_discounted_dragon_in_hand() {
+    let mut f = Fix::new().board(ME, &["Seeding Dragon"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    let h = &f.g.players[0].hand[0];
+    assert!(h.card.def().races.any(Races::DRAGON), "{}", h.card.name());
+    assert_eq!(h.cost_delta, -2);
+}
+
+#[test]
+fn twilight_mender_leaves_one_spell_of_each_school() {
+    use tavernlab_core::cards::School;
+    let mut f = Fix::new().board(ME, &["Twilight Mender"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    let schools: Vec<School> = f.g.players[0]
+        .hand
+        .iter()
+        .map(|h| h.card.def().school())
+        .collect();
+    assert_eq!(schools, vec![School::Holy, School::Shadow]);
+}
+
+#[test]
+fn primordial_drake_spares_only_itself() {
+    let mut f = Fix::new()
+        .board(ME, &["Wisp"])
+        .board(FOE, &["Wisp", "Chillwind Yeti"]);
+    f.play("Primordial Drake", None);
+    assert_eq!(f.g.players[0].board.len(), 1, "my Wisp died, the Drake lived");
+    assert_eq!(f.mine(0).card.name(), "Primordial Drake");
+    assert_eq!(f.mine(0).damage, 0);
+    assert_eq!(f.their_board(), 1);
+    assert_eq!(f.theirs(0).damage, 2);
+}
+
+#[test]
+fn nerubian_swarmguard_arrives_in_triplicate() {
+    let mut f = Fix::new();
+    f.play("Nerubian Swarmguard", None);
+    assert_eq!(f.g.players[0].board.len(), 3);
+    assert!(
+        f.g.players[0]
+            .board
+            .iter()
+            .all(|m| m.card.name() == "Nerubian Swarmguard")
+    );
+}
+
+#[test]
+fn underking_armours_up_twice() {
+    let mut f = Fix::new();
+    f.play("Underking", None);
+    assert_eq!(f.g.players[0].armor, 6, "battlecry");
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].armor, 12, "and deathrattle");
+}
+
+#[test]
+fn heir_of_hereafter_scales_with_the_wounded() {
+    let mut f = Fix::new()
+        .board(ME, &["Chillwind Yeti"])
+        .board(FOE, &["Boulderfist Ogre", "Chillwind Yeti"]);
+    f.g.players[0].board[0].damage = 1;
+    f.g.players[1].board[0].damage = 1;
+    f.play("Heir of Hereafter", None);
+    let heir = f.mine(1);
+    assert_eq!((heir.atk, heir.max_hp), (2 + 4, 6 + 4), "two damaged minions");
+}
+
+#[test]
+fn heir_of_hereafter_is_a_plain_body_on_a_clean_board() {
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti"]);
+    f.play("Heir of Hereafter", None);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (2, 6));
+}
+
+#[test]
+fn blizzard_damages_and_freezes_the_enemy_board() {
+    let mut f = Fix::new()
+        .board(ME, &["Chillwind Yeti"])
+        .board(FOE, &["Chillwind Yeti", "Wisp"]);
+    f.play("Blizzard", None);
+    assert_eq!(f.their_board(), 1, "the Wisp died to the two damage");
+    assert_eq!(f.theirs(0).damage, 2);
+    assert!(f.theirs(0).flags.has(Flags::FROZEN));
+    assert!(!f.mine(0).flags.has(Flags::FROZEN), "my board is not frozen");
+}
+
+#[test]
+fn ceremonial_clash_brings_three_bodies_and_overloads() {
+    let mut f = Fix::new();
+    f.play("Ceremonial Clash", None);
+    let costs: Vec<i16> = f.g.players[0]
+        .board
+        .iter()
+        .map(|m| m.card.def().cost)
+        .collect();
+    assert_eq!(costs, vec![3, 2, 1]);
+    assert_eq!(f.g.players[0].overload_next, 1);
+}
+
+#[test]
+fn ward_of_earth_armours_up_and_plants_a_taunt() {
+    let mut f = Fix::new();
+    f.play("Ward of Earth", None);
+    assert_eq!(f.g.players[0].armor, 5);
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!(f.mine(0).card.def().cost, 5);
+    assert!(f.mine(0).has(Keywords::TAUNT));
+}
+
+#[test]
+fn for_all_time_clears_the_small_and_leaves_the_big() {
+    let mut f = Fix::new()
+        .board(ME, &["Chillwind Yeti"]) // 4/5, four or less
+        .board(FOE, &["Boulderfist Ogre", "Wisp"]); // 6/7 and 1/1
+    f.play("For All Time", None);
+    assert_eq!(f.g.players[0].board.len(), 0);
+    assert_eq!(f.their_board(), 1);
+    assert_eq!(f.theirs(0).card.name(), "Boulderfist Ogre");
+    assert_eq!(f.g.players[0].overload_next, 2);
+}
+
+#[test]
+fn forests_gift_counts_the_board_it_buffs() {
+    let mut f = Fix::new().board(ME, &["Wisp", "Wisp", "Chillwind Yeti"]);
+    f.play("Forest's Gift", my_minion(2));
+    assert_eq!((f.mine(2).atk, f.mine(2).max_hp), (4 + 3, 5 + 3));
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (1, 1), "one minion only");
+}
+
+#[test]
+fn dethrone_kills_and_only_replaces_on_combo() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Dethrone", foe_minion(0));
+    assert_eq!(f.their_board(), 0);
+    assert_eq!(f.g.players[0].board.len(), 0, "no combo, no body");
+
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Wisp", None);
+    f.play("Dethrone", foe_minion(0));
+    assert_eq!(f.their_board(), 0);
+    assert_eq!(f.g.players[0].board.len(), 2);
+    assert_eq!(f.mine(1).card.def().cost, 8);
+}
+
+#[test]
+fn nascent_bolt_pays_out_only_when_the_target_lives() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.play("Nascent Bolt", foe_minion(0));
+    assert_eq!(f.theirs(0).damage, 5);
+    assert_eq!(f.g.players[0].hand.len(), 0, "an empty deck draws nothing");
+
+    let mut f = Fix::new()
+        .board(FOE, &["Boulderfist Ogre"])
+        .deck(&["Wisp", "Wisp"]);
+    f.play("Nascent Bolt", foe_minion(0));
+    assert_eq!(f.g.players[0].hand.len(), 2, "it survived");
+
+    let mut f = Fix::new()
+        .board(FOE, &["Chillwind Yeti"]) // 4/5, dies to five
+        .deck(&["Wisp", "Wisp"]);
+    f.play("Nascent Bolt", foe_minion(0));
+    assert_eq!(f.their_board(), 0);
+    assert_eq!(f.g.players[0].hand.len(), 0, "it did not survive");
+}
+
+#[test]
+fn eldritch_tentacles_hits_three_then_two_then_one() {
+    let mut f = Fix::new()
+        .board(ME, &["Boulderfist Ogre"]) // 6/7 — takes all six
+        .board(FOE, &["Chillwind Yeti"]); // 4/5 — dies on the second pass
+    f.play("Eldritch Tentacles", None);
+    assert_eq!(f.mine(0).damage, 3 + 2 + 1);
+    assert_eq!(f.their_board(), 0);
+}
+
+#[test]
+fn yesterloc_hardens_the_rest_of_the_board() {
+    let mut f = Fix::new().board(ME, &["Yesterloc", "Chillwind Yeti"]);
+    let before = f.mine(0).max_hp;
+    f.g.end_turn();
+    assert_eq!(f.mine(0).max_hp, before, "\"your other minions\"");
+    assert_eq!(f.mine(1).max_hp, 6);
+}
+
+#[test]
+fn scalebreaker_bulwark_pings_the_far_side_each_turn() {
+    let mut f = Fix::new()
+        .board(ME, &["Scalebreaker Bulwark"])
+        .board(FOE, &["Chillwind Yeti"]);
+    f.g.end_turn();
+    assert_eq!(f.theirs(0).damage, 2);
+    assert_eq!(f.g.players[1].hero_hp, 28);
+    assert_eq!(f.mine(0).damage, 0);
+}
+
+#[test]
+fn gorishi_tunneler_reaches_the_hero_after_a_trade() {
+    let mut f = Fix::new()
+        .board(ME, &["Gorishi Tunneler"])
+        .board(FOE, &["Wisp"]);
+    assert!(f.g.apply(Action::Attack { from: 0, target: Target::Minion(FOE, 0) }));
+    assert_eq!(f.g.players[1].hero_hp, 28, "two, on top of the trade");
+}
+
+#[test]
+fn axe_of_the_forefathers_sweeps_after_every_swing() {
+    let mut f = Fix::new()
+        .board(ME, &["Chillwind Yeti"])
+        .board(FOE, &["Wisp"]);
+    f.play("Axe of the Forefathers", None);
+    assert!(f.g.apply(Action::HeroAttack { target: Target::Hero(FOE) }));
+    assert_eq!(f.their_board(), 0, "the Wisp took its point");
+    assert_eq!(f.mine(0).damage, 1, "\"all minions\" — mine too");
+}
+
+#[test]
+fn truth_seeker_grows_only_the_paladin_half_of_the_board() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti", "Argent Protector"]);
+    assert_eq!(f.mine(1).card.def().class(), Class::Paladin);
+    f.play("Truth Seeker", None);
+    assert!(f.g.apply(Action::HeroAttack { target: Target::Hero(FOE) }));
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (4, 5), "a Neutral Yeti");
+    assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (3 + 2, 2 + 2));
+}
