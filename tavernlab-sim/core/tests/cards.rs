@@ -5152,3 +5152,283 @@ fn enthrall_shuffles_five_legendary_dragons_into_the_deck() {
         assert_eq!(d.rarity(), Rarity::Legendary, "{}", card.name());
     }
 }
+
+// ------------------------------------------------------------- Tradeable
+
+#[test]
+fn a_tradeable_card_goes_back_into_the_deck_for_one_mana_and_a_draw() {
+    // Three Tradeable cards already shipped with the keyword doing nothing.
+    // This is the option itself: one mana, the card back in the deck, a
+    // fresh one in hand.
+    let mut f = Fix::new().deck(&["Wisp", "Wisp"]);
+    let knight = by_name("The Black Knight").unwrap();
+    f.g.players[0].hand.push(HandCard::new(knight));
+    f.g.players[0].mana = 3;
+
+    assert!(f.g.apply(Action::Trade { hand: 0 }));
+    assert_eq!(f.g.players[0].mana, 2, "a Trade costs one mana");
+    assert_eq!(f.g.players[0].deck.len(), 2, "one card in, one drawn out");
+    assert!(
+        f.g.players[0].deck.contains(&knight),
+        "the traded card is back in the deck"
+    );
+    assert_eq!(f.g.players[0].hand.len(), 1, "and a card was drawn");
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Wisp");
+}
+
+#[test]
+fn only_tradeable_cards_can_be_traded_and_only_with_mana() {
+    let mut f = Fix::new().deck(&["Wisp"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("Chillwind Yeti").unwrap()));
+    assert!(!f.g.apply(Action::Trade { hand: 0 }), "not a Tradeable card");
+
+    let mut f = Fix::new().deck(&["Wisp"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("The Black Knight").unwrap()));
+    f.g.players[0].mana = 0;
+    assert!(!f.g.apply(Action::Trade { hand: 0 }), "no mana for it");
+}
+
+#[test]
+fn trading_is_offered_only_while_the_mana_is_there() {
+    use tavernlab_core::game::Action as A;
+    let mut f = Fix::new().deck(&["Wisp"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("The Black Knight").unwrap()));
+
+    let mut legal = tavernlab_core::inline::Inline::new();
+    f.g.players[0].mana = 1;
+    f.g.legal_actions(&mut legal);
+    assert!(
+        legal.iter().any(|a| matches!(a, A::Trade { hand: 0 })),
+        "with a mana in hand, the Trade is on the table"
+    );
+
+    f.g.players[0].mana = 0;
+    f.g.legal_actions(&mut legal);
+    assert!(
+        !legal.iter().any(|a| matches!(a, A::Trade { .. })),
+        "with no mana it is not"
+    );
+}
+
+#[test]
+fn the_agent_trades_a_card_it_cannot_play_and_plays_one_it_can() {
+    // A Tradeable card it cannot afford is a dead card this turn: trading it
+    // beats passing. Afford it and the body comes down instead — the option
+    // must not crowd the board out.
+    use tavernlab_core::agent::{Scripted, Style};
+    use tavernlab_core::game::{Action as A, Agent as _};
+
+    let mut agent = Scripted::new(Style::Midrange);
+    let mut legal = tavernlab_core::inline::Inline::new();
+
+    let mut f = Fix::new().deck(&["Wisp", "Wisp"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("The Black Knight").unwrap()));
+    f.g.players[0].mana = 1; // one mana: enough to Trade, not to play a 4-drop
+    f.g.legal_actions(&mut legal);
+    assert!(
+        matches!(agent.choose(&f.g, legal.as_slice()), A::Trade { hand: 0 }),
+        "a card it cannot afford is traded rather than sat on"
+    );
+
+    let mut f = Fix::new().deck(&["Wisp", "Wisp"]).board(FOE, &["Goldshire Footman"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("The Black Knight").unwrap()));
+    f.g.players[0].mana = 4;
+    f.g.legal_actions(&mut legal);
+    assert!(
+        matches!(agent.choose(&f.g, legal.as_slice()), A::Play { .. }),
+        "with the mana for it, playing beats trading"
+    );
+}
+
+#[test]
+fn the_black_knight_destroys_a_taunt_and_needs_one_to_be_played_at_all() {
+    let mut f = Fix::new().board(FOE, &["Goldshire Footman", "Chillwind Yeti"]);
+    f.play("The Black Knight", Some(Target::Minion(FOE, 0)));
+    let left: Vec<&str> = f.g.players[1].board.iter().map(|m| m.card.name()).collect();
+    assert_eq!(left, ["Chillwind Yeti"], "the Taunt is gone, the 4/5 is not");
+
+    // A non-Taunt is not a legal target for it.
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti"]);
+    let knight = by_name("The Black Knight").unwrap();
+    f.g.players[0].hand.push(HandCard::new(knight));
+    assert!(
+        !f.g.apply(Action::Play {
+            hand: 0,
+            target: Some(Target::Minion(FOE, 0)),
+            position: u8::MAX,
+            choice: u8::MAX,
+        }),
+        "a minion without Taunt cannot be pointed at"
+    );
+}
+
+// ----------------------------------------------------- neutral batch: cards
+
+#[test]
+fn dirty_rat_pulls_a_minion_out_of_the_enemy_hand_onto_their_board() {
+    let mut f = Fix::new();
+    let yeti = by_name("Chillwind Yeti").unwrap();
+    f.g.players[1].hand.push(HandCard::new(yeti));
+    f.g.players[1].hand.push(HandCard::new(by_name("Fireball").unwrap()));
+
+    f.play("Dirty Rat", None);
+    assert_eq!(
+        f.g.players[1].board.iter().map(|m| m.card.name()).collect::<Vec<_>>(),
+        ["Chillwind Yeti"],
+        "the only minion in their hand came down"
+    );
+    assert_eq!(f.g.players[1].hand.len(), 1, "and left their hand");
+    assert_eq!(f.g.players[1].hand[0].card.name(), "Fireball", "the spell stays");
+}
+
+#[test]
+fn dirty_rat_does_nothing_against_a_hand_with_no_minions() {
+    let mut f = Fix::new();
+    f.g.players[1].hand.push(HandCard::new(by_name("Fireball").unwrap()));
+    f.play("Dirty Rat", None);
+    assert!(f.g.players[1].board.is_empty());
+    assert_eq!(f.g.players[1].hand.len(), 1);
+}
+
+#[test]
+fn netherspite_historian_discovers_only_while_holding_a_dragon() {
+    let mut f = Fix::new();
+    f.play("Netherspite Historian", None);
+    assert!(f.g.players[0].hand.is_empty(), "no Dragon in hand, no Discover");
+
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Twilight Whelp").unwrap()));
+    f.play("Netherspite Historian", None);
+    assert_eq!(f.g.players[0].hand.len(), 2, "the Dragon plus what was discovered");
+    let found = f.g.players[0].hand[1].card;
+    assert!(found.def().races.any(Races::DRAGON), "{} is not a Dragon", found.name());
+}
+
+#[test]
+fn gorillabot_needs_another_mech_not_just_itself() {
+    // It is a Mech and is already on the board when its Battlecry runs, so
+    // counting itself would make the condition always true.
+    let mut f = Fix::new();
+    f.play("Gorillabot A-3", None);
+    assert!(f.g.players[0].hand.is_empty(), "alone, it discovers nothing");
+
+    let mut f = Fix::new().board(ME, &["Mechwarper"]);
+    f.play("Gorillabot A-3", None);
+    assert_eq!(f.g.players[0].hand.len(), 1, "with another Mech out, it discovers");
+    assert!(f.g.players[0].hand[0].card.def().races.any(Races::MECHANICAL));
+}
+
+#[test]
+fn menagerie_mug_buffs_three_minions_of_three_different_tribes() {
+    let mut f = Fix::new().board(ME, &["Bloodfen Raptor", "Murloc Raider", "Bloodfen Raptor", "Twilight Whelp"]);
+    f.play("Menagerie Mug", None);
+    let buffed: Vec<&str> = f.g.players[0]
+        .board
+        .iter()
+        .filter(|m| m.atk > m.card.def().atk)
+        .map(|m| m.card.name())
+        .collect();
+    assert_eq!(buffed.len(), 3, "three minions, buffed: {buffed:?}");
+    // Two Raptors are one tribe: only one of them can be among the three.
+    assert_eq!(
+        buffed.iter().filter(|n| **n == "Bloodfen Raptor").count(),
+        1,
+        "two Beasts are not two different types"
+    );
+}
+
+#[test]
+fn omen_of_the_end_mills_only_from_an_empty_deck() {
+    let mut f = Fix::new();
+    for _ in 0..6 {
+        f.g.players[1].deck.push(by_name("Wisp").unwrap());
+    }
+    f.g.players[0].deck.push(by_name("Wisp").unwrap());
+    f.play("Omen of the End", None);
+    assert_eq!(f.g.players[1].deck.len(), 6, "your deck is not empty yet");
+
+    f.g.players[0].deck.clear();
+    f.play("Omen of the End", None);
+    assert_eq!(f.g.players[1].deck.len(), 1, "five cards destroyed");
+}
+
+#[test]
+fn the_soldiers_double_their_own_health_and_attack() {
+    let mut f = Fix::new();
+    f.play("Soldier of the Bronze", None);
+    let m = &f.g.players[0].board[0];
+    assert_eq!((m.atk, m.health()), (5, 6), "a 5/3 doubles its Health");
+
+    let mut f = Fix::new();
+    f.play("Soldier of the Infinite", None);
+    let m = &f.g.players[0].board[0];
+    assert_eq!((m.atk, m.health()), (6, 5), "a 3/5 doubles its Attack");
+}
+
+#[test]
+fn concealing_confection_hands_back_a_weapon() {
+    let mut f = Fix::new().board(ME, &["Concealing Confection"]);
+    f.g.destroy(Target::Minion(ME, 0));
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.def().kind(), Kind::Weapon);
+}
+
+#[test]
+fn willful_watcher_burns_the_top_three_of_its_own_deck() {
+    let mut f = Fix::new().board(ME, &["Willful Watcher"]).deck(&["Wisp", "Wisp", "Wisp", "Wisp", "Wisp"]);
+    f.g.destroy(Target::Minion(ME, 0));
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].deck.len(), 2);
+    assert!(f.g.players[0].hand.is_empty(), "destroyed, not drawn");
+}
+
+#[test]
+fn tindral_hits_harder_when_it_dies_on_the_opponents_turn() {
+    let mut f = Fix::new().board(ME, &["Tindral Sageswift"]).board(FOE, &["Chillwind Yeti"]);
+    let hp = f.g.players[1].hero_hp;
+    f.g.destroy(Target::Minion(ME, 0));
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[1].hero_hp, hp - 1, "on your own turn it is 1");
+    assert_eq!(f.g.players[1].board[0].health(), 4);
+
+    let mut f = Fix::new().board(ME, &["Tindral Sageswift"]).board(FOE, &["Chillwind Yeti"]);
+    f.g.current = FOE; // it died on their turn
+    let hp = f.g.players[1].hero_hp;
+    f.g.destroy(Target::Minion(ME, 0));
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[1].hero_hp, hp - 4);
+    assert_eq!(f.g.players[1].board[0].health(), 1);
+}
+
+#[test]
+fn the_end_of_turn_neutrals_fire_on_their_own_controllers_turn() {
+    // Critter Caretaker heals both heroes, Earthen Drake burns the enemy one,
+    // Curious Cumulus shields its own, and the Pixie fetches a Nature spell.
+    let mut f = Fix::new().board(
+        ME,
+        &["Critter Caretaker", "Earthen Drake", "Curious Cumulus", "Daydreaming Pixie"],
+    );
+    f.g.players[0].hero_hp = 20;
+    f.g.players[1].hero_hp = 20;
+
+    f.g.end_turn();
+    assert_eq!(f.g.players[0].hero_hp, 23, "healed 3");
+    assert_eq!(f.g.players[1].hero_hp, 20 + 3 - 4, "healed 3, then took 4");
+    assert!(f.g.players[0].hero_divine_shield);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    let got = f.g.players[0].hand[0].card;
+    assert_eq!(got.def().school(), tavernlab_core::cards::School::Nature, "{}", got.name());
+}
+
+#[test]
+fn time_skipper_hands_the_coin_to_whoever_just_finished() {
+    let mut f = Fix::new().board(ME, &["Time Skipper"]);
+    f.g.end_turn();
+    assert_eq!(f.g.players[0].hand.len(), 1, "my turn ended, my Coin");
+    assert_eq!(f.g.players[0].hand[0].card.name(), "The Coin");
+
+    f.g.current = FOE;
+    f.g.end_turn();
+    assert_eq!(f.g.players[1].hand.len(), 1, "their turn ended, their Coin");
+}

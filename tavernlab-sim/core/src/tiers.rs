@@ -191,12 +191,23 @@ mod tests {
 
     #[test]
     fn the_field_averages_to_a_coin_flip() {
-        // Every game is somebody's win, so the mean across a full round
-        // robin has to sit at 0.5 whatever the decks are. A pairing or
-        // book-keeping bug shows up here immediately.
-        let t = build(&field(), 40, 2, |_| {});
+        // Every game is somebody's win, so the mean across a full round robin
+        // sits at 0.5 whatever the decks are. A pairing or book-keeping bug
+        // shows up here immediately.
+        //
+        // It is a *statistical* 0.5, not an exact one: A-against-B and
+        // B-against-A are different games (the decks swap sides), so the two
+        // rates only sum to 1 in expectation. The sample is large enough that
+        // the tolerance below is about four standard errors — tightening it
+        // without raising the games would make this fail on noise, which it
+        // once did.
+        let games = 400;
+        let t = build(&field(), games, 2, |_| {});
         let mean: f64 = t.rows.iter().map(|r| r.winrate).sum::<f64>() / t.rows.len() as f64;
-        assert!((mean - 0.5).abs() < 0.02, "field mean {mean}");
+        assert!(
+            (mean - 0.5).abs() < 0.03,
+            "field mean {mean} over {games} games a pair"
+        );
     }
 
     #[test]

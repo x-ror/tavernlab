@@ -9,7 +9,7 @@
 //! policy sees exactly the moves a search would see, so replacing it later with
 //! something that looks ahead does not change what "legal" means.
 
-use crate::cards::{Keywords, Kind};
+use crate::cards::{Keywords, Kind, TargetSpec, behaviour_of};
 use crate::game::{Action, Agent};
 use crate::state::{Game, Permanent, Side, Target};
 
@@ -157,6 +157,29 @@ impl Scripted {
             // Banking mana into a card you cannot cast is better than
             // wasting it, but never better than actually developing.
             Action::Prepare { .. } => 3.0,
+
+            // Trading is what a Tradeable card is for when it is stuck: a
+            // removal spell with nothing to point at cannot be cast at all,
+            // and is worth exactly one mana and a fresh card. A card that
+            // could simply be played is scored below every play, so the
+            // option never crowds out the board — a minion's body still
+            // comes down even when its Battlecry has no target.
+            Action::Trade { hand } => {
+                let Some(hc) = g.player(me).hand.get(hand as usize) else {
+                    return f32::MIN;
+                };
+                let spec = behaviour_of(hc.card).map_or(TargetSpec::None, |b| b.target);
+                let uncastable = hc.card.def().kind() == Kind::Spell
+                    && spec.needed()
+                    && !g.targetable(true).any(|t| spec.matches(g, me, t));
+                if uncastable {
+                    12.0
+                } else if g.player(me).effective_cost(hc) > g.player(me).mana {
+                    4.0
+                } else {
+                    2.0
+                }
+            }
 
             Action::EndTurn => 1.0,
         }

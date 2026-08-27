@@ -62,9 +62,17 @@ pub enum Action {
     Prepare {
         hand: u8,
     },
+    /// Trade: pay 1 mana to shuffle the Tradeable card at `hand` back into
+    /// the deck and draw one. Not a play — the card itself never resolves.
+    Trade {
+        hand: u8,
+    },
     #[default]
     EndTurn,
 }
+
+/// What a Trade costs. One mana, on every Tradeable card printed so far.
+pub const TRADE_COST: i16 = 1;
 
 /// A policy. The engine calls this; it never calls the engine's internals.
 pub trait Agent {
@@ -702,6 +710,18 @@ impl Game {
             }
         }
 
+        // --- Trade
+        // Costs a mana of its own and is always available while you have one,
+        // even for a card you could afford to play: trading a removal spell
+        // you have no target for is the whole point of the keyword.
+        if me.mana >= TRADE_COST && me.deck.len() < MAX_DECK {
+            for (i, hc) in me.hand.iter().enumerate() {
+                if hc.card.def().keywords.has(Keywords::TRADEABLE) && hc.locked_turn != self.turn {
+                    out.push(Action::Trade { hand: i as u8 });
+                }
+            }
+        }
+
         // --- locations already in play
         for (i, m) in me.board.iter().enumerate() {
             if m.kind() != Kind::Location || !m.active() {
@@ -859,6 +879,7 @@ impl Game {
             Action::HeroPower { target, second } => self.use_hero_power(target, second),
             Action::UseLocation { slot, target } => self.use_location(slot as usize, target),
             Action::Prepare { hand } => self.prepare_card(hand as usize),
+            Action::Trade { hand } => self.trade_card(hand as usize),
             Action::EndTurn => true,
         }
     }
@@ -1187,6 +1208,33 @@ impl Game {
         p.hand[hand_idx].cost_delta -= mana + 1;
         p.hand[hand_idx].locked_turn = turn;
         p.mana = 0;
+        true
+    }
+
+    /// Trade: one mana to put a Tradeable card back into the deck and draw.
+    ///
+    /// The card is shuffled in rather than put on top, and the draw happens
+    /// afterwards — so trading can hand the same card straight back, exactly
+    /// as it can in the game.
+    fn trade_card(&mut self, hand_idx: usize) -> bool {
+        let side = self.current;
+        let Some(hc) = self.player(side).hand.get(hand_idx).copied() else {
+            return false;
+        };
+        if !hc.card.def().keywords.has(Keywords::TRADEABLE) || hc.locked_turn == self.turn {
+            return false;
+        }
+        if self.player(side).mana < TRADE_COST || self.player(side).deck.len() >= MAX_DECK {
+            return false;
+        }
+        let p = self.player_mut(side);
+        p.mana -= TRADE_COST;
+        p.hand.remove(hand_idx);
+        // A traded card goes back as a plain card: whatever discount or mark
+        // it was carrying in hand is gone, because the deck holds card ids
+        // and nothing else.
+        self.shuffle_into_deck(side, hc.card);
+        self.draw(side, 1);
         true
     }
 

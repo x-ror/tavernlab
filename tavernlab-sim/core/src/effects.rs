@@ -1029,6 +1029,21 @@ impl Game {
         self.player_mut(side).deck = deck;
     }
 
+    /// Destroy the top `n` cards of a deck.
+    ///
+    /// The top is the end of the array, the same end [`Game::draw`] takes
+    /// from, so milling and drawing agree about what "top" means.
+    pub fn mill(&mut self, side: Side, n: usize) -> usize {
+        let mut gone = 0;
+        for _ in 0..n {
+            if self.player_mut(side).deck.pop().is_none() {
+                break;
+            }
+            gone += 1;
+        }
+        gone
+    }
+
     /// Shuffle a card into `side`'s deck at a random position. Distinct from
     /// [`Game::put_on_bottom`]: "shuffle into your deck" can land anywhere,
     /// not always last.

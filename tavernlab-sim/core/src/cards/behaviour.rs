@@ -93,6 +93,10 @@ pub enum TargetSpec {
     DamagedEnemyMinion,
     UndamagedMinion,
     FriendlyBeast,
+    /// An enemy minion with Taunt (The Black Knight). A requirement, not a
+    /// preference: with nothing taunting, the card has no legal target at
+    /// all — which is exactly when its Tradeable half earns its keep.
+    EnemyTaunt,
 }
 
 impl TargetSpec {
@@ -149,6 +153,8 @@ impl TargetSpec {
             }
             TargetSpec::FriendlyBeast => matches!(t, Target::Minion(s, i)
                 if s == side && g.player(s).board[i as usize].races().any(Races::BEAST)),
+            TargetSpec::EnemyTaunt => matches!(t, Target::Minion(s, i)
+                if s == foe && g.player(s).board[i as usize].has(Keywords::TAUNT)),
         }
     }
 }
@@ -4094,6 +4100,151 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         g.summon_child(c.side, c.card, 1);
         g.buff_area(c.side, Area::FriendlyMinions, 1, 1);
     }),
+    // ------------------------------------------------- neutral batch: bodies
+    // Neutrals go in every deck, so each one here is a card that no longer
+    // stops a pasted list from resolving at all. Every entry is implementable
+    // exactly from its own text: nothing in this batch needed a number the
+    // corpus does not carry.
+    battlecry("The Black Knight", T::EnemyTaunt, |g, c| {
+        if let Some(t) = c.target {
+            g.destroy(t);
+        }
+    }),
+    battlecry("Dirty Rat", T::None, |g, c| {
+        // "Your opponent summons a random minion from their hand" — their
+        // minion, on their board, chosen at random.
+        let foe = c.side.other();
+        let picks: Inline<usize, MAX_HAND> = g
+            .player(foe)
+            .hand
+            .iter()
+            .enumerate()
+            .filter(|(_, hc)| hc.card.def().kind() == super::Kind::Minion)
+            .map(|(i, _)| i)
+            .collect();
+        if picks.is_empty() || g.player(foe).board.is_full() {
+            return;
+        }
+        let idx = picks[g.rngs.effects.index(picks.len())];
+        if let Some(hc) = g.player_mut(foe).hand.remove(idx) {
+            g.summon(foe, hc.card);
+        }
+    }),
+    battlecry("Netherspite Historian", T::None, |g, c| {
+        if g.holding_race(c.side, Races::DRAGON) {
+            g.discover(c.side, |d| {
+                d.kind() == super::Kind::Minion && d.races.any(Races::DRAGON)
+            });
+        }
+    }),
+    battlecry("Gorillabot A-3", T::None, |g, c| {
+        // "another Mech": Gorillabot is a Mech and is already on the board
+        // by the time its Battlecry runs, so it cannot count itself.
+        let side = c.side;
+        let others = g
+            .player(side)
+            .board
+            .iter()
+            .enumerate()
+            .any(|(i, m)| {
+                Some(i as u8) != c.source && m.active() && m.races().any(Races::MECHANICAL)
+            });
+        if others {
+            g.discover(side, |d| {
+                d.kind() == super::Kind::Minion && d.races.any(Races::MECHANICAL)
+            });
+        }
+    }),
+    battlecry("Menagerie Mug", T::None, |g, c| {
+        // Three friendly minions, each of a different tribe. A minion with no
+        // tribe has no type to be different from, so it is not eligible.
+        let side = c.side;
+        let mut given = 0;
+        let mut used = Races::NONE;
+        let mut order: Inline<u8, MAX_BOARD> = (0..g.player(side).board.len() as u8).collect();
+        g.rngs.effects.shuffle(order.as_mut_slice());
+        for slot in order.iter().copied() {
+            if given >= 3 {
+                break;
+            }
+            let Some(m) = g.player(side).board.get(slot as usize) else {
+                continue;
+            };
+            let races = m.races();
+            if !m.active() || !m.is_minion() || races.is_empty() || races.any(used) {
+                continue;
+            }
+            used |= races;
+            g.buff(Target::Minion(side, slot), 1, 1);
+            given += 1;
+        }
+    }),
+    battlecry("Omen of the End", T::None, |g, c| {
+        if g.player(c.side).deck.is_empty() {
+            g.mill(c.side.other(), 5);
+        }
+    }),
+    // "Double this minion's Health"/"Attack": read off the body itself, which
+    // is on the board by now and undamaged, so doubling is one buff.
+    battlecry("Soldier of the Bronze", T::None, |g, c| {
+        let Some(src) = c.source else { return };
+        let Some(m) = g.player(c.side).board.get(src as usize) else {
+            return;
+        };
+        let health = m.health();
+        g.buff(Target::Minion(c.side, src), 0, health);
+    }),
+    battlecry("Soldier of the Infinite", T::None, |g, c| {
+        let Some(src) = c.source else { return };
+        let Some(m) = g.player(c.side).board.get(src as usize) else {
+            return;
+        };
+        let atk = m.atk;
+        g.buff(Target::Minion(c.side, src), atk, 0);
+    }),
+    deathrattle("Concealing Confection", |g, c| {
+        g.add_random_to_hand(c.side, |d| d.kind() == super::Kind::Weapon);
+    }),
+    deathrattle("Willful Watcher", |g, c| {
+        g.mill(c.side, 3);
+    }),
+    deathrattle("Tindral Sageswift", |g, c| {
+        // "If it's your opponent's turn" — a Deathrattle fires whenever the
+        // body dies, which is as often on their turn as on yours.
+        let amount = if g.current == c.side { 1 } else { 4 };
+        g.damage_area(c.side, Area::AllEnemies, amount);
+    }),
+    trigger("Critter Caretaker", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            g.heal_hero(c.side, 3);
+            g.heal_hero(c.side.other(), 3);
+        }
+    }),
+    trigger("Daydreaming Pixie", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            g.add_random_to_hand(c.side, |d| {
+                d.kind() == super::Kind::Spell && d.school() == super::School::Nature
+            });
+        }
+    }),
+    trigger("Curious Cumulus", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            g.player_mut(c.side).hero_divine_shield = true;
+        }
+    }),
+    trigger("Earthen Drake", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            g.damage_hero(c.side.other(), 4);
+        }
+    }),
+    trigger("Time Skipper", |g, c| {
+        // "each player's turn", and the Coin goes to whoever's turn ended —
+        // including its own controller's.
+        if let Event::TurnEnd { side } = c.event {
+            g.give_token(side, tokens::COIN);
+        }
+    }),
+
     // No area helper takes a per-target predicate ("2 or less Attack") or
     // excludes the source, so this repeats `buff_area`'s loop by hand.
     battlecry("Hatchery Helper", T::None, |g, c| {
