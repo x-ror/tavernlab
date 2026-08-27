@@ -13,7 +13,7 @@ import { useT } from '../i18n'
 import { manaCurve, useMetaDecks } from '../meta'
 import HeroPortrait from '../components/HeroPortrait'
 import CardTile from '../components/CardTile'
-import { Loading, Panel } from '../components/ui'
+import { Loading, Panel, skipReason } from '../components/ui'
 import { classColor, classWash } from '../classes'
 import { formatName, pct } from '../format'
 
@@ -182,7 +182,7 @@ function DeckCard({ deck, rate, open }) {
           {deck.playable === false && (
             <span style={{ fontSize: '.78rem', color: 'var(--tl-warn)' }}>
               {t('ui.meta.not_fielded', {
-                cards: (deck.missing || []).map(([name, n]) => `${n}× ${name}`).join(', '),
+                cards: skipReason({ ...deck, cards: deck.missing }, t),
               })}
             </span>
           )}

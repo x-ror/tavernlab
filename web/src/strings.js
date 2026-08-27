@@ -48,6 +48,7 @@ export const EXTRA = {
     'ui.meta.empty': 'Для цього формату гаунтлета немає.',
 
     'ui.field.title': 'Пораховано на {played} колодах поля з {all}',
+    'ui.field.short_list': 'у списку {n} карт замість 30 — це неповний запис у файлі гаунтлета, а не прогалина в рушії',
     'ui.field.why': 'Колоду з нереалізованою картою симулятор не виставляє взагалі: викинути карту означало б зсунути вінрейт на невідому величину й видати це за вимір.',
 
     'ui.deck.none': 'Колоду не задано',
@@ -148,6 +149,7 @@ export const EXTRA = {
     'ui.meta.empty': 'No gauntlet for this format.',
 
     'ui.field.title': 'Measured against {played} of the field’s {all} decks',
+    'ui.field.short_list': 'the list holds {n} cards, not 30 — an incomplete entry in the gauntlet file rather than a gap in the engine',
     'ui.field.why': 'A deck holding a card the engine cannot play is not fielded at all: dropping the card would move the win rate by an unknown amount and report it as a measurement.',
 
     'ui.deck.none': 'No deck set',

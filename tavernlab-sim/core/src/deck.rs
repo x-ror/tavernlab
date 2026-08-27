@@ -300,10 +300,19 @@ mod tests {
 
     #[test]
     fn resolve_slots_counts_implemented_copies_and_lists_the_rest() {
+        // The unimplemented example is taken from the table rather than named:
+        // a card named here stops being an example the day it is implemented,
+        // and this test failed exactly that way once.
+        let unimplemented = all()
+            .find(|c| {
+                let d = c.def();
+                d.collectible && d.deckable() && !is_implemented(*c)
+            })
+            .expect("the table has unimplemented cards");
         let report = resolve_slots(&[
             ("Fireball", 2),
             ("Not A Real Card", 1),
-            ("Deathwing, Worldbreaker", 1), // a real card, not yet implemented
+            (unimplemented.name(), 1),
         ]);
         assert_eq!(report.ok, 2);
         assert_eq!(report.total, 4);
@@ -311,7 +320,7 @@ mod tests {
             report.missing,
             vec![
                 ("Not A Real Card".to_string(), 1),
-                ("Deathwing, Worldbreaker".to_string(), 1),
+                (unimplemented.name().to_string(), 1),
             ]
         );
     }

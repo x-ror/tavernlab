@@ -547,6 +547,12 @@ impl Game {
                                 || d.keywords.has(Keywords::SIDE_QUEST))
                                 && b.trigger.is_some())
                     }) => {}
+                // A Hero card is played from hand like any other: it hands
+                // its controller armor and fires its Battlecry. One with no
+                // Battlecry would be armor and nothing else, and this engine
+                // has none such -- so it is offered only when implemented,
+                // the same rule spells follow.
+                Kind::Hero if beh.is_some_and(|b| b.battlecry.is_some()) => {}
                 Kind::Spell | Kind::Hero | Kind::HeroPower => continue,
             }
 
@@ -891,7 +897,8 @@ impl Game {
             {
                 return false;
             }
-            Kind::Hero | Kind::HeroPower => return false,
+            Kind::Hero if !beh.is_some_and(|b| b.battlecry.is_some()) => return false,
+            Kind::HeroPower => return false,
             _ => {}
         }
         // The target is re-checked here rather than trusted: a search or a
@@ -1031,6 +1038,13 @@ impl Game {
                 // other way a weapon can leave play.
                 broken_weapon = p.weapon.replace(Weapon::equip(hc.card));
             }
+            // A Hero card replaces the hero's armor and Hero Power, not its
+            // health: the printed Health on a hero card is the starting
+            // total for a new game, not something a card played on turn ten
+            // hands back. The Hero Power comes from the card's own Battlecry
+            // (`Deathwing, Worldbreaker` equips Ruthless), because which
+            // power a hero grants is not in the corpus as a field.
+            Kind::Hero => p.armor += def.armor,
             Kind::Spell => {}
             _ => unreachable!("filtered above"),
         }
@@ -1817,6 +1831,8 @@ impl Game {
                 p.armor += 1;
             }
             "Demon Claws" => self.player_mut(side).hero_bonus_atk += 1,
+            // Deathwing's own power, equipped by his Battlecry.
+            "Ruthless" => self.player_mut(side).hero_bonus_atk += 5,
             "Ghoul Charge" => {
                 if let Some(c) = by_name("Frail Ghoul") {
                     self.summon(side, c);
@@ -1826,6 +1842,17 @@ impl Game {
             "Vampyr's Kiss" => {
                 if let Some(t) = target {
                     self.buff(t, 3, 0);
+                }
+            }
+            // The one Hero Power that grows: Soul Immolation raises it by 1
+            // every cast after the one that granted it. The corpus writes the
+            // base damage as a script placeholder (`Deal @ damage`) and gives
+            // no number, so the base is 1 -- the smallest value the card's
+            // own "increase its damage by 1" is written against.
+            "Collapsing Star" => {
+                let damage = 1 + self.player(side).hero_power_bonus;
+                if let Some(t) = self.random_enemy(side) {
+                    self.deal_damage(t, damage);
                 }
             }
             _ => {}

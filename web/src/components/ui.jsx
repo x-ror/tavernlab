@@ -183,6 +183,16 @@ export function Pill({ tone, children }) {
  *  the average entirely, and an average over seven decks presented as an
  *  average over twelve is a lie by omission — so the server reports the
  *  gap on every such answer and this prints it. */
+/** Why one gauntlet deck is not fielded, in the player's terms.
+ *
+ *  Two different answers: a card the engine cannot play is a gap in the
+ *  engine, an incomplete list is a gap in the gauntlet file, and only the
+ *  first is fixed by writing more cards. */
+export function skipReason(deck, t) {
+  if (deck.why === 'size') return t('ui.field.short_list', { n: deck.listed })
+  return (deck.cards || []).map(([name, n]) => `${n}× ${name}`).join(', ')
+}
+
 export function FieldNote({ result }) {
   const { t } = useT()
   if (!result || result.field_played === undefined) return null
@@ -196,14 +206,18 @@ export function FieldNote({ result }) {
           {skipped.map((d) => (
             <li key={d.deck}>
               <Text>
-                {d.deck} — {(d.cards || []).map(([name, n]) => `${n}× ${name}`).join(', ')}
+                {d.deck} — {skipReason(d, t)}
               </Text>
             </li>
           ))}
         </ul>
-        <Text UNSAFE_style={{ display: 'block', marginTop: '.4rem', fontSize: '.85rem', opacity: 0.8 }}>
-          {t('ui.field.why')}
-        </Text>
+        {/* Only when a card is the reason: an incomplete list is not a
+            deck the engine refused to approximate. */}
+        {skipped.some((d) => d.why !== 'size') && (
+          <Text UNSAFE_style={{ display: 'block', marginTop: '.4rem', fontSize: '.85rem', opacity: 0.8 }}>
+            {t('ui.field.why')}
+          </Text>
+        )}
       </Content>
     </InlineAlert>
   )

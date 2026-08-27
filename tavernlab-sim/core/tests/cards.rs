@@ -4955,3 +4955,200 @@ fn hatchery_helper_buffs_low_attack_others_but_not_itself() {
         .unwrap();
     assert_eq!(helper.atk, 2, "itself excluded despite 2 or less Attack");
 }
+
+#[test]
+fn soul_immolation_swaps_the_hero_power_and_then_grows_it() {
+    // "Your Hero Power becomes 'Collapsing Star'. If it already is, increase
+    // its damage by 1." Two casts is one power that hits for 2.
+    let mut f = Fix::new();
+    f.play("Soul Immolation", None);
+    assert_eq!(f.g.players[0].hero_power.name(), "Collapsing Star");
+    assert_eq!(f.g.players[0].hero_power_bonus, 0, "the first cast only swaps");
+
+    f.play("Soul Immolation", None);
+    assert_eq!(f.g.players[0].hero_power.name(), "Collapsing Star");
+    assert_eq!(f.g.players[0].hero_power_bonus, 1, "the second cast adds damage");
+}
+
+#[test]
+fn collapsing_star_hits_an_enemy_for_its_current_damage() {
+    // The only enemy is the hero, so "a random enemy" has one answer and the
+    // damage is readable.
+    let mut f = Fix::new();
+    f.play("Soul Immolation", None);
+    let before = f.g.players[1].hero_hp;
+    assert!(f.g.apply(Action::HeroPower {
+        target: None,
+        second: false,
+    }));
+    assert_eq!(f.g.players[1].hero_hp, before - 1, "base damage is 1");
+
+    f.g.players[0].hero_power_uses = 0;
+    f.play("Soul Immolation", None); // now +1
+    let before = f.g.players[1].hero_hp;
+    assert!(f.g.apply(Action::HeroPower {
+        target: None,
+        second: false,
+    }));
+    assert_eq!(f.g.players[1].hero_hp, before - 2, "the raised damage lands");
+}
+
+#[test]
+fn collapsing_star_refreshes_when_its_owner_summons_a_demon() {
+    let mut f = Fix::new();
+    f.play("Soul Immolation", None);
+    assert!(f.g.apply(Action::HeroPower {
+        target: None,
+        second: false,
+    }));
+    assert_eq!(f.g.players[0].hero_power_uses, 1, "spent");
+
+    // A Demon refreshes it; anything else does not.
+    f.play("Voidwalker", None);
+    assert_eq!(f.g.players[0].hero_power_uses, 0, "a Demon refreshed the power");
+
+    assert!(f.g.apply(Action::HeroPower {
+        target: None,
+        second: false,
+    }));
+    f.play("Wisp", None);
+    assert_eq!(
+        f.g.players[0].hero_power_uses, 1,
+        "a Wisp is not a Demon and must not refresh it"
+    );
+}
+
+#[test]
+fn a_demon_refreshes_only_its_own_summoners_power() {
+    let mut f = Fix::new();
+    f.play("Soul Immolation", None);
+    assert!(f.g.apply(Action::HeroPower {
+        target: None,
+        second: false,
+    }));
+    // The opponent summoning a Demon must not hand the power back.
+    let voidwalker = by_name("Voidwalker").unwrap();
+    f.g.summon(FOE, voidwalker);
+    assert_eq!(f.g.players[0].hero_power_uses, 1);
+}
+
+// ------------------------------------------------- Deathwing, Worldbreaker
+
+#[test]
+fn a_hero_card_gives_armor_and_its_own_hero_power() {
+    // A Hero card is played from hand like anything else. It hands over
+    // armor and a Hero Power; the health printed on it belongs to a new
+    // game, not to a hero already in one.
+    let mut f = Fix::new();
+    let hp_before = f.g.players[0].hero_hp;
+    f.play("Deathwing, Worldbreaker", None);
+    assert_eq!(f.g.players[0].armor, 12, "the card's printed armor");
+    assert_eq!(f.g.players[0].hero_hp, hp_before, "health is not reset");
+    assert_eq!(f.g.players[0].hero_power.name(), "Ruthless");
+}
+
+#[test]
+fn ruthless_gives_the_hero_five_attack() {
+    let mut f = Fix::new();
+    f.play("Deathwing, Worldbreaker", None);
+    f.g.players[0].hero_power_uses = 0;
+    f.g.players[0].mana = 10;
+    assert!(f.g.apply(Action::HeroPower {
+        target: None,
+        second: false,
+    }));
+    assert_eq!(f.g.players[0].hero_bonus_atk, 5);
+}
+
+#[test]
+fn deathwing_unleashes_one_cataclysm_and_three_at_full_herald() {
+    // On an empty board the best Cataclysm is the 12/12, so one pick is one
+    // Dragon and nothing else; at Herald 4 the picks keep coming and Enthrall
+    // reaches the deck too.
+    let mut f = Fix::new();
+    f.play("Deathwing, Worldbreaker", None);
+    assert_eq!(f.g.players[0].board.len(), 1, "one Cataclysm, one Dragon");
+    assert_eq!(f.g.players[0].board[0].card.name(), "Progeny of Deathwing");
+    assert_eq!(f.g.players[0].deck.len(), 0, "Enthrall was not among the picks");
+
+    let mut f = Fix::new();
+    f.g.players[0].herald = 4;
+    f.play("Deathwing, Worldbreaker", None);
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!(
+        f.g.players[0].deck.len(),
+        5,
+        "at Herald 4 three Cataclysms fire, Enthrall among them"
+    );
+}
+
+#[test]
+fn deathwing_clears_a_board_it_can_actually_kill() {
+    // Three 3/2s die to Raze, which then outscores the 12/12: the pick is
+    // about the position, not a fixed order. Two 4/5s, which Raze only
+    // damages, go the other way — checked below so the trade-off is pinned
+    // rather than implied.
+    let mut f = Fix::new().board(FOE, &["Bloodfen Raptor", "Bloodfen Raptor", "Bloodfen Raptor"]);
+    f.play("Deathwing, Worldbreaker", None);
+    assert!(f.g.players[1].board.is_empty(), "Raze cleared the board");
+    assert!(f.g.players[0].board.is_empty(), "only one Cataclysm fired");
+
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti", "Chillwind Yeti"]);
+    f.play("Deathwing, Worldbreaker", None);
+    assert_eq!(f.g.players[1].board.len(), 2, "4 damage does not kill a 4/5");
+    assert_eq!(
+        f.g.players[0].board.first().map(|m| m.card.name()),
+        Some("Progeny of Deathwing"),
+        "against bodies it cannot kill, the Dragon is the better Cataclysm"
+    );
+}
+
+#[test]
+fn raze_hits_every_enemy_minion_for_four() {
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti"]).board(ME, &["Chillwind Yeti"]);
+    f.play("Raze", None);
+    assert_eq!(f.g.players[1].board[0].health(), 1);
+    assert_eq!(f.g.players[0].board[0].health(), 5, "friendly minions are safe");
+}
+
+#[test]
+fn topple_destroys_the_biggest_enemy_minion() {
+    let mut f = Fix::new().board(FOE, &["Wisp", "Chillwind Yeti", "Bloodfen Raptor"]);
+    f.play("Topple", None);
+    let left: Vec<&str> = f.g.players[1]
+        .board
+        .iter()
+        .map(|m| m.card.name())
+        .collect();
+    assert_eq!(left, ["Wisp", "Bloodfen Raptor"], "the 4/5 is gone");
+}
+
+#[test]
+fn topple_on_an_empty_board_does_nothing() {
+    let mut f = Fix::new();
+    f.play("Topple", None);
+    assert!(f.g.players[1].board.is_empty());
+}
+
+#[test]
+fn dragons_reign_summons_the_twelve_twelve() {
+    let mut f = Fix::new();
+    f.play("Dragon's Reign", None);
+    let m = &f.g.players[0].board[0];
+    assert_eq!(m.card.name(), "Progeny of Deathwing");
+    assert_eq!((m.atk, m.health()), (12, 12));
+}
+
+#[test]
+fn enthrall_shuffles_five_legendary_dragons_into_the_deck() {
+    use tavernlab_core::cards::Rarity;
+    let mut f = Fix::new();
+    f.play("Enthrall", None);
+    assert_eq!(f.g.players[0].deck.len(), 5);
+    for card in f.g.players[0].deck.iter() {
+        let d = card.def();
+        assert_eq!(d.kind(), Kind::Minion);
+        assert!(d.races.any(Races::DRAGON), "{} is not a Dragon", card.name());
+        assert_eq!(d.rarity(), Rarity::Legendary, "{}", card.name());
+    }
+}
