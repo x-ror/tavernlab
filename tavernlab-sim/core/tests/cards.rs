@@ -7527,3 +7527,125 @@ fn gladiatorial_combat_arms_both_sides() {
     assert_eq!(f.theirs(0).card.name(), "Coliseum Tiger");
     assert!(f.theirs(0).has(Keywords::STEALTH));
 }
+
+// ---------------------------------------------------------------- Mage
+
+#[test]
+fn mirror_dimension_doubles_up_for_a_dragon_in_hand() {
+    let mut f = Fix::new();
+    f.play("Mirror Dimension", None);
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (0, 4));
+    assert!(f.mine(0).has(Keywords::TAUNT));
+
+    let mut f = Fix::new();
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Faerie Dragon").unwrap()));
+    f.play("Mirror Dimension", None);
+    assert_eq!(f.g.players[0].board.len(), 2);
+}
+
+#[test]
+fn spark_of_life_picks_a_class_to_dig_in() {
+    let mut f = Fix::new();
+    f.play_mode("Spark of Life", 0, None);
+    assert_eq!(f.g.players[0].hand[0].card.def().class(), Class::Mage);
+
+    let mut f = Fix::new();
+    f.play_mode("Spark of Life", 1, None);
+    assert_eq!(f.g.players[0].hand[0].card.def().class(), Class::Druid);
+}
+
+#[test]
+fn scorching_winds_pays_double_for_a_discard() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Scorching Winds", foe_minion(0));
+    assert_eq!(f.theirs(0).damage, 3, "nothing to discard");
+
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Fireball").unwrap())); // a Fire spell
+    f.play("Scorching Winds", foe_minion(0));
+    assert_eq!(f.theirs(0).damage, 6);
+    assert_eq!(f.g.players[0].hand.len(), 0);
+}
+
+#[test]
+fn spire_security_reads_the_deck_without_moving_it() {
+    let mut f = Fix::new()
+        .board(FOE, &["Boulderfist Ogre"])
+        .deck(&["Pyroblast"]); // costs 10
+    f.play("Spire Security", None);
+    assert_eq!(f.g.players[0].deck.len(), 1, "revealed, not drawn");
+    assert_eq!(f.theirs(0).damage, 5);
+
+    let mut f = Fix::new()
+        .board(FOE, &["Boulderfist Ogre"])
+        .deck(&["Moonfire"]); // costs 0
+    f.play("Spire Security", None);
+    assert_eq!(f.theirs(0).damage, 0);
+}
+
+#[test]
+fn astromancer_summons_by_the_size_of_your_hand() {
+    let mut f = Fix::new();
+    for _ in 0..4 {
+        f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    }
+    f.play("Astromancer", None);
+    assert_eq!(f.g.players[0].board.len(), 2);
+    assert_eq!(f.mine(1).card.def().cost, 4, "four cards left in hand");
+}
+
+#[test]
+fn temporal_construct_draws_the_overkill() {
+    let mut f = Fix::new()
+        .board(FOE, &["Wisp"]) // 1 health, so four points spill
+        .deck(&["Wisp", "Wisp", "Wisp", "Wisp", "Wisp"]);
+    f.play("Temporal Construct", foe_minion(0));
+    assert_eq!(f.their_board(), 0);
+    assert_eq!(f.g.players[0].hand.len(), 4);
+}
+
+#[test]
+fn sindragosas_triumph_discounts_by_the_overkill() {
+    let mut f = Fix::new().board(FOE, &["Wisp"]); // 1 health, seven spill
+    f.g.players[0].hand.push(HandCard::new(by_name("Fireball").unwrap()));
+    f.play("Sindragosa's Triumph", foe_minion(0));
+    assert_eq!(f.their_board(), 0);
+    assert_eq!(f.g.players[0].hand[0].cost_delta, -7);
+}
+
+#[test]
+fn relic_of_kings_sets_a_flat_price() {
+    let mut f = Fix::new();
+    f.play("Relic of Kings", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    let h = &f.g.players[0].hand[0];
+    assert!(h.card.def().cost >= 8, "{}", h.card.name());
+    assert_eq!(f.g.card_cost(ME, 0), 1);
+}
+
+#[test]
+fn inferno_herald_pays_an_elemental_per_fire_spell() {
+    let mut f = Fix::new().board(ME, &["Inferno Herald"]);
+    f.play("Fireball", Some(Target::Hero(FOE)));
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    let h = &f.g.players[0].hand[0];
+    assert!(h.card.def().races.any(Races::ELEMENTAL), "{}", h.card.name());
+    assert_eq!(h.cost_delta, -3);
+}
+
+#[test]
+fn mystic_misdirection_turns_the_attacker_into_a_sheep() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Mystic Misdirection", None);
+    assert_eq!(f.g.players[0].secrets.len(), 1);
+    f.g.current = FOE;
+    f.g.apply(Action::Attack { from: 0, target: Target::Hero(ME) });
+    assert_eq!(f.theirs(0).card.name(), "Sheep");
+    assert_eq!((f.theirs(0).atk, f.theirs(0).max_hp), (1, 1));
+    assert_eq!(f.g.players[0].secrets.len(), 0, "spent");
+}

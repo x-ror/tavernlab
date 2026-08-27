@@ -470,6 +470,8 @@ mod tokens {
     pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
     /// Imp Gang Stooge's "8/8 Demon with Taunt and Lifesteal".
     pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
+    /// Mirror Dimension's 0/4 Taunt body.
+    pub const MIRRORED_MAGE: CardId = token("TIME_006t1");
     /// Gladiatorial Combat's Tiger, which goes to the *opponent*.
     pub const COLISEUM_TIGER: CardId = token("TIME_870t");
     /// Shaman backlog: Ritual of Power's Breezling, Spirits of the Forest's
@@ -4811,6 +4813,112 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         // The crystals locked for *this* turn, not the Overload queued for the
         // next one -- those are not yet Overloaded Mana Crystals.
         if g.player(side).overload_now > 0 { (1, 0) } else { (0, 0) }
+    }),
+
+    // ----------------------------------------------------------- Mage
+    spell("Mirror Dimension", T::None, |g, c| {
+        let n = if g.holding_race(c.side, Races::DRAGON) { 2 } else { 1 };
+        g.summon_token(c.side, tokens::MIRRORED_MAGE, n);
+    }),
+    choose("Spark of Life", &[
+        m(T::None, |g, c| {
+            g.discover(c.side, |d| {
+                d.kind() == super::Kind::Spell && d.class() == super::Class::Mage
+            });
+        }),
+        m(T::None, |g, c| {
+            g.discover(c.side, |d| {
+                d.kind() == super::Kind::Spell && d.class() == super::Class::Druid
+            });
+        }),
+    ]),
+    spell("Scorching Winds", T::AnyCharacter, |g, c| {
+        g.spell_damage(c.side, c.target, 3);
+        if g.discard_random_where(c.side, |d| {
+            d.kind() == super::Kind::Spell && d.school() == super::School::Fire
+        }) {
+            g.spell_damage(c.side, c.target, 3);
+        }
+    }),
+    battlecry("Spire Security", T::None, |g, c| {
+        // "Reveal" only looks: the spell stays in the deck.
+        let mut spells: Inline<i16, { crate::state::MAX_DECK }> = Inline::new();
+        for card in g.player(c.side).deck.iter() {
+            if card.def().kind() == super::Kind::Spell {
+                spells.push(card.def().cost);
+            }
+        }
+        if spells.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(spells.len());
+        if spells[pick] >= 5 {
+            g.damage_split(c.side, Area::EnemyMinions, 5);
+        }
+    }),
+    battlecry("Astromancer", T::None, |g, c| {
+        // Read after this card has left hand, which is the hand the summon
+        // sees too.
+        let n = g.player(c.side).hand.len() as i16;
+        g.summon_random_of_cost(c.side, n, 1);
+    }),
+    battlecry("Temporal Construct", T::EnemyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(s, i) = t else { return };
+        let Some(health) = g.player(s).board.get(i as usize).map(|m| m.health()) else {
+            return;
+        };
+        g.deal_damage(t, 5);
+        let excess = (5 - health).max(0);
+        g.draw_cards(c.side, excess as usize);
+    }),
+    spell("Sindragosa's Triumph", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(s, i) = t else { return };
+        let Some(health) = g.player(s).board.get(i as usize).map(|m| m.health()) else {
+            return;
+        };
+        // Printed as immune to Spell Damage, so this is raw damage.
+        g.deal_damage(t, 8);
+        let excess = (8 - health).max(0);
+        if excess > 0 {
+            let n = g.player(c.side).hand.len();
+            if n > 0 {
+                let pick = g.rngs.effects.index(n);
+                if let Some(h) = g.player_mut(c.side).hand.get_mut(pick) {
+                    h.cost_delta -= excess;
+                }
+            }
+        }
+    }),
+    spell("Relic of Kings", T::None, |g, c| {
+        if g.discover(c.side, |d| d.kind() == super::Kind::Spell && d.cost >= 8)
+            && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            // "It costs (1)" — a flat price, whatever it was printed at.
+            h.cost_delta = 1 - h.card.def().cost;
+        }
+    }),
+    trigger("Inferno Herald", |g, c| {
+        if let Event::SpellCast { side, card } = c.event
+            && side == c.side
+            && card.def().school() == super::School::Fire
+            && g.add_random_to_hand(c.side, |d| {
+                d.kind() == super::Kind::Minion && d.races.any(Races::ELEMENTAL)
+            })
+            && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            h.cost_delta -= 3;
+        }
+    }),
+    secret("Mystic Misdirection", |g, owner, ev| {
+        if let Event::AttackDeclared { attacker: Target::Minion(s, i), .. } = ev
+            && s == owner.other()
+        {
+            g.transform(Target::Minion(s, i), tokens::SHEEP);
+            return true;
+        }
+        false
     }),
 
     // -------------------------------------------------------- Warrior
