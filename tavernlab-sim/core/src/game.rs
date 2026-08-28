@@ -304,6 +304,9 @@ impl Game {
         p.hero_power_uses = 0;
         p.second_hero_power_uses = 0;
         p.friendly_damaged_turn = 0;
+        p.hero_damaged_turn = false;
+        p.hero_health_moved_turn = false;
+        p.friendly_deaths_turn = 0;
         p.hero_attacks_done = 0;
         p.hero_bonus_atk = 0;
         p.cards_played_turn = 0;
@@ -391,6 +394,7 @@ impl Game {
                 PendingKind::HeroAttack => {
                     self.hero_attack_bonus(side, entry.amount);
                 }
+
                 PendingKind::None => {}
             }
         }
@@ -405,6 +409,10 @@ impl Game {
         // Fired before anything is cleaned up, so an end-of-turn effect sees
         // the board as the player left it.
         self.fire(Event::TurnEnd { side });
+        let burn = self.player(side).end_turn_burn;
+        if burn > 0 {
+            self.damage_hero(side.other(), burn);
+        }
         let p = self.player_mut(side);
         // Frozen characters thaw at the end of their controller's turn, unless
         // they were frozen during it.
@@ -1062,6 +1070,9 @@ impl Game {
         match def.kind() {
             Kind::Minion | Kind::Location => {
                 let mut m = Permanent::summon(hc.card);
+                // Whatever was granted to this copy while it sat in hand.
+                m.atk += hc.atk as i16;
+                m.max_hp += hc.hp as i16;
                 // Cleared once this card's own CardPlayed event has gone out;
                 // see `Flags::BEING_PLAYED`.
                 m.flags.insert(Flags::BEING_PLAYED);
@@ -1077,7 +1088,10 @@ impl Game {
             Kind::Weapon => {
                 // Equipping over an existing weapon breaks it, same as any
                 // other way a weapon can leave play.
-                broken_weapon = p.weapon.replace(Weapon::equip(hc.card));
+                let mut w = Weapon::equip(hc.card);
+                w.atk += hc.atk as i16;
+                w.durability += hc.hp as i16;
+                broken_weapon = p.weapon.replace(w);
             }
             // A Hero card replaces the hero's armor and Hero Power, not its
             // health: the printed Health on a hero card is the starting
@@ -1090,6 +1104,9 @@ impl Game {
             _ => unreachable!("filtered above"),
         }
         self.board_dirty = true;
+        // Before the battlecry: a minion that reads its own Attack ("if this
+        // has 4 or more Attack") has to see the aura it just walked into.
+        self.recompute_auras();
         if let Some(old) = broken_weapon {
             self.fire_weapon_deathrattle(side, old);
         }
@@ -1202,6 +1219,8 @@ impl Game {
         for m in self.player_mut(side).board.iter_mut() {
             m.flags.remove(Flags::BEING_PLAYED);
         }
+        // A card left hand to be played; hand size is a printed condition.
+        self.refresh_conditionals();
         // One sweep, once everything the card set in motion has resolved.
         self.sweep_deaths();
         true
@@ -1287,7 +1306,11 @@ impl Game {
             }
             return false;
         }
-        p.hand.push(HandCard::new(card))
+        let ok = p.hand.push(HandCard::new(card));
+        // Hand and deck size are printed conditions ("if your deck has 25 or
+        // more cards"), and this is where both move.
+        self.refresh_conditionals();
+        ok
     }
 
     /// Draw `n` cards, taking fatigue for each empty draw.
@@ -1642,6 +1665,8 @@ impl Game {
         let absorbed = amount.min(p.armor);
         p.armor -= absorbed;
         p.hero_hp -= amount - absorbed;
+        p.hero_damaged_turn = true;
+        p.hero_health_moved_turn = true;
         self.check_over();
         self.fire(Event::Damaged {
             target: Target::Hero(side),
@@ -1662,6 +1687,7 @@ impl Game {
         // not wake "whenever a character is healed".
         let restored = p.hero_hp - before;
         if restored > 0 {
+            self.player_mut(side).hero_health_moved_turn = true;
             self.fire(Event::Healed {
                 target: Target::Hero(side),
                 amount: restored,
@@ -1768,6 +1794,7 @@ impl Game {
                 if body.is_minion() {
                     let p = self.player_mut(side);
                     p.deaths = p.deaths.saturating_add(1);
+                    p.friendly_deaths_turn = p.friendly_deaths_turn.saturating_add(1);
                     p.graveyard.push(card);
                 }
             }
@@ -1777,6 +1804,33 @@ impl Game {
             // than in the vacated slot — a documented simplification, and the
             // only place board position is not preserved exactly.
             for (side, card, slot, body) in dying.iter().copied() {
+                // A granted deathrattle runs alongside the minion's own, after
+                // it: "Give your minions \"Deathrattle: …\"" adds, never
+                // replaces.
+                if body.granted_rattle != CardId(0)
+                    && let Some(f) =
+                        behaviour_of(body.granted_rattle).and_then(|b| b.deathrattle)
+                {
+                    // `dying` is the *host's* body, not the granting card's:
+                    // "Summon a minion with this minion's Cost" is a question
+                    // about who died, not about what wrote the rattle.
+                    f(
+                        self,
+                        &Ctx {
+                            card: body.granted_rattle,
+                            side,
+                            target: None,
+                            source: Some(slot),
+                            outcast: false,
+                            dying: Some(body),
+                            marks: Marks::NONE,
+                            mana_spent: 0,
+                        },
+                    );
+                    if self.is_over() {
+                        return;
+                    }
+                }
                 if let Some(f) = behaviour_of(card).and_then(|b| b.deathrattle) {
                     f(
                         self,

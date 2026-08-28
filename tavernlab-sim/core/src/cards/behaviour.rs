@@ -91,8 +91,12 @@ pub enum TargetSpec {
     /// A minion with at least this much attack.
     MinionAtkAtLeast(i16),
     DamagedEnemyMinion,
+    /// Any damaged minion, either side (Ominous Nightmares).
+    DamagedMinion,
     UndamagedMinion,
     FriendlyBeast,
+    /// A Legendary minion, either side (Garona's Last Stand).
+    LegendaryMinion,
     /// An enemy minion that has a minion type at all (Bugsquasher). A body
     /// with no tribe is not a legal target, which is the whole joke.
     EnemyMinionWithRace,
@@ -151,11 +155,16 @@ impl TargetSpec {
             TargetSpec::DamagedEnemyMinion => {
                 matches!(t, Target::Minion(s, i) if s == foe && g.player(s).board[i as usize].damage > 0)
             }
+            TargetSpec::DamagedMinion => {
+                matches!(t, Target::Minion(s, i) if g.player(s).board[i as usize].damage > 0)
+            }
             TargetSpec::UndamagedMinion => {
                 matches!(t, Target::Minion(s, i) if g.player(s).board[i as usize].damage == 0)
             }
             TargetSpec::FriendlyBeast => matches!(t, Target::Minion(s, i)
                 if s == side && g.player(s).board[i as usize].races().any(Races::BEAST)),
+            TargetSpec::LegendaryMinion => matches!(t, Target::Minion(s, i)
+                if g.player(s).board[i as usize].card.def().rarity() == super::Rarity::Legendary),
             TargetSpec::EnemyMinionWithRace => matches!(t, Target::Minion(s, i)
                 if s == foe && !g.player(s).board[i as usize].races().is_empty()),
             TargetSpec::EnemyTaunt => matches!(t, Target::Minion(s, i)
@@ -465,6 +474,39 @@ mod tokens {
     pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
     /// Imp Gang Stooge's "8/8 Demon with Taunt and Lifesteal".
     pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
+    /// Granted deathrattles: the bodies the granting cards promise.
+    pub const STEGODON: CardId = token("UNG_810");
+    pub const PLANT: CardId = token("UNG_999t2t1");
+    /// Ancient Raptor's third mode grants this, rather than granting itself:
+    /// a minion's own deathrattle row fires on its death too, so a minion
+    /// that granted itself would pay out twice.
+    pub const LIVING_SPORES: CardId = token("UNG_999t2");
+    /// Neutral backlog: Wicked Blightspawn's Dagger, Steamfin Thief's
+    /// Murlocs and Bronze Keeper's Dragon.
+    pub const WICKED_KNIFE: CardId = token("CS2_082");
+    pub const JUVENILE_STEAMFIN: CardId = token("TLC_429t");
+    pub const SANDSCALE_DRAGON: CardId = token("CATA_476t");
+    /// Death Knight backlog: the Corpse-raised bodies.
+    pub const RISEN_FOOTMAN: CardId = token("RLK_061t");
+    pub const RISEN_GHOUL: CardId = token("RLK_008t");
+    pub const RISEN_GROOM: CardId = token("RLK_506t");
+    pub const HUNGRY_DRAKE: CardId = token("CATA_465t");
+    /// Bronze Redeemer's Dragon, resized to match its parent.
+    pub const BRONZE_BRUTE: CardId = token("CATA_478t");
+    /// Web of Deception's 4/4.
+    pub const SKITTERING_SPIDERLING: CardId = token("EDR_523t");
+    /// Rat Trap's 6/6.
+    pub const DOOM_RAT: CardId = token("GIL_577t");
+    /// Sleep Paralysis' 3/6 Demon that cannot swing.
+    pub const NIGHT_TERROR: CardId = token("EDR_490t");
+    /// Glade Ecologist's spell and Holy Embrace's dark half. Both are real
+    /// playable spells with rows of their own below.
+    pub const PURIFYING_VINES: CardId = token("TLC_813");
+    pub const DARK_EMBRACE: CardId = token("JAIL_941t");
+    /// Mirror Dimension's 0/4 Taunt body.
+    pub const MIRRORED_MAGE: CardId = token("TIME_006t1");
+    /// Gladiatorial Combat's Tiger, which goes to the *opponent*.
+    pub const COLISEUM_TIGER: CardId = token("TIME_870t");
     /// Shaman backlog: Ritual of Power's Breezling, Spirits of the Forest's
     /// two halves, and the Lightning Bolt Rehgar hands out (a real card).
     pub const BREEZLING: CardId = token("CATA_561t");
@@ -4806,6 +4848,2196 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         if g.player(side).overload_now > 0 { (1, 0) } else { (0, 0) }
     }),
 
+    // --------------------------------- more hand enchantments, and
+    // the two per-turn questions the engine could not answer before.
+    spell("Blood Tap", T::None, |g, c| {
+        let more = g.spend_corpses(c.side, 2);
+        for h in g.player_mut(c.side).hand.iter_mut() {
+            if h.card.def().kind() == super::Kind::Minion {
+                h.enchant(1, 1);
+                if more {
+                    h.enchant(1, 1);
+                }
+            }
+        }
+    }),
+    battlecry("Darkfallen Neophyte", T::None, |g, c| {
+        if !g.spend_corpses(c.side, 2) {
+            return;
+        }
+        for h in g.player_mut(c.side).hand.iter_mut() {
+            if h.card.def().kind() == super::Kind::Minion {
+                h.enchant(2, 0);
+            }
+        }
+    }),
+    trigger("Hourglass Attendant", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            for h in g.player_mut(c.side).hand.iter_mut() {
+                if h.card.def().kind() == super::Kind::Minion {
+                    h.enchant(1, 1);
+                }
+            }
+        }
+    }),
+    trigger("Overlord Runthak", |g, c| {
+        if matches!(c.event, Event::AttackDeclared { attacker, .. } if attacker == c.me()) {
+            for h in g.player_mut(c.side).hand.iter_mut() {
+                if h.card.def().kind() == super::Kind::Minion {
+                    h.enchant(1, 1);
+                }
+            }
+        }
+    }),
+    spell("Bone Flurry", T::None, |g, c| {
+        // Printed immune to Spell Damage, so this splits raw damage.
+        let lost = g.player(c.side).friendly_deaths_turn > 0;
+        g.damage_split(c.side, Area::AllEnemies, 3);
+        if lost {
+            g.damage_split(c.side, Area::AllEnemies, 3);
+        }
+    }),
+    battlecry("Liferender", T::EnemyMinion, |g, c| {
+        if g.player(c.side).hero_health_moved_turn
+            && let Some(t) = c.target
+        {
+            g.deal_damage(t, 6);
+        }
+    }),
+    battlecry("Endtime Survivor", T::None, |g, c| {
+        if g.player(c.side).hero_damaged_turn
+            && let Some(src) = c.source
+        {
+            g.buff(Target::Minion(c.side, src), 3, 3);
+        }
+    }),
+    battlecry("Crystal Tender", T::None, |g, c| {
+        // "Empty": crystals without the mana, so this catches up on the
+        // crystal count and leaves the turn's mana where it was.
+        let theirs = g.player(c.side.other()).crystals;
+        let p = g.player_mut(c.side);
+        if theirs > p.crystals {
+            p.crystals = theirs.min(crate::state::MAX_MANA);
+        }
+    }),
+    trigger("Lorewalker Cho", |g, c| {
+        if let Event::SpellCast { side, card } = c.event {
+            // "the other player" -- whoever did not cast it, and Cho does not
+            // care whose side he is on.
+            g.give_token(side.other(), card);
+        }
+    }),
+    trigger("Chromatic Broodmother", |g, c| {
+        if matches!(c.event, Event::AttackDeclared { attacker, .. } if attacker == c.me())
+            && let Some(atk) = g.player(c.side).board.get(c.slot as usize).map(|m| m.atk)
+        {
+            g.refresh_mana(c.side, atk);
+        }
+    }),
+    spell("Photosynthesis", T::AnyCharacter, |g, c| {
+        if let Some(t) = c.target {
+            g.heal(t, 6);
+        }
+        for _ in 0..3 {
+            g.add_random_to_hand(c.side, |d| {
+                d.kind() == super::Kind::Spell && d.class() == super::Class::Druid
+            });
+        }
+    }),
+
+    // ----------------------------------------- granted deathrattles
+    // Each of these grants *itself* as the rattle: the card's own row carries
+    // the effect, and `Permanent::granted_rattle` points back at it.
+    c(
+        "Spikeridged Steed",
+        T::FriendlyMinion,
+        Some(|g, c| {
+            let Some(t) = c.target else { return };
+            g.buff(t, 2, 6);
+            g.grant(t, Keywords::TAUNT);
+            if let Target::Minion(s, i) = t
+                && let Some(m) = g.player_mut(s).board.get_mut(i as usize)
+            {
+                m.granted_rattle = c.card;
+            }
+        }),
+        None,
+        Some(|g, c| {
+            g.summon_token(c.side, tokens::STEGODON, 1);
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    c(
+        "Talanji's Last Stand",
+        T::None,
+        Some(|g, c| {
+            let card = c.card;
+            for m in g.player_mut(c.side).board.iter_mut() {
+                m.granted_rattle = card;
+            }
+        }),
+        None,
+        Some(|g, c| {
+            g.summon_random_of_cost(c.side, 4, 1);
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    c(
+        "Ulfar",
+        T::None,
+        None,
+        Some(|g, c| {
+            let card = c.card;
+            let me = c.source;
+            for (i, m) in g.player_mut(c.side).board.iter_mut().enumerate() {
+                if Some(i as u8) != me {
+                    m.granted_rattle = card;
+                }
+            }
+        }),
+        Some(|g, c| {
+            // This row is the granted rattle, and a minion's own row fires on
+            // its own death as well -- so Ulfar dying must not pay itself out.
+            // The Ctx tells the two apart: `dying` is the host, and for the
+            // granted case the host is never Ulfar.
+            if c.dying.is_some_and(|m| m.card == c.card) {
+                return;
+            }
+            // "with this minion's Cost" -- the host's, which is why the Ctx
+            // carries the host body rather than Ulfar's.
+            let cost = c.dying.map_or(0, |m| m.card.def().cost);
+            g.summon_random_of_cost(c.side, cost, 1);
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    deathrattle("Living Spores", |g, c| {
+        g.summon_token(c.side, tokens::PLANT, 2);
+    }),
+    c(
+        "Ancient Raptor",
+        T::None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(&[
+            m(T::None, |g, c| {
+                if let Some(src) = c.source {
+                    g.buff(Target::Minion(c.side, src), 3, 0);
+                }
+            }),
+            m(T::None, |g, c| {
+                if let Some(src) = c.source {
+                    g.grant(Target::Minion(c.side, src), Keywords::DIVINE_SHIELD);
+                }
+            }),
+            m(T::None, |g, c| {
+                if let Some(src) = c.source
+                    && let Some(body) = g.player_mut(c.side).board.get_mut(src as usize)
+                {
+                    body.granted_rattle = tokens::LIVING_SPORES;
+                }
+            }),
+        ]),
+        None,
+        None,
+    ),
+
+    // -------------------------------- enchantments on cards in hand
+    battlecry("Grimestreet Outfitter", T::None, |g, c| {
+        for h in g.player_mut(c.side).hand.iter_mut() {
+            if h.card.def().kind() == super::Kind::Minion {
+                h.enchant(1, 1);
+            }
+        }
+    }),
+    battlecry("Disciple of the Dove", T::None, |g, c| {
+        g.draw_matching(c.side, |d| d.kind() == super::Kind::Minion);
+        for h in g.player_mut(c.side).hand.iter_mut() {
+            if h.card.def().kind() == super::Kind::Minion {
+                h.enchant(0, 2);
+            }
+        }
+    }),
+    battlecry("Detonation Juggernaut", T::None, |g, c| {
+        for h in g.player_mut(c.side).hand.iter_mut() {
+            let d = h.card.def();
+            if d.kind() == super::Kind::Minion && d.keywords.has(Keywords::TAUNT) {
+                h.enchant(2, 2);
+            }
+        }
+    }),
+    spell("I Know a Guy", T::None, |g, c| {
+        if g.discover(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.keywords.has(Keywords::TAUNT)
+        }) && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            h.enchant(1, 2);
+        }
+    }),
+    deathrattle("Twisted Treant", |g, c| {
+        let _ = c;
+        for i in 0..2 {
+            let mut minions: Inline<u16, MAX_HAND> = Inline::new();
+            for (j, h) in g.players[i].hand.iter().enumerate() {
+                if h.card.def().kind() == super::Kind::Minion {
+                    minions.push(j as u16);
+                }
+            }
+            if minions.is_empty() {
+                continue;
+            }
+            let pick = g.rngs.effects.index(minions.len());
+            if let Some(h) = g.players[i].hand.get_mut(minions[pick] as usize) {
+                h.enchant(-2, 0);
+            }
+        }
+    }),
+    spell("Lethal Recipe", T::None, |g, c| {
+        let before = g.player(c.side).hand.len();
+        for _ in 0..2 {
+            g.draw_matching(c.side, |d| d.kind() == super::Kind::Minion);
+        }
+        // "10 or more Mana" can only be crystals: the spell costs three.
+        if g.player(c.side).crystals < 10 {
+            return;
+        }
+        for i in before..g.player(c.side).hand.len() {
+            if let Some(h) = g.player_mut(c.side).hand.get_mut(i) {
+                h.enchant(3, 3);
+            }
+        }
+    }),
+    spell("Story of Barnabus", T::None, |g, c| {
+        if !g.draw_matching(c.side, |d| d.kind() == super::Kind::Minion) {
+            return;
+        }
+        let big = g
+            .player(c.side)
+            .hand
+            .last()
+            .is_some_and(|h| h.card.def().atk >= 5);
+        if big {
+            if let Some(h) = g.player_mut(c.side).hand.last_mut() {
+                h.enchant(0, 5);
+            }
+            g.gain_armor(c.side, 5);
+        }
+    }),
+    spell("Flight of the Firehawk", T::None, |g, c| {
+        // Two minions, and not two of the same tribe.
+        let before = g.player(c.side).hand.len();
+        g.draw_matching(c.side, |d| d.kind() == super::Kind::Minion);
+        let first = g.player(c.side).hand.last().map(|h| h.card.def().races);
+        if let Some(races) = first {
+            let mut matches: Inline<u16, { crate::state::MAX_DECK }> = Inline::new();
+            for (i, card) in g.player(c.side).deck.iter().enumerate() {
+                let d = card.def();
+                if d.kind() == super::Kind::Minion && !d.races.any(races) {
+                    matches.push(i as u16);
+                }
+            }
+            if !matches.is_empty() {
+                let pick = g.rngs.effects.index(matches.len());
+                let at = matches[pick] as usize;
+                let card = g.player(c.side).deck[at];
+                g.player_mut(c.side).deck.remove(at);
+                g.give_card(c.side, card);
+            }
+        }
+        for i in before..g.player(c.side).hand.len() {
+            if let Some(h) = g.player_mut(c.side).hand.get_mut(i) {
+                h.enchant(1, 1);
+            }
+        }
+    }),
+    battlecry("Divine Augur", T::None, |g, c| {
+        for h in g.player_mut(c.side).hand.iter_mut() {
+            let d = h.card.def();
+            if d.kind() != super::Kind::Minion {
+                continue;
+            }
+            let atk = d.atk + h.atk as i16;
+            let hp = d.hp + h.hp as i16;
+            let best = atk.max(hp);
+            h.enchant(best - atk, best - hp);
+        }
+    }),
+    battlecry("Vicious Bloodworm", T::None, |g, c| {
+        let Some(src) = c.source else { return };
+        let Some(atk) = g.player(c.side).board.get(src as usize).map(|m| m.atk) else {
+            return;
+        };
+        let mut minions: Inline<u16, MAX_HAND> = Inline::new();
+        for (i, h) in g.player(c.side).hand.iter().enumerate() {
+            if h.card.def().kind() == super::Kind::Minion {
+                minions.push(i as u16);
+            }
+        }
+        if minions.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(minions.len());
+        if let Some(h) = g.player_mut(c.side).hand.get_mut(minions[pick] as usize) {
+            h.enchant(atk, 0);
+        }
+    }),
+    battlecry("Gruesome Nightmare", T::None, |g, c| {
+        let Some(src) = c.source else { return };
+        let Some(atk) = g.player(c.side).board.get(src as usize).map(|m| m.atk) else {
+            return;
+        };
+        // One pool over hand and board, so both are equally likely.
+        let hand: Inline<u16, MAX_HAND> = (0..g.player(c.side).hand.len() as u16)
+            .filter(|i| {
+                g.player(c.side).hand[*i as usize].card.def().kind() == super::Kind::Minion
+            })
+            .collect();
+        let board: Inline<u8, MAX_BOARD> = (0..g.player(c.side).board.len() as u8)
+            .filter(|i| {
+                let m = &g.player(c.side).board[*i as usize];
+                m.active() && m.is_minion() && *i != src
+            })
+            .collect();
+        let total = hand.len() + board.len();
+        if total == 0 {
+            return;
+        }
+        let pick = g.rngs.effects.index(total);
+        if pick < hand.len() {
+            if let Some(h) = g.player_mut(c.side).hand.get_mut(hand[pick] as usize) {
+                h.enchant(atk, 0);
+            }
+        } else {
+            g.buff(Target::Minion(c.side, board[pick - hand.len()]), atk, 0);
+        }
+    }),
+    battlecry("Neferset Weaponsmith", T::None, |g, c| {
+        let mine = g.player(c.side).class;
+        let combo = g.combo_active(c.side);
+        if g.add_random_to_hand_where(c.side, |d| {
+            d.kind() == super::Kind::Weapon
+                && d.class() != mine
+                && d.class() != super::Class::Neutral
+        }) && combo
+            && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            h.enchant(2, 0);
+        }
+    }),
+
+    // -------------------------------------------------------- Neutral
+    spell("Eternal Toil", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.spell_damage(c.side, Some(t), 1);
+        let dead = matches!(t, Target::Minion(s, i)
+            if g.player(s).board.get(i as usize).is_some_and(|m| m.is_dead()));
+        g.sweep_deaths();
+        if dead {
+            g.summon_random_of_cost(c.side, 1, 1);
+        } else {
+            g.draw_cards(c.side, 1);
+        }
+    }),
+    battlecry("Sheltered Survivor", T::None, |g, c| {
+        let n = g.player(c.side).hand.len();
+        if n > 0 {
+            let pick = g.rngs.effects.index(n);
+            let card = g.player(c.side).hand[pick].card;
+            g.player_mut(c.side).hand.remove(pick);
+            g.shuffle_into_deck(c.side, card);
+        }
+        g.draw_cards(c.side, 1);
+    }),
+    battlecry("Timeless Causality", T::None, |g, c| {
+        let deck: Inline<CardId, { crate::state::MAX_DECK }> =
+            g.player(c.side).deck.iter().copied().rev().collect();
+        g.player_mut(c.side).deck = deck;
+    }),
+    deathrattle("Curious Explorer", |g, c| {
+        let foe = c.side.other();
+        let mut minions: Inline<u16, MAX_HAND> = Inline::new();
+        for (i, h) in g.player(foe).hand.iter().enumerate() {
+            if h.card.def().kind() == super::Kind::Minion {
+                minions.push(i as u16);
+            }
+        }
+        if minions.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(minions.len());
+        if let Some(h) = g.player_mut(foe).hand.get_mut(minions[pick] as usize) {
+            h.cost_delta -= 2;
+        }
+    }),
+    battlecry("Cloud Serpent", T::None, |g, c| {
+        let mut pool: Inline<CardId, MAX_HAND> = Inline::new();
+        for h in g.player(c.side).hand.iter() {
+            let d = h.card.def();
+            if d.races.any(Races::ELEMENTAL) || d.races.any(Races::DRAGON) {
+                pool.push(h.card);
+            }
+        }
+        if pool.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(pool.len());
+        g.give_token(c.side, pool[pick]);
+    }),
+    battlecry("Relic Miner", T::None, |g, c| {
+        let Some(top) = g.player_mut(c.side).deck.pop() else { return };
+        let rarity = top.def().rarity();
+        match rarity {
+            super::Rarity::Free => g.discover(c.side, |d| d.rarity() == super::Rarity::Free),
+            super::Rarity::Common => g.discover(c.side, |d| d.rarity() == super::Rarity::Common),
+            super::Rarity::Rare => g.discover(c.side, |d| d.rarity() == super::Rarity::Rare),
+            super::Rarity::Epic => g.discover(c.side, |d| d.rarity() == super::Rarity::Epic),
+            super::Rarity::Legendary => {
+                g.discover(c.side, |d| d.rarity() == super::Rarity::Legendary)
+            }
+            super::Rarity::None => false,
+        };
+    }),
+    battlecry("Chronicle Keeper", T::None, |g, c| {
+        if g.holding_race(c.side, Races::DRAGON)
+            && let Some(src) = c.source
+        {
+            let t = Target::Minion(c.side, src);
+            g.grant(t, Keywords::TAUNT);
+            g.grant(t, Keywords::DIVINE_SHIELD);
+        }
+    }),
+    trigger("Primal Sabretooth", |g, c| {
+        if let Event::AfterAttack {
+            attacker,
+            defender: Target::Minion(_, _),
+            defender_died: true,
+        } = c.event
+            && attacker == c.me()
+        {
+            // The body is gone by the time this fires, but it went into its
+            // owner's graveyard on the way out, and it went in last.
+            if let Event::AfterAttack { defender: Target::Minion(s, _), .. } = c.event
+                && let Some(card) = g.player(s).graveyard.last().copied()
+            {
+                g.give_token(c.side, card);
+            }
+        }
+    }),
+    spell("Synchronized Spark", T::EnemyCharacter, |g, c| {
+        let Some(t) = c.target else { return };
+        g.spell_damage(c.side, Some(t), 3);
+        let dead = matches!(t, Target::Minion(s, i)
+            if g.player(s).board.get(i as usize).is_some_and(|m| m.is_dead()));
+        g.sweep_deaths();
+        if dead && let Some(friend) = g.random_minion(c.side) {
+            g.buff(friend, 3, 3);
+        }
+    }),
+    deathrattle("Wicked Blightspawn", |g, c| {
+        if g.player(c.side).weapon.is_some() {
+            g.buff_weapon(c.side, 2, 0);
+        } else {
+            g.equip(c.side, tokens::WICKED_KNIFE);
+        }
+    }),
+    battlecry("Wizened Truthseeker", T::None, |g, c| {
+        let _ = c;
+        for i in 0..2 {
+            for h in g.players[i].hand.iter_mut() {
+                h.cost_delta = 0;
+            }
+        }
+    }),
+    trigger("Activated Golem", |g, c| {
+        if matches!(c.event, Event::TurnEnd { .. }) {
+            g.grant(c.me(), Keywords::REBORN);
+        }
+    }),
+    spell("Bitter End", T::AnyMinion, |g, c| {
+        let Some(Target::Minion(s, i)) = c.target else { return };
+        let mut hits: Inline<Target, 3> = Inline::new();
+        for j in [i.wrapping_sub(1), i, i + 1] {
+            if (j as usize) < g.player(s).board.len() {
+                hits.push(Target::Minion(s, j));
+            }
+        }
+        for t in hits.iter().copied() {
+            g.freeze(t);
+        }
+        for t in hits.iter().copied() {
+            if matches!(t, Target::Minion(s, i)
+                if g.player(s).board.get(i as usize).is_some_and(|m| m.damage > 0))
+            {
+                g.destroy(t);
+            }
+        }
+    }),
+    c(
+        "Solitary Prisoner",
+        T::None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(|g, _side, _i| {
+            let empty = g.players[0].board.is_empty() && g.players[1].board.is_empty();
+            if empty { 2 - 5 } else { 0 }
+        }),
+        None,
+    ),
+    battlecry("Witchwood Grizzly", T::None, |g, c| {
+        let n = g.player(c.side.other()).hand.len() as i16;
+        if n > 0 && let Some(src) = c.source {
+            g.buff(Target::Minion(c.side, src), 0, -n);
+            g.sweep_deaths();
+        }
+    }),
+    battlecry("Scalehide Kodo", T::None, |g, c| {
+        let foe = c.side.other();
+        let highest = g.kindred(c.side, Races::BEAST);
+        let mut best: Option<(u8, i16)> = None;
+        for (i, m) in g.player(foe).board.iter().enumerate() {
+            if !m.active() || !m.is_minion() {
+                continue;
+            }
+            let better = match best {
+                None => true,
+                Some((_, b)) => {
+                    if highest { m.atk > b } else { m.atk < b }
+                }
+            };
+            if better {
+                best = Some((i as u8, m.atk));
+            }
+        }
+        if let Some((slot, _)) = best {
+            g.destroy(Target::Minion(foe, slot));
+        }
+    }),
+    trigger("Sentient Hourglass", |g, c| {
+        if matches!(c.event, Event::Damaged { target, .. } if target == c.me())
+            && let Some(m) = g.player(c.side).board.get(c.slot as usize).copied()
+            && !m.is_dead()
+        {
+            let health = m.health();
+            g.set_attack(c.me(), health);
+            g.set_health(c.me(), m.atk);
+        }
+    }),
+    deathrattle("Chillmaw", |g, c| {
+        if g.holding_race(c.side, Races::DRAGON) {
+            g.damage_area(c.side, Area::AllMinions, 3);
+        }
+    }),
+    battlecry("Ravenous Devilsaur", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(s, i) = t else { return };
+        let Some(victim) = g.player(s).board.get(i as usize).copied() else { return };
+        g.destroy(t);
+        if (g.kindred(c.side, Races::BEAST))
+            && let Some(src) = c.source
+        {
+            g.buff(Target::Minion(c.side, src), victim.atk, victim.max_hp);
+        }
+    }),
+    battlecry("Siamat", T::None, |g, c| {
+        let Some(src) = c.source else { return };
+        const GIFTS: [Keywords; 4] = [
+            Keywords::RUSH,
+            Keywords::TAUNT,
+            Keywords::DIVINE_SHIELD,
+            Keywords::WINDFURY,
+        ];
+        let mut picks = [0u32; 2];
+        let n = g.rngs.effects.sample_indices(GIFTS.len(), &mut picks);
+        for &p in picks.iter().take(n) {
+            g.grant(Target::Minion(c.side, src), GIFTS[p as usize]);
+        }
+    }),
+    battlecry("Warmaster Blackhorn", T::None, |g, c| {
+        let _ = c;
+        for i in 0..2 {
+            g.players[i].deck.retain(|card| card.def().cost > 2);
+        }
+    }),
+    battlecry("Disciple of Demise", T::None, |g, c| {
+        let dragons = g
+            .player(c.side)
+            .hand
+            .iter()
+            .filter(|h| h.card.def().races.any(Races::DRAGON))
+            .count();
+        let me = c.source.map(|s| Target::Minion(c.side, s));
+        for _ in 0..(1 + dragons) {
+            let mut pool: Inline<Target, { MAX_BOARD * 2 }> = Inline::new();
+            g.collect_area(c.side, Area::AllMinions, &mut pool);
+            pool.retain(|t| Some(*t) != me);
+            if pool.is_empty() {
+                break;
+            }
+            let pick = g.rngs.effects.index(pool.len());
+            g.destroy(pool[pick]);
+            g.sweep_deaths();
+        }
+    }),
+    trigger("Black Market Auctioneer", |g, c| {
+        if matches!(c.event, Event::SpellCast { side, .. } if side == c.side) {
+            g.draw_cards(c.side, 1);
+        }
+    }),
+    trigger("Krog, Crater King", |g, c| {
+        if !matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            return;
+        }
+        let foe = c.side.other();
+        for i in 0..g.player(foe).board.len() {
+            let t = Target::Minion(foe, i as u8);
+            g.set_attack(t, 1);
+            g.set_health(t, 1);
+        }
+    }),
+    spell("Bygone Echoes", T::None, |g, c| {
+        g.summon_random_of_cost(c.side, 4, 1);
+        if g.spend_corpses(c.side, 4) {
+            g.summon_random_of_cost(c.side, 4, 1);
+        }
+        if c.outcast {
+            g.summon_random_of_cost(c.side, 4, 1);
+        }
+    }),
+    trigger("Finja, the Flying Star", |g, c| {
+        if let Event::AfterAttack { attacker, defender: Target::Minion(..), defender_died: true } =
+            c.event
+            && attacker == c.me()
+        {
+            for _ in 0..2 {
+                if !g.summon_from_deck(c.side, |d| d.races.any(Races::MURLOC)) {
+                    break;
+                }
+            }
+        }
+    }),
+    trigger("Stormbrewer", |g, c| {
+        if let Event::AttackDeclared { attacker, defender } = c.event
+            && attacker == c.me()
+        {
+            g.deal_damage(defender, 3);
+        }
+    }),
+    trigger("Vanessa the Ringleader", |g, c| {
+        if matches!(c.event, Event::CardPlayed { side, .. } if side == c.side)
+            && g.add_random_to_hand(c.side, |d| {
+                d.kind() == super::Kind::Minion && d.keywords.has(Keywords::BATTLECRY)
+            })
+            && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            h.cost_delta -= 2;
+        }
+    }),
+    trigger("Keymaster Alabaster", |g, c| {
+        if let Event::CardDrawn { side } = c.event
+            && side == c.side.other()
+            && let Some(card) = g.player(side).hand.last().map(|h| h.card)
+            && g.give_token(c.side, card)
+            && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            h.cost_delta = 1 - h.card.def().cost;
+        }
+    }),
+    battlecry("Zaqali Flamemancer", T::None, |g, c| {
+        let mut costs: Inline<i16, MAX_HAND> = Inline::new();
+        for h in g.player(c.side).hand.iter() {
+            if costs.contains(&h.card.def().cost) {
+                return;
+            }
+            costs.push(h.card.def().cost);
+        }
+        for h in g.player_mut(c.side).hand.iter_mut() {
+            h.cost_delta -= 2;
+        }
+    }),
+    trigger("Unknown Voyager", |g, c| {
+        if matches!(c.event, Event::Damaged { target, .. } if target == c.me())
+            && g.player(c.side)
+                .board
+                .get(c.slot as usize)
+                .is_some_and(|m| !m.is_dead())
+        {
+            transform_into_cost(g, c.me(), 7);
+        }
+    }),
+    trigger("Dangerous Variant", |g, c| {
+        if matches!(c.event, Event::TurnStart { side } if side == c.side) {
+            transform_into_cost(g, c.me(), 5);
+        }
+    }),
+    battlecry("Crater Experiment", T::None, |g, c| {
+        // Printed with every minion type, so any tribe played last turn is
+        // kindred with it.
+        if !g.player(c.side).played_races_last.is_empty() {
+            g.summon_copy(c.side, c.card);
+        }
+    }),
+    battlecry("Steamfin Thief", T::None, |g, c| {
+        if g.kindred(c.side, Races::MURLOC) {
+            g.summon_token(c.side, tokens::JUVENILE_STEAMFIN, 2);
+        }
+    }),
+    trigger("Bronze Keeper", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            g.summon_token(c.side, tokens::SANDSCALE_DRAGON, 1);
+        }
+    }),
+    // ---------------------------------------------------- Death Knight
+    trigger("Battlefield Necromancer", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side)
+            && g.spend_corpses(c.side, 1)
+        {
+            g.summon_token(c.side, tokens::RISEN_FOOTMAN, 1);
+        }
+    }),
+    spell("Death's Advance", T::AnyCharacter, |g, c| {
+        if let Some(t) = c.target {
+            g.freeze(t);
+        }
+        g.discover(c.side, |d| d.kind() == super::Kind::Spell);
+    }),
+    spell("Corpse Farm", T::None, |g, c| {
+        let spend = g.player(c.side).corpses.min(8);
+        if spend > 0 && g.spend_corpses(c.side, spend) {
+            g.summon_random_of_cost(c.side, spend, 1);
+        }
+    }),
+    spell("Glacial Advance", T::AnyCharacter, |g, c| {
+        g.spell_damage(c.side, c.target, 4);
+        g.player_mut(c.side).next_spell_discount += 2;
+    }),
+    trigger("Corpse Flower", |g, c| {
+        if let Event::MinionSummoned { side, slot, .. } = c.event
+            && side == c.side.other()
+            && g.spend_corpses(c.side, 2)
+        {
+            g.deal_damage(Target::Minion(side, slot), 3);
+        }
+    }),
+    spell("Consumption", T::None, |g, c| {
+        let foe = c.side.other();
+        let mut pool: Inline<Target, MAX_BOARD> = Inline::new();
+        for (i, m) in g.player(foe).board.iter().enumerate() {
+            if m.active() && m.is_minion() {
+                pool.push(Target::Minion(foe, i as u8));
+            }
+        }
+        let mut picks = [0u32; 2];
+        let n = g.rngs.effects.sample_indices(pool.len(), &mut picks[..2.min(pool.len())]);
+        let mut killed = 0;
+        for &p in picks.iter().take(n) {
+            let t = pool[p as usize];
+            g.spell_damage(c.side, Some(t), 3);
+            if matches!(t, Target::Minion(s, i)
+                if g.player(s).board.get(i as usize).is_some_and(|m| m.is_dead()))
+            {
+                killed += 1;
+            }
+        }
+        g.sweep_deaths();
+        g.draw_cards(c.side, killed);
+    }),
+    battlecry("Dread Raptor", T::None, |g, c| {
+        let free = g.kindred(c.side, Races::UNDEAD) || g.kindred(c.side, Races::BEAST);
+        if g.draw_matching(c.side, |d| {
+            d.kind() == super::Kind::Minion
+                && d.cost <= 3
+                && d.keywords.has(Keywords::DEATHRATTLE)
+        }) && free
+            && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            h.cost_delta = -h.card.def().cost;
+        }
+    }),
+    spell("Grave Strength", T::None, |g, c| {
+        let n = if g.spend_corpses(c.side, 5) { 3 } else { 1 };
+        g.buff_area(c.side, Area::FriendlyMinions, n, 0);
+    }),
+    deathrattle("Lady Deathwhisper", |g, c| {
+        let frost: Inline<CardId, MAX_HAND> = g
+            .player(c.side)
+            .hand
+            .iter()
+            .filter(|h| h.card.def().school() == super::School::Frost)
+            .map(|h| h.card)
+            .collect();
+        for card in frost.iter().copied() {
+            g.give_token(c.side, card);
+        }
+    }),
+    trigger("Malignant Horror", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side)
+            && g.spend_corpses(c.side, 4)
+            && let Some(card) = g.player(c.side).board.get(c.slot as usize).map(|m| m.card)
+        {
+            g.summon_copy(c.side, card);
+        }
+    }),
+    battlecry("Might of Menethil", T::None, |g, c| {
+        let mut spent = 0;
+        while spent < 3 && g.spend_corpses(c.side, 1) {
+            spent += 1;
+        }
+        let foe = c.side.other();
+        let mut pool: Inline<Target, MAX_BOARD> = Inline::new();
+        for (i, m) in g.player(foe).board.iter().enumerate() {
+            if m.active() && m.is_minion() {
+                pool.push(Target::Minion(foe, i as u8));
+            }
+        }
+        let mut picks = [0u32; MAX_BOARD];
+        let take = (spent as usize).min(pool.len());
+        let n = g.rngs.effects.sample_indices(pool.len(), &mut picks[..take]);
+        for &p in picks.iter().take(n) {
+            g.freeze(pool[p as usize]);
+        }
+    }),
+    battlecry("Obsessive Technician", T::None, |g, c| g.herald(c.side)),
+    spell("Army of the Dead", T::None, |g, c| {
+        let mut raised = 0;
+        while raised < 5 && g.spend_corpses(c.side, 1) {
+            if g.summon_token(c.side, tokens::RISEN_GHOUL, 1) == 0 {
+                break;
+            }
+            raised += 1;
+        }
+    }),
+    battlecry("Corpse Bride", T::None, |g, c| {
+        let spend = g.player(c.side).corpses.min(10);
+        if spend <= 0 || !g.spend_corpses(c.side, spend) {
+            return;
+        }
+        if g.summon_token(c.side, tokens::RISEN_GROOM, 1) > 0 {
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.set_attack(Target::Minion(c.side, slot), spend);
+            g.set_health(Target::Minion(c.side, slot), spend);
+            g.grant(Target::Minion(c.side, slot), Keywords::TAUNT);
+        }
+    }),
+    trigger("Hollow Direhorn", |g, c| {
+        if let Event::MinionDied { side, .. } = c.event
+            && side == c.side
+            && !g.player(c.side)
+                .board
+                .get(c.slot as usize)
+                .is_some_and(|m| m.has(Keywords::REBORN))
+            && g.spend_corpses(c.side, 3)
+        {
+            g.grant(c.me(), Keywords::REBORN);
+        }
+    }),
+    deathrattle("Bonechill Stegodon", |g, c| {
+        let foe = c.side.other();
+        let mut pool: Inline<Target, { MAX_BOARD + 1 }> = Inline::new();
+        for (i, m) in g.player(foe).board.iter().enumerate() {
+            if m.active() && m.is_minion() {
+                pool.push(Target::Minion(foe, i as u8));
+            }
+        }
+        pool.push(Target::Hero(foe));
+        let mut picks = [0u32; 3];
+        let take = 3.min(pool.len());
+        let n = g.rngs.effects.sample_indices(pool.len(), &mut picks[..take]);
+        for &p in picks.iter().take(n) {
+            g.deal_damage(pool[p as usize], 6);
+        }
+    }),
+    spell("Experimental Animation", T::None, |g, c| {
+        g.herald(c.side);
+        g.spell_damage_area(c.side, Area::EnemyMinions, 4);
+    }),
+    battlecry("Marrow Manipulator", T::None, |g, c| {
+        let mut spent = 0;
+        while spent < 5 && g.spend_corpses(c.side, 1) {
+            spent += 1;
+        }
+        for _ in 0..spent {
+            let Some(t) = g.random_enemy(c.side) else { break };
+            g.deal_damage(t, 2);
+            g.sweep_deaths();
+        }
+    }),
+    battlecry("Alexandros Mograine", T::None, |g, c| {
+        g.player_mut(c.side).end_turn_burn += 3;
+    }),
+    spell("Story of Umbra", T::None, |g, c| {
+        let pool = super::discover_pool(|d| {
+            d.kind() == super::Kind::Minion
+                && d.cost >= 5
+                && d.keywords.has(Keywords::DEATHRATTLE)
+        });
+        if pool.is_empty() {
+            return;
+        }
+        let mut offered = [0u32; 3];
+        let n = g.rngs.effects.sample_indices(pool.len(), &mut offered);
+        let Some(pick) = offered[..n].iter().map(|&i| pool[i as usize]).next() else {
+            return;
+        };
+        if g.summon(c.side, pick) {
+            g.fire_deathrattle_of(c.side, pick);
+        }
+    }),
+    battlecry("Boneguard Commander", T::None, |g, c| {
+        let mut raised = 0;
+        while raised < 6 && g.spend_corpses(c.side, 1) {
+            if g.summon_token(c.side, tokens::RISEN_FOOTMAN, 1) == 0 {
+                break;
+            }
+            raised += 1;
+        }
+    }),
+    spell("Chow Down", T::None, |g, c| {
+        let made = g.summon_token(c.side, tokens::HUNGRY_DRAKE, 5);
+        if made == 0 || !g.spend_corpses(c.side, 8) {
+            return;
+        }
+        let last = g.player(c.side).board.len();
+        for slot in (last - made)..last {
+            g.grant(Target::Minion(c.side, slot as u8), Keywords::RUSH);
+        }
+    }),
+    spell("The Scourge", T::None, |g, c| {
+        while !g.player(c.side).board.is_full() {
+            if !g.summon_random_where(c.side, |d| {
+                d.kind() == super::Kind::Minion && d.races.any(Races::UNDEAD)
+            }) {
+                break;
+            }
+        }
+    }),
+    battlecry("Volcoross", T::None, |g, c| {
+        // "Choose to spend 10, 20, or 30": the biggest the pile allows.
+        let have = g.player(c.side).corpses;
+        let spend = if have >= 30 {
+            30
+        } else if have >= 20 {
+            20
+        } else if have >= 10 {
+            10
+        } else {
+            0
+        };
+        if spend > 0 && g.spend_corpses(c.side, spend)
+            && let Some(src) = c.source
+        {
+            g.buff(Target::Minion(c.side, src), spend, spend);
+        }
+    }),
+
+    // -------------------------------------------------------- Paladin
+    battlecry("Ashleaf Pixie", T::None, |g, c| {
+        let holding = g.player(c.side).hand.iter().any(|h| {
+            h.card.def().kind() == super::Kind::Spell && h.card.def().cost >= 5
+        });
+        if holding && let Some(src) = c.source {
+            let t = Target::Minion(c.side, src);
+            g.grant(t, Keywords::DIVINE_SHIELD);
+            g.grant(t, Keywords::LIFESTEAL);
+        }
+    }),
+    spell("Mark of Ursol", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(s, _) = t else { return };
+        let n = if s == c.side { 3 } else { 1 };
+        g.set_attack(t, n);
+        g.set_health(t, n);
+    }),
+    deathrattle("Scarlet Bruiser", |g, c| {
+        if deck_has_neutrals(g, c.side) {
+            return;
+        }
+        if g.add_random_to_hand(c.side, |d| d.class() == super::Class::Paladin)
+            && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            h.cost_delta -= 2;
+        }
+    }),
+    battlecry("Vigilant Sentry", T::None, |g, c| {
+        if !deck_has_neutrals(g, c.side) {
+            g.summon_copy(c.side, c.card);
+            g.summon_copy(c.side, c.card);
+        }
+    }),
+    spell("Ready the Fleet", T::FriendlyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(_, i) = t else { return };
+        let Some(races) = g.player(c.side).board.get(i as usize).map(|m| m.races()) else {
+            return;
+        };
+        g.buff(t, 1, 2);
+        for j in 0..g.player(c.side).board.len() {
+            if j as u8 != i && g.player(c.side).board[j].races().any(races) {
+                g.buff(Target::Minion(c.side, j as u8), 1, 2);
+            }
+        }
+    }),
+    battlecry("Ivory Knight", T::None, |g, c| {
+        if g.discover(c.side, |d| d.kind() == super::Kind::Spell)
+            && let Some(h) = g.player(c.side).hand.last()
+        {
+            let cost = h.card.def().cost;
+            g.heal_hero(c.side, cost);
+        }
+    }),
+    choose("Lightmender", &[
+        m(T::None, |g, c| {
+            if let Some(src) = c.source {
+                let t = Target::Minion(c.side, src);
+                g.buff(t, 3, 0);
+                g.grant(t, Keywords::DIVINE_SHIELD);
+            }
+        }),
+        m(T::None, |g, c| {
+            if let Some(src) = c.source {
+                let t = Target::Minion(c.side, src);
+                g.buff(t, 0, 3);
+                g.grant(t, Keywords::LIFESTEAL);
+            }
+        }),
+    ]),
+    trigger("Spearheart Sentry", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side)
+            && g.add_random_to_hand(c.side, |d| {
+                d.kind() == super::Kind::Spell && d.school() == super::School::Holy
+            })
+            && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            h.cost_delta -= 3;
+        }
+    }),
+    battlecry("Arator the Redeemer", T::None, |g, c| {
+        for i in 0..g.player(c.side).board.len() {
+            let m = g.player(c.side).board[i];
+            if m.card.name() != "Silver Hand Recruit" {
+                continue;
+            }
+            let t = Target::Minion(c.side, i as u8);
+            g.buff(t, m.atk, m.max_hp);
+            g.grant(t, Keywords::TAUNT);
+        }
+    }),
+    trigger("Nozdormu, Bronze Aspect", |g, c| {
+        if !matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            return;
+        }
+        for i in 0..g.player(c.side).board.len() {
+            let t = Target::Minion(c.side, i as u8);
+            if g.player(c.side).board[i].has(Keywords::DIVINE_SHIELD) {
+                g.buff(t, 3, 3);
+            } else {
+                g.grant(t, Keywords::DIVINE_SHIELD);
+            }
+        }
+    }),
+    battlecry("Scarlet Recruiter", T::None, |g, c| {
+        for _ in 0..2 {
+            if !g.summon_from_deck(c.side, |d| d.cost <= 2) {
+                break;
+            }
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.grant(Target::Minion(c.side, slot), Keywords::RUSH);
+        }
+    }),
+    spell("Searing Reflection", T::None, |g, c| {
+        if !g.draw_matching(c.side, |d| d.kind() == super::Kind::Minion) {
+            return;
+        }
+        let Some(card) = g.player(c.side).hand.last().map(|h| h.card) else { return };
+        if g.summon(c.side, card) {
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.set_attack(Target::Minion(c.side, slot), 8);
+            g.set_health(Target::Minion(c.side, slot), 8);
+            g.grant(Target::Minion(c.side, slot), Keywords::DIVINE_SHIELD);
+        }
+    }),
+    spell("Hero's Welcome", T::None, |g, c| {
+        let pool = super::discover_pool(|d| {
+            d.kind() == super::Kind::Minion && d.rarity() == super::Rarity::Legendary
+        });
+        if pool.is_empty() {
+            return;
+        }
+        let mut offered = [0u32; 3];
+        let n = g.rngs.effects.sample_indices(pool.len(), &mut offered);
+        let Some(pick) = offered[..n].iter().map(|&i| pool[i as usize]).next() else {
+            return;
+        };
+        if g.summon(c.side, pick) {
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.set_attack(Target::Minion(c.side, slot), 10);
+            g.set_health(Target::Minion(c.side, slot), 10);
+        }
+    }),
+    battlecry("Firegill", T::None, |g, c| {
+        if !(g.kindred(c.side, Races::MURLOC) || g.kindred(c.side, Races::ELEMENTAL)) {
+            return;
+        }
+        let me = c.source.map(|s| Target::Minion(c.side, s));
+        for i in 0..g.player(c.side).board.len() {
+            let t = Target::Minion(c.side, i as u8);
+            if Some(t) != me {
+                g.grant(t, Keywords::RUSH);
+            }
+        }
+    }),
+    trigger("Bronze Redeemer", |g, c| {
+        if !matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            return;
+        }
+        let Some(me) = g.player(c.side).board.get(c.slot as usize).copied() else { return };
+        if g.summon_token(c.side, tokens::BRONZE_BRUTE, 1) > 0 {
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.set_attack(Target::Minion(c.side, slot), me.atk);
+            g.set_health(Target::Minion(c.side, slot), me.max_hp);
+        }
+    }),
+
+    // ---------------------------------------------------------- Rogue
+    spell("Mimicry", T::None, |g, c| {
+        let foe = c.side.other();
+        let before = g.player(foe).hand.len();
+        g.draw(foe, 2);
+        for i in before..g.player(foe).hand.len() {
+            let card = g.player(foe).hand[i].card;
+            g.give_token(c.side, card);
+        }
+    }),
+    spell("Garona's Last Stand", T::LegendaryMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.destroy(t);
+        }
+    }),
+    spell("Jackpot!", T::None, |g, c| {
+        let mine = g.player(c.side).class;
+        for _ in 0..2 {
+            g.add_random_to_hand_where(c.side, |d| {
+                d.kind() == super::Kind::Spell
+                    && d.cost >= 5
+                    && d.class() != mine
+                    && d.class() != super::Class::Neutral
+            });
+        }
+    }),
+    spell("Silent Strike", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.buff(t, 3, 0);
+        let Target::Minion(s, i) = t else { return };
+        let Some(m) = g.player(s).board.get(i as usize).copied() else { return };
+        if m.has(Keywords::STEALTH)
+            && let Some(victim) = g.random_minion(c.side.other())
+        {
+            g.deal_damage(victim, m.atk);
+        }
+    }),
+    spell("Web of Deception", T::FriendlyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.bounce(t);
+        g.summon_token(c.side, tokens::SKITTERING_SPIDERLING, 1);
+    }),
+    spell("Deadly Bribe", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.destroy(t);
+        }
+        g.give_token(c.side.other(), tokens::COIN);
+        if g.combo_active(c.side) {
+            g.give_token(c.side, tokens::COIN);
+        }
+    }),
+    trigger("SI:7 Slayer", |g, c| {
+        // On the declaration: attacking is what strips Stealth, so by the time
+        // the exchange is over the minion this asks about is no longer one.
+        if let Event::AttackDeclared { attacker: Target::Minion(s, i), .. } = c.event
+            && s == c.side
+            && g.player(s)
+                .board
+                .get(i as usize)
+                .is_some_and(|m| m.has(Keywords::STEALTH))
+        {
+            g.buff(Target::Minion(s, i), 2, 2);
+        }
+    }),
+    trigger("Shaku, the Collector", |g, c| {
+        if matches!(c.event, Event::AfterAttack { attacker, .. } if attacker == c.me()) {
+            let mine = g.player(c.side).class;
+            g.add_random_to_hand_where(c.side, |d| {
+                d.class() != mine && d.class() != super::Class::Neutral
+            });
+        }
+    }),
+    battlecry("Tricky Satyr", T::None, |g, c| {
+        let foe = c.side.other();
+        let mut best: Option<(usize, i16)> = None;
+        for (i, h) in g.player(foe).hand.iter().enumerate() {
+            let cost = h.card.def().cost;
+            if best.is_none_or(|(_, b)| cost < b) {
+                best = Some((i, cost));
+            }
+        }
+        if let Some((at, _)) = best {
+            let card = g.player(foe).hand[at].card;
+            g.give_token(c.side, card);
+        }
+    }),
+    trigger("Mathias Shaw", |g, c| {
+        // On the declaration: attacking is what strips Stealth, so by the time
+        // the exchange is over the minion this asks about is no longer one.
+        if let Event::AttackDeclared { attacker: Target::Minion(s, i), .. } = c.event
+            && s == c.side
+            && g.player(s)
+                .board
+                .get(i as usize)
+                .is_some_and(|m| m.has(Keywords::STEALTH))
+        {
+            let n = g.player(c.side).hand.len();
+            if n == 0 {
+                return;
+            }
+            let pick = g.rngs.effects.index(n);
+            if let Some(h) = g.player_mut(c.side).hand.get_mut(pick) {
+                h.cost_delta -= 3;
+            }
+        }
+    }),
+    deathrattle("Waggle Pick", |g, c| {
+        let Some(t) = g.random_minion(c.side) else { return };
+        g.bounce(t);
+        if let Some(h) = g.player_mut(c.side).hand.last_mut() {
+            h.cost_delta -= 2;
+        }
+    }),
+    spell("Fast Forward", T::None, |g, c| {
+        let before = g.player(c.side).hand.len();
+        g.draw_cards(c.side, 2);
+        // "Pick one": the dearer of the two, which is the one worth the two.
+        let mut best: Option<(usize, i16)> = None;
+        for i in before..g.player(c.side).hand.len() {
+            let cost = g.player(c.side).hand[i].card.def().cost;
+            if best.is_none_or(|(_, b)| cost > b) {
+                best = Some((i, cost));
+            }
+        }
+        if let Some((at, _)) = best
+            && let Some(h) = g.player_mut(c.side).hand.get_mut(at)
+        {
+            h.cost_delta -= 2;
+        }
+    }),
+    battlecry("Swashburglar", T::None, |g, c| {
+        let mine = g.player(c.side).class;
+        g.add_random_to_hand_where(c.side, |d| {
+            d.class() != mine && d.class() != super::Class::Neutral
+        });
+    }),
+    c(
+        "Crystal Tusk",
+        T::None,
+        None,
+        Some(|g, c| {
+            if g.player(c.side).hand.is_empty() {
+                return;
+            }
+            let card = g.player(c.side).hand[0].card;
+            g.player_mut(c.side).hand.remove(0);
+            g.shuffle_into_deck(c.side, card);
+        }),
+        Some(|g, c| g.draw_cards(c.side, 2)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    battlecry("Merchant of Legend", T::None, |g, c| {
+        let pool = super::discover_pool(|d| {
+            d.kind() == super::Kind::Minion && d.rarity() == super::Rarity::Legendary
+        });
+        if pool.is_empty() {
+            return;
+        }
+        let mut offered = [0u32; 3];
+        let n = g.rngs.effects.sample_indices(pool.len(), &mut offered);
+        let crystals = g.player(c.side).crystals;
+        let cards: Inline<CardId, 3> = offered[..n].iter().map(|&i| pool[i as usize]).collect();
+        let Some(best) = cards
+            .iter()
+            .copied()
+            .max_by_key(|card| (card.def().cost <= crystals + 1, card.def().cost))
+        else {
+            return;
+        };
+        let mut kept = false;
+        for card in cards.iter().copied() {
+            if card == best && !kept {
+                kept = true;
+                g.give_card(c.side, card);
+            } else {
+                g.shuffle_into_deck(c.side, card);
+            }
+        }
+    }),
+    c(
+        "Blackpaw's Whip",
+        T::None,
+        None,
+        None,
+        Some(|g, c| g.draw_cards(c.side, 1)),
+        None,
+        None,
+        None,
+        None,
+        Some(|g, side, _i| {
+            let coins = g
+                .player(side)
+                .hand
+                .iter()
+                .filter(|h| h.card.name() == "The Coin")
+                .count() as i16;
+            -coins
+        }),
+        None,
+    ),
+
+    // --------------------------------------------------------- Hunter
+    // Leokk is one of the three Animal Companions, so every card that summons
+    // one needs him to actually project his aura.
+    aura("Leokk", |ss, sl, ts, tl, _| {
+        if ss == ts && sl != tl { (1, 0) } else { (0, 0) }
+    }),
+    c(
+        "Raptor-Nest Nurse",
+        T::None,
+        None,
+        Some(|g, c| {
+            g.add_random_to_hand(c.side, |d| {
+                d.kind() == super::Kind::Minion && d.cost == 1
+            });
+        }),
+        Some(|g, c| {
+            g.add_random_to_hand(c.side, |d| {
+                d.kind() == super::Kind::Spell && d.cost == 1
+            });
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    trigger("Dinositter", |g, c| {
+        if !matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            return;
+        }
+        let mut beasts: Inline<u16, MAX_HAND> = Inline::new();
+        for (i, h) in g.player(c.side).hand.iter().enumerate() {
+            if h.card.def().races.any(Races::BEAST) {
+                beasts.push(i as u16);
+            }
+        }
+        if beasts.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(beasts.len());
+        if let Some(h) = g.player_mut(c.side).hand.get_mut(beasts[pick] as usize) {
+            h.cost_delta -= 1;
+        }
+    }),
+    secret("Freezing Trap", |g, owner, ev| {
+        if let Event::AttackDeclared { attacker: Target::Minion(s, i), .. } = ev
+            && s == owner.other()
+        {
+            g.bounce(Target::Minion(s, i));
+            // The bounce puts it at the end of their hand, so that is the copy
+            // the tax lands on.
+            if let Some(h) = g.player_mut(s).hand.last_mut() {
+                h.cost_delta += 2;
+            }
+            return true;
+        }
+        false
+    }),
+    secret("Pressure Plate", |g, owner, ev| {
+        if let Event::SpellCast { side, .. } = ev
+            && side == owner.other()
+            && let Some(t) = g.random_minion(owner.other())
+        {
+            g.destroy(t);
+            return true;
+        }
+        false
+    }),
+    secret("Rat Trap", |g, owner, ev| {
+        if let Event::CardPlayed { side, .. } = ev
+            && side == owner.other()
+            && g.player(side).cards_played_turn >= 3
+        {
+            g.summon_token(owner, tokens::DOOM_RAT, 1);
+            return true;
+        }
+        false
+    }),
+    deathrattle("Augmented Porcupine", |g, c| {
+        let atk = c.dying.map_or(0, |m| m.atk);
+        g.damage_split(c.side, Area::AllEnemies, atk);
+    }),
+    trigger("Dragonbane", |g, c| {
+        if matches!(c.event, Event::HeroPowerUsed { side } if side == c.side)
+            && let Some(t) = g.random_enemy(c.side)
+        {
+            g.deal_damage(t, 5);
+        }
+    }),
+    choose("Grace of the Greatwolf", &[
+        m(T::None, |g, c| {
+            g.spell_damage(c.side, Some(Target::Hero(c.side.other())), 4);
+        }),
+        m(T::None, |g, c| {
+            g.summon_token(c.side, tokens::PLAYFUL_PUP, 2);
+        }),
+    ]),
+    battlecry("Mythical Runebear", T::None, |g, c| {
+        // Reads the body on the board, so a buff before it lands counts.
+        let big = c
+            .source
+            .and_then(|s| g.player(c.side).board.get(s as usize).map(|m| m.atk >= 4))
+            .unwrap_or(false);
+        if big {
+            g.summon_copy(c.side, c.card);
+        }
+    }),
+    battlecry("Wasteland Vanguard", T::None, |g, c| {
+        let before = g.player(c.side.other()).board.len();
+        g.damage_split(c.side, Area::AllEnemies, 3);
+        g.sweep_deaths();
+        if g.player(c.side.other()).board.len() < before {
+            g.damage_split(c.side, Area::AllEnemies, 3);
+        }
+    }),
+    battlecry("Sewer Swimmer", T::None, |g, c| {
+        g.retrigger_friendly_deathrattles(c.side, 1);
+    }),
+    battlecry("Spiritspeaker", T::None, |g, c| {
+        g.summon_random_child(c.side, c.card);
+    }),
+    trigger("Broll Bearmantle", |g, c| {
+        if matches!(c.event, Event::SpellCast { side, .. } if side == c.side)
+            && let Some(card) = g.player(c.side).board.get(c.slot as usize).map(|m| m.card)
+        {
+            g.summon_random_child(c.side, card);
+        }
+    }),
+    battlecry("Tending Dragonkin", T::None, |g, c| {
+        let mut best: Option<(usize, i16)> = None;
+        for (i, h) in g.player(c.side).hand.iter().enumerate() {
+            if !h.card.def().races.any(Races::BEAST) {
+                continue;
+            }
+            let cost = h.card.def().cost;
+            if best.is_none_or(|(_, b)| cost < b) {
+                best = Some((i, cost));
+            }
+        }
+        if let Some((at, _)) = best {
+            let card = g.player(c.side).hand[at].card;
+            g.give_token(c.side, card);
+        }
+    }),
+    c(
+        "Triennium Rex",
+        T::None,
+        None,
+        Some(|g, c| {
+            if g.kindred(c.side, Races::BEAST) {
+                deathrattle_minion_to_hand(g, c.side);
+            }
+        }),
+        Some(|g, c| deathrattle_minion_to_hand(g, c.side)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    trigger("Magma Hound", |g, c| {
+        if let Event::AfterAttack { attacker, defender: Target::Minion(..), .. } = c.event
+            && attacker == c.me()
+            && let Some(atk) = g.player(c.side).board.get(c.slot as usize).map(|m| m.atk)
+        {
+            g.damage_split(c.side, Area::AllEnemies, atk);
+        }
+    }),
+
+    // -------------------------------------------------------- Warlock
+    spell("Shadow Rounds", T::EnemyMinion, |g, c| {
+        let mut next = c.target;
+        // Chains while it keeps killing; the board is finite, so is this.
+        for _ in 0..MAX_BOARD {
+            let Some(t) = next else { break };
+            g.spell_damage(c.side, Some(t), 2);
+            let dead = matches!(t, Target::Minion(s, i)
+                if g.player(s).board.get(i as usize).is_some_and(|m| m.is_dead()));
+            g.sweep_deaths();
+            if !dead {
+                break;
+            }
+            next = g.random_minion(c.side.other());
+        }
+    }),
+    battlecry("Ocular Occultist", T::None, |g, c| {
+        g.discard_random(c.side);
+    }),
+    spell("RAFAAM LADDER!!", T::None, |g, c| {
+        // "of different Costs": three draws, no two at the same price.
+        let mut taken: Inline<i16, 3> = Inline::new();
+        for _ in 0..3 {
+            let mut matches: Inline<u16, { crate::state::MAX_DECK }> = Inline::new();
+            for (i, card) in g.player(c.side).deck.iter().enumerate() {
+                if !taken.contains(&card.def().cost) {
+                    matches.push(i as u16);
+                }
+            }
+            if matches.is_empty() {
+                break;
+            }
+            let pick = g.rngs.effects.index(matches.len());
+            let at = matches[pick] as usize;
+            let card = g.player(c.side).deck[at];
+            g.player_mut(c.side).deck.remove(at);
+            taken.push(card.def().cost);
+            g.give_card(c.side, card);
+        }
+    }),
+    deathrattle("Possessed Animancer", |g, c| {
+        if g.summon_from_deck(c.side, |d| d.races.any(Races::BEAST)) {
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.grant(Target::Minion(c.side, slot), Keywords::LIFESTEAL);
+        }
+    }),
+    choose("Sleep Paralysis", &[
+        m(T::None, |g, c| {
+            g.summon_token(c.side, tokens::NIGHT_TERROR, 2);
+        }),
+        m(T::EnemyMinion, |g, c| {
+            if let Some(t) = c.target {
+                g.destroy(t);
+            }
+        }),
+    ]),
+    battlecry("Riftcleaver", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(s, i) = t else { return };
+        let Some(health) = g.player(s).board.get(i as usize).map(|m| m.health()) else {
+            return;
+        };
+        g.destroy(t);
+        g.damage_hero(c.side, health);
+    }),
+    trigger("Asphyxiodon", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side)
+            && let Some(t) = g.random_minion(c.side.other())
+        {
+            g.deal_damage(t, 5);
+        }
+    }),
+    battlecry("Archwitch Willow", T::None, |g, c| {
+        // One pool over both zones, so a hand of Demons and a deck of them
+        // are equally likely to answer.
+        let hand: Inline<u16, MAX_HAND> = (0..g.player(c.side).hand.len() as u16)
+            .filter(|i| g.player(c.side).hand[*i as usize].card.def().races.any(Races::DEMON))
+            .collect();
+        let deck: Inline<u16, { crate::state::MAX_DECK }> =
+            (0..g.player(c.side).deck.len() as u16)
+                .filter(|i| g.player(c.side).deck[*i as usize].def().races.any(Races::DEMON))
+                .collect();
+        let total = hand.len() + deck.len();
+        if total == 0 {
+            return;
+        }
+        let pick = g.rngs.effects.index(total);
+        let card = if pick < hand.len() {
+            let at = hand[pick] as usize;
+            let card = g.player(c.side).hand[at].card;
+            g.player_mut(c.side).hand.remove(at);
+            card
+        } else {
+            let at = deck[pick - hand.len()] as usize;
+            let card = g.player(c.side).deck[at];
+            g.player_mut(c.side).deck.remove(at);
+            card
+        };
+        g.summon(c.side, card);
+    }),
+    spell("Bat Mask", T::FriendlyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(_, i) = t else { return };
+        g.set_attack(t, 1);
+        g.set_health(t, 1);
+        let card = g.player(c.side).board[i as usize].card;
+        while !g.player(c.side).board.is_full() {
+            if !g.summon(c.side, card) {
+                break;
+            }
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.set_attack(Target::Minion(c.side, slot), 1);
+            g.set_health(Target::Minion(c.side, slot), 1);
+        }
+    }),
+    battlecry("Chronogor", T::None, |g, c| {
+        // Both halves come off *your* deck: the two dearest to you, the two
+        // cheapest to them.
+        for _ in 0..2 {
+            let mut best: Option<(usize, i16)> = None;
+            for (i, card) in g.player(c.side).deck.iter().enumerate() {
+                let cost = card.def().cost;
+                if best.is_none_or(|(_, b)| cost > b) {
+                    best = Some((i, cost));
+                }
+            }
+            let Some((at, _)) = best else { break };
+            let card = g.player(c.side).deck[at];
+            g.player_mut(c.side).deck.remove(at);
+            g.give_card(c.side, card);
+        }
+        for _ in 0..2 {
+            let mut worst: Option<(usize, i16)> = None;
+            for (i, card) in g.player(c.side).deck.iter().enumerate() {
+                let cost = card.def().cost;
+                if worst.is_none_or(|(_, b)| cost < b) {
+                    worst = Some((i, cost));
+                }
+            }
+            let Some((at, _)) = worst else { break };
+            let card = g.player(c.side).deck[at];
+            g.player_mut(c.side).deck.remove(at);
+            g.give_card(c.side.other(), card);
+        }
+    }),
+    battlecry("Razidir", T::None, |g, c| {
+        let theirs = g.kindred(c.side, Races::DEMON) || g.kindred(c.side, Races::BEAST);
+        g.discard_random(if theirs { c.side.other() } else { c.side });
+    }),
+
+    // --------------------------------------------------------- Priest
+    battlecry("Psychic Conjurer", T::None, |g, c| {
+        let foe = c.side.other();
+        let n = g.player(foe).deck.len();
+        if n == 0 {
+            return;
+        }
+        let pick = g.rngs.effects.index(n);
+        let card = g.player(foe).deck[pick];
+        g.give_token(c.side, card);
+    }),
+    trigger("Shadow Ascendant", |g, c| {
+        if !matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            return;
+        }
+        let me = c.me();
+        let mut pool: Inline<Target, MAX_BOARD> = Inline::new();
+        g.collect_area(c.side, Area::FriendlyMinions, &mut pool);
+        pool.retain(|t| *t != me);
+        if pool.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(pool.len());
+        g.buff(pool[pick], 1, 1);
+    }),
+    battlecry("Spirit of the Kaldorei", T::None, |g, c| {
+        if g.player(c.side).hero_power_uses > 0
+            && let Some(src) = c.source
+        {
+            g.buff(Target::Minion(c.side, src), 3, 3);
+        }
+    }),
+    choose("Twilight Influence", &[
+        m(T::MinionAtkAtMost(3), |g, c| {
+            if let Some(t) = c.target {
+                g.destroy(t);
+            }
+        }),
+        m(T::None, |g, c| {
+            g.summon_random_of_cost(c.side, 2, 1);
+        }),
+    ]),
+    battlecry("Weaver of the Cycle", T::AnyCharacter, |g, c| {
+        let holding = g.player(c.side).hand.iter().any(|h| {
+            h.card.def().kind() == super::Kind::Spell && h.card.def().cost >= 5
+        });
+        if holding && let Some(t) = c.target {
+            g.deal_damage(t, 3);
+        }
+    }),
+    battlecry("Specter Specialist", T::FriendlyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(s, i) = t else { return };
+        let already = g
+            .player(s)
+            .board
+            .get(i as usize)
+            .is_some_and(|m| m.has(Keywords::REBORN));
+        if already {
+            let card = g.player(s).board[i as usize].card;
+            g.summon_copy(c.side, card);
+        } else {
+            g.grant(t, Keywords::REBORN);
+        }
+    }),
+    trigger("Incensed Matriarch", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side)
+            && g.player(c.side)
+                .board
+                .get(c.slot as usize)
+                .is_some_and(|m| m.damage == 0)
+        {
+            g.buff(c.me(), 0, 3);
+        }
+    }),
+    deathrattle("Lingering Spirit", |g, c| {
+        let before = g.player(c.side).hero_hp;
+        g.heal_hero(c.side, 3);
+        let excess = 3 - (g.player(c.side).hero_hp - before);
+        if excess > 0
+            && let Some(t) = g.random_enemy(c.side)
+        {
+            g.deal_damage(t, excess);
+        }
+    }),
+    c(
+        "Medivh's Triumph",
+        T::None,
+        Some(|g, c| g.spell_damage_area(c.side, Area::AllMinions, 4)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(|g, side, _i| {
+            let legendary = g
+                .player(side)
+                .board
+                .iter()
+                .any(|m| m.card.def().rarity() == super::Rarity::Legendary);
+            // "Costs (1)" is a price, not a discount.
+            if legendary { 1 - 5 } else { 0 }
+        }),
+        None,
+    ),
+    battlecry("Eternus", T::EnemyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(s, i) = t else { return };
+        let mine = c
+            .source
+            .and_then(|src| g.player(c.side).board.get(src as usize).map(|m| m.health()))
+            .unwrap_or(0);
+        let theirs = g.player(s).board.get(i as usize).map_or(i16::MAX, |m| m.health());
+        if theirs <= mine {
+            g.take_control(t, c.side);
+        }
+    }),
+    deathrattle("Atlasaurus", |g, c| {
+        g.summon_random_where(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.cost >= 5 && d.keywords.has(Keywords::TAUNT)
+        });
+    }),
+    spell("Ritual of Life", T::None, |g, c| {
+        // Discover, then a 2/3 of whatever was picked rather than the card.
+        let pool = super::discover_pool(|d| d.kind() == super::Kind::Minion && d.cost == 3);
+        if pool.is_empty() {
+            return;
+        }
+        let mut offered = [0u32; 3];
+        let n = g.rngs.effects.sample_indices(pool.len(), &mut offered);
+        let Some(pick) = offered[..n].iter().map(|&i| pool[i as usize]).next() else {
+            return;
+        };
+        if g.summon(c.side, pick) {
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.set_attack(Target::Minion(c.side, slot), 2);
+            g.set_health(Target::Minion(c.side, slot), 3);
+        }
+    }),
+    trigger("Archaios", |g, c| {
+        // On the declaration, before the exchange: the point of the card is
+        // that the attacker goes in on Archaios' Health, not that it is
+        // patched up afterwards -- by then it may not be there at all.
+        if let Event::AttackDeclared { attacker: Target::Minion(s, i), .. } = c.event
+            && s == c.side
+            && i != c.slot
+        {
+            let mine = g
+                .player(c.side)
+                .board
+                .get(c.slot as usize)
+                .map_or(0, |m| m.health());
+            g.set_health(Target::Minion(s, i), mine);
+        }
+    }),
+    spell("Hold Them Off!", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.buff(t, 5, 5);
+            g.grant(t, Keywords::LIFESTEAL);
+        }
+    }),
+    c(
+        "Gladesong Siren",
+        T::None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(|g, side, _i| {
+            let cast = g.player(side).schools_cast_turn;
+            let holy = cast & (1 << (super::School::Holy as u8)) != 0;
+            let shadow = cast & (1 << (super::School::Shadow as u8)) != 0;
+            if holy && shadow { 1 - 6 } else { 0 }
+        }),
+        None,
+    ),
+    deathrattle("Glade Ecologist", |g, c| {
+        g.give_token(c.side, tokens::PURIFYING_VINES);
+    }),
+    spell("Purifying Vines", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(s, _) = t else { return };
+        if s == c.side {
+            g.buff(t, 0, 2);
+        } else {
+            g.buff(t, 0, -2);
+            g.sweep_deaths();
+        }
+    }),
+    spell("Holy Embrace", T::AnyCharacter, |g, c| {
+        if let Some(t) = c.target {
+            g.heal(t, 4);
+        }
+        g.give_token(c.side, tokens::DARK_EMBRACE);
+    }),
+    spell("Dark Embrace", T::AnyCharacter, |g, c| {
+        g.spell_damage(c.side, c.target, 4);
+    }),
+
+    // ----------------------------------------------------------- Mage
+    spell("Mirror Dimension", T::None, |g, c| {
+        let n = if g.holding_race(c.side, Races::DRAGON) { 2 } else { 1 };
+        g.summon_token(c.side, tokens::MIRRORED_MAGE, n);
+    }),
+    choose("Spark of Life", &[
+        m(T::None, |g, c| {
+            g.discover(c.side, |d| {
+                d.kind() == super::Kind::Spell && d.class() == super::Class::Mage
+            });
+        }),
+        m(T::None, |g, c| {
+            g.discover(c.side, |d| {
+                d.kind() == super::Kind::Spell && d.class() == super::Class::Druid
+            });
+        }),
+    ]),
+    spell("Scorching Winds", T::AnyCharacter, |g, c| {
+        g.spell_damage(c.side, c.target, 3);
+        if g.discard_random_where(c.side, |d| {
+            d.kind() == super::Kind::Spell && d.school() == super::School::Fire
+        }) {
+            g.spell_damage(c.side, c.target, 3);
+        }
+    }),
+    battlecry("Spire Security", T::None, |g, c| {
+        // "Reveal" only looks: the spell stays in the deck.
+        let mut spells: Inline<i16, { crate::state::MAX_DECK }> = Inline::new();
+        for card in g.player(c.side).deck.iter() {
+            if card.def().kind() == super::Kind::Spell {
+                spells.push(card.def().cost);
+            }
+        }
+        if spells.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(spells.len());
+        if spells[pick] >= 5 {
+            g.damage_split(c.side, Area::EnemyMinions, 5);
+        }
+    }),
+    battlecry("Astromancer", T::None, |g, c| {
+        // Read after this card has left hand, which is the hand the summon
+        // sees too.
+        let n = g.player(c.side).hand.len() as i16;
+        g.summon_random_of_cost(c.side, n, 1);
+    }),
+    battlecry("Temporal Construct", T::EnemyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(s, i) = t else { return };
+        let Some(health) = g.player(s).board.get(i as usize).map(|m| m.health()) else {
+            return;
+        };
+        g.deal_damage(t, 5);
+        let excess = (5 - health).max(0);
+        g.draw_cards(c.side, excess as usize);
+    }),
+    spell("Sindragosa's Triumph", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let Target::Minion(s, i) = t else { return };
+        let Some(health) = g.player(s).board.get(i as usize).map(|m| m.health()) else {
+            return;
+        };
+        // Printed as immune to Spell Damage, so this is raw damage.
+        g.deal_damage(t, 8);
+        let excess = (8 - health).max(0);
+        if excess > 0 {
+            let n = g.player(c.side).hand.len();
+            if n > 0 {
+                let pick = g.rngs.effects.index(n);
+                if let Some(h) = g.player_mut(c.side).hand.get_mut(pick) {
+                    h.cost_delta -= excess;
+                }
+            }
+        }
+    }),
+    spell("Relic of Kings", T::None, |g, c| {
+        if g.discover(c.side, |d| d.kind() == super::Kind::Spell && d.cost >= 8)
+            && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            // "It costs (1)" — a flat price, whatever it was printed at.
+            h.cost_delta = 1 - h.card.def().cost;
+        }
+    }),
+    trigger("Inferno Herald", |g, c| {
+        if let Event::SpellCast { side, card } = c.event
+            && side == c.side
+            && card.def().school() == super::School::Fire
+            && g.add_random_to_hand(c.side, |d| {
+                d.kind() == super::Kind::Minion && d.races.any(Races::ELEMENTAL)
+            })
+            && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            h.cost_delta -= 3;
+        }
+    }),
+    secret("Mystic Misdirection", |g, owner, ev| {
+        if let Event::AttackDeclared { attacker: Target::Minion(s, i), .. } = ev
+            && s == owner.other()
+        {
+            g.transform(Target::Minion(s, i), tokens::SHEEP);
+            return true;
+        }
+        false
+    }),
+
+    // -------------------------------------------------------- Warrior
+    choose("Ominous Nightmares", &[
+        m(T::None, |g, c| {
+            g.spell_damage_area(c.side, Area::AllMinions, 1);
+        }),
+        m(T::DamagedMinion, |g, c| {
+            if let Some(t) = c.target {
+                g.buff(t, 2, 2);
+            }
+        }),
+    ]),
+    spell("Precursory Strike", T::AnyCharacter, |g, c| {
+        g.spell_damage(c.side, c.target, 3);
+        let holding = g
+            .player(c.side)
+            .hand
+            .iter()
+            .any(|h| h.card.def().kind() == super::Kind::Minion && h.card.def().cost >= 5);
+        if holding {
+            g.draw_matching(c.side, |d| d.kind() == super::Kind::Minion);
+        }
+    }),
+    trigger("Stonecarver", |g, c| {
+        if !matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            return;
+        }
+        // "another": the Stonecarver does not carve itself.
+        let me = c.me();
+        let mut pool: Inline<Target, MAX_BOARD> = Inline::new();
+        for (i, m) in g.player(c.side).board.iter().enumerate() {
+            let t = Target::Minion(c.side, i as u8);
+            if t != me && m.active() && m.is_minion() && m.damage > 0 {
+                pool.push(t);
+            }
+        }
+        if pool.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(pool.len());
+        g.buff(pool[pick], 2, 2);
+    }),
+    battlecry("Baleful Blazer", T::AnyMinion, |g, c| {
+        let fire = g.player(c.side).schools_cast_turn & (1 << (super::School::Fire as u8)) != 0;
+        if fire && let Some(t) = c.target {
+            g.destroy(t);
+        }
+    }),
+    battlecry("Latorvian Armorer", T::EnemyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.deal_damage(t, 2);
+        let dead = matches!(t, Target::Minion(s, i)
+            if g.player(s).board.get(i as usize).is_some_and(|m| m.is_dead()));
+        if dead {
+            g.gain_armor(c.side, 5);
+        }
+    }),
+    battlecry("Cataclysmic War Axe", T::None, |g, c| g.herald(c.side)),
+    battlecry("Scorching Ravager", T::None, |g, c| {
+        let before = g.player(c.side).board.len();
+        g.herald(c.side);
+        // "the Soldier" is whatever the Herald just put down, if anything.
+        if g.player(c.side).board.len() > before {
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.grant(Target::Minion(c.side, slot), Keywords::RUSH);
+        }
+    }),
+    c(
+        "Afflicted Devastator",
+        T::None,
+        None,
+        Some(|g, c| {
+            let me = c.source.map(|s| Target::Minion(c.side, s));
+            let mut hits: Inline<Target, MAX_BOARD> = Inline::new();
+            g.collect_area(c.side, Area::FriendlyMinions, &mut hits);
+            for t in hits.iter() {
+                if Some(*t) != me {
+                    g.deal_damage(*t, 3);
+                }
+            }
+        }),
+        Some(|g, c| g.damage_area(c.side, Area::EnemyMinions, 3)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    battlecry("Nablya, the Watcher", T::None, |g, c| {
+        let wounded: Inline<CardId, MAX_BOARD> = g
+            .player(c.side)
+            .board
+            .iter()
+            .filter(|m| m.active() && m.is_minion() && m.damage > 0)
+            .map(|m| m.card)
+            .collect();
+        for card in wounded.iter().copied() {
+            if !g.summon(c.side, card) {
+                break;
+            }
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.grant(Target::Minion(c.side, slot), Keywords::RUSH);
+        }
+    }),
+    trigger("The Great Dracorex", |g, c| {
+        if let Event::AfterAttack { attacker, defender, defender_died } = c.event
+            && attacker == c.me()
+            && matches!(defender, Target::Minion(d, _) if d == c.side.other())
+        {
+            // The death sweep has already run by the time this fires, so board
+            // slots have shifted: a defender that died is simply gone, and one
+            // that lived is still at the slot the event named.
+            let spare = if defender_died { None } else { Some(defender) };
+            // "ALL other enemy minions" — the one it hit already took the
+            // exchange, and by now may not be there at all.
+            let atk = g
+                .player(c.side)
+                .board
+                .get(c.slot as usize)
+                .map_or(0, |m| m.atk);
+            let mut hits: Inline<Target, MAX_BOARD> = Inline::new();
+            g.collect_area(c.side, Area::EnemyMinions, &mut hits);
+            for t in hits.iter() {
+                if Some(*t) != spare {
+                    g.deal_damage(*t, atk);
+                }
+            }
+        }
+    }),
+    battlecry("Undefeated Champion", T::None, |g, c| {
+        let foe = c.side.other();
+        while !g.player(foe).board.is_full() {
+            if g.summon_random_of_cost(foe, 1, 1) == 0 {
+                break;
+            }
+        }
+    }),
+    trigger("Tortolla", |g, c| {
+        if matches!(c.event, Event::Damaged { target, .. } if target == c.me()) {
+            g.gain_armor(c.side, 1);
+            g.buff(c.me(), 1, 0);
+        }
+    }),
+    c(
+        "Crowd Control",
+        T::None,
+        Some(|g, c| {
+            for _ in 0..2 {
+                g.spell_damage_area(c.side, Area::AllMinions, 2);
+                g.sweep_deaths();
+            }
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(|g, side, _i| if g.player(side).deck.len() >= 25 { -2 } else { 0 }),
+        None,
+    ),
+    c(
+        "For Glory!",
+        T::None,
+        Some(|g, c| g.draw_cards(c.side, 2)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(|g, side, _i| -(g.minion_count(side.other()) as i16)),
+        None,
+    ),
+    bonus("Scrappy Defender", |g, side, _, _| {
+        if g.player(side).deck.len() >= 25 { (5, 0) } else { (0, 0) }
+    }),
+    spell("Gladiatorial Combat", T::None, |g, c| {
+        g.summon_from_deck(c.side, |_| true);
+        g.summon_token(c.side.other(), tokens::COLISEUM_TIGER, 1);
+    }),
+
     // --------------------------------------------------------- Shaman
     spell("Blazing Invocation", T::None, |g, c| {
         if g.discover(c.side, |d| {
@@ -5029,7 +7261,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         None,
         None,
         None,
-        Some(|g, side, _i| {
+        Some(|g, _side, _i| {
             let dormant = (0..2).any(|i| {
                 g.players[i]
                     .board
@@ -5721,6 +7953,50 @@ fn index() -> &'static [u16] {
     })
 }
 
+/// Cards whose `deathrattle` slot holds a rattle they *grant* to something
+/// else rather than one they have themselves.
+///
+/// Two invariants below would otherwise reject them: a spell must have a cast
+/// effect, and a declared deathrattle must match the printed keyword. Neither
+/// holds for a carrier -- Spikeridged Steed is a spell whose rattle belongs to
+/// whatever it buffed, and Living Spores is a bare enchantment that is never
+/// played at all. See `Permanent::granted_rattle`.
+pub const GRANTED_RATTLES: &[&str] = &[
+    "Spikeridged Steed",
+    "Talanji's Last Stand",
+    "Ulfar",
+    "Living Spores",
+];
+
+/// Turn a minion into a random one of `cost` (Dangerous Variant, Unknown
+/// Voyager).
+fn transform_into_cost(g: &mut Game, t: Target, cost: i16) {
+    let pool = super::discover_pool(move |d| d.kind() == super::Kind::Minion && d.cost == cost);
+    if pool.is_empty() {
+        return;
+    }
+    let pick = g.rngs.effects.index(pool.len());
+    g.transform(t, pool[pick]);
+}
+
+/// "If your deck has no Neutral cards" -- two Paladin cards ask it.
+fn deck_has_neutrals(g: &Game, side: Side) -> bool {
+    g.player(side)
+        .deck
+        .iter()
+        .any(|card| card.def().class() == super::Class::Neutral)
+}
+
+/// Triennium Rex's payout, printed once and used by both of its hooks.
+fn deathrattle_minion_to_hand(g: &mut Game, side: Side) {
+    if g.add_random_to_hand(side, |d| {
+        d.kind() == super::Kind::Minion && d.keywords.has(Keywords::DEATHRATTLE)
+    }) && let Some(h) = g.player_mut(side).hand.last_mut()
+    {
+        h.cost_delta -= 2;
+    }
+}
+
 /// How much a Cataclysm is worth in this position, for Deathwing's pick.
 ///
 /// Crude on purpose: enough to prefer clearing a board that is actually there
@@ -5868,7 +8144,11 @@ mod tests {
                 continue;
             }
             // A Choose One card's behaviour lives in its modes, so it has no
-            // cast effect of its own either.
+            // cast effect of its own either; nor does a bare enchantment that
+            // only exists to be granted.
+            if GRANTED_RATTLES.contains(&b.name) && b.spell.is_none() {
+                continue;
+            }
             assert_eq!(
                 b.spell.is_some(),
                 !is_secret && b.choose.is_none(),
@@ -5966,7 +8246,7 @@ mod tests {
     fn declared_deathrattles_match_the_printed_keyword() {
         for b in BEHAVIOURS {
             let card = by_name(b.name).unwrap();
-            if b.deathrattle.is_some() {
+            if b.deathrattle.is_some() && !GRANTED_RATTLES.contains(&b.name) {
                 assert!(
                     card.def().keywords.has(Keywords::DEATHRATTLE),
                     "{} has a deathrattle the card text does not mention",

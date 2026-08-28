@@ -966,6 +966,21 @@ impl Game {
         self.give_card(side, pool[pick])
     }
 
+    /// [`add_random_to_hand`](Self::add_random_to_hand) with a closure, for
+    /// pools that depend on the position ("from another class").
+    pub fn add_random_to_hand_where(
+        &mut self,
+        side: Side,
+        pred: impl Fn(&crate::cards::CardDef) -> bool,
+    ) -> bool {
+        let pool = crate::cards::discover_pool(pred);
+        if pool.is_empty() {
+            return false;
+        }
+        let pick = self.rngs.effects.index(pool.len());
+        self.give_card(side, pool[pick])
+    }
+
     /// Summon a copy of an existing minion, as printed.
     pub fn summon_copy_of(&mut self, side: Side, source: Target) -> bool {
         let Target::Minion(s, i) = source else {

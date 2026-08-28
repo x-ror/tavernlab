@@ -133,6 +133,10 @@ pub struct Permanent {
     /// name or id -- which could not tell two copies of the same card
     /// apart -- only a scan for this flag.
     pub stolen_from: Option<Side>,
+    /// A deathrattle granted to this minion on top of its own, as the card
+    /// that carries it -- "Give your minions \"Deathrattle: ...\"". `CardId(0)`
+    /// means none, the same sentinel a vacated inline slot holds.
+    pub granted_rattle: CardId,
 }
 
 impl Default for CardId {
@@ -167,6 +171,7 @@ impl Permanent {
             spell_damage: d.spell_damage,
             growth: 0,
             stolen_from: None,
+            granted_rattle: CardId(0),
         };
         if p.dormant > 0 {
             p.flags.insert(Flags::DORMANT);
@@ -260,6 +265,7 @@ impl Permanent {
         }
         let d = self.card.def();
         self.keywords = Keywords::NONE;
+        self.granted_rattle = CardId(0);
         self.atk = d.atk;
         self.temp_atk = 0;
         // Aura bookkeeping resets too; the next recomputation will re-apply
@@ -346,6 +352,13 @@ pub struct HandCard {
     /// Unlike `Marks`, this is a running sum rather than a flag, so it lives
     /// as its own field.
     pub mana_spent_while_held: i16,
+    /// Stats granted to this copy while it is in hand -- "Give all minions in
+    /// your hand +1/+1". Folded into the body the moment it is played, and
+    /// into the weapon for a weapon. `i8` because these are small numbers and
+    /// a hand is ten cards on two sides: the whole feature costs forty bytes
+    /// of a `Game`.
+    pub atk: i8,
+    pub hp: i8,
 }
 
 impl HandCard {
@@ -356,7 +369,16 @@ impl HandCard {
             locked_turn: u16::MAX,
             marks: Marks::NONE,
             mana_spent_while_held: 0,
+            atk: 0,
+            hp: 0,
         }
+    }
+
+    /// Add stats to this copy while it is in hand, saturating rather than
+    /// wrapping: a card buffed past 127 is not a card any deck plays.
+    pub fn enchant(&mut self, atk: i16, hp: i16) {
+        self.atk = self.atk.saturating_add(atk.clamp(-128, 127) as i8);
+        self.hp = self.hp.saturating_add(hp.clamp(-128, 127) as i8);
     }
 }
 
@@ -477,6 +499,14 @@ pub struct Player {
     /// instances, not distinct characters -- the same one hit twice counts
     /// twice.
     pub friendly_damaged_turn: u8,
+    /// Whether this player's *hero* has taken damage this turn, and whether
+    /// its Health has moved at all (damage or healing). Two cards ask the two
+    /// questions separately, and `friendly_damaged_turn` answers neither: it
+    /// counts minions too. Both reset at this player's own turn start.
+    pub hero_damaged_turn: bool,
+    pub hero_health_moved_turn: bool,
+    /// Friendly minions that have died this turn.
+    pub friendly_deaths_turn: u8,
     /// The active Quest, as (card, progress). A Quest's own printed number
     /// is not stored here, since its `trigger` already knows it -- this is
     /// only ever read back by the same card that wrote it.
@@ -530,6 +560,11 @@ pub struct Player {
     /// to fatigue, and not visible to anything that reads the deck (a
     /// Discover, an opponent's "look at their deck" effect).
     pub void: Inline<CardId, MAX_DECK>,
+    /// Damage dealt to the opposing hero at the end of each of this player's
+    /// turns, for the rest of the game (Alexandros Mograine). A field rather
+    /// than a queued `Pending`, because `Pending` fires at the *start* of a
+    /// turn and this is printed for the end of one.
+    pub end_turn_burn: i16,
     /// Every friendly minion that has died this game, oldest first — the pool
     /// "Resurrect a minion that died this game" draws from, and the record
     /// "for each friendly minion that died this game" counts.
@@ -582,6 +617,9 @@ impl Player {
             spell_tax_pending: 0,
             pending: Inline::new(),
             friendly_damaged_turn: 0,
+            hero_damaged_turn: false,
+            hero_health_moved_turn: false,
+            friendly_deaths_turn: 0,
             quest: None,
             sidequest: None,
             weapon: None,
@@ -596,6 +634,7 @@ impl Player {
             godfrey_active: false,
             overdrawn: Inline::new(),
             graveyard: Inline::new(),
+            end_turn_burn: 0,
             deaths: 0,
             dragon_discounted_turn: false,
             void: Inline::new(),
@@ -789,6 +828,8 @@ mod tests {
                 locked_turn: 0,
                 marks: Marks::NONE,
                 mana_spent_while_held: 0,
+                atk: 0,
+                hp: 0,
             }
         );
         assert_eq!(
@@ -809,9 +850,13 @@ mod tests {
         // The number that justifies the whole design. If this grows past a few
         // kilobytes, search stops being cheap and the reason for Rust is gone.
         let n = size_of::<Game>();
+        // The line moved once, from 2 KB, when per-copy enchantments in hand
+        // and granted deathrattles were added: both are per-card state with
+        // nowhere else to live. `tavernsim bench` was unchanged across the
+        // move, which is the number this assertion is really protecting.
         assert!(
-            n < 2048,
-            "Game is {n} bytes; it is meant to stay under 2 KB"
+            n < 2560,
+            "Game is {n} bytes; it is meant to stay well under 3 KB"
         );
     }
 
