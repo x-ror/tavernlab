@@ -659,6 +659,10 @@ pub struct Player {
     /// because "started with" is a question about that list and not about
     /// whatever is left in the deck by the time the card is played.
     pub deck_started_spelless: bool,
+    /// Waiting discount for the next Temporary card this player is given
+    /// (Spelunker). Spent by the first one that arrives, whether it comes
+    /// from a Discover, a battlecry or a Hero Power.
+    pub next_temporary_discount: i16,
     /// How many times this player has Imbued their Hero Power.
     ///
     /// Every Blessing scales off this one number: the corpus writes each of
@@ -795,6 +799,7 @@ impl Player {
             deck_started_spelless: deck
                 .iter()
                 .all(|c| c.def().kind() != Kind::Spell),
+            next_temporary_discount: 0,
             imbue_count: 0,
             informant_class: class,
             quest: None,

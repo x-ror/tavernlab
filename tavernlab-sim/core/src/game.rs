@@ -1415,11 +1415,11 @@ impl Game {
             let card = self.player_mut(side).deck.pop();
             match card {
                 Some(c) => {
-                    // "Casts When Drawn": the card never reaches hand. It
-                    // resolves on the way out of the deck, and the draw still
-                    // counts as a draw.
-                    if crate::cards::casts_when_drawn(c.card) {
-                        self.cast_from_draw(side, c.card);
+                    // "Casts When Drawn" / "Summoned When Drawn": the card
+                    // never reaches hand. It resolves on the way out of the
+                    // deck, and the draw still counts as a draw.
+                    if crate::cards::acts_when_drawn(c.card) {
+                        self.act_from_draw(side, c);
                     } else {
                         self.give_hand_card(side, c.to_hand());
                     }
@@ -2251,8 +2251,18 @@ impl Game {
     }
 
 
-    /// Resolve a "Casts When Drawn" card as it leaves the deck.
-    fn cast_from_draw(&mut self, side: Side, card: CardId) {
+    /// Resolve a card that acts as it leaves the deck.
+    ///
+    /// A spell casts itself; a minion is summoned, carrying whatever the deck
+    /// wrote on it. The card's own kind decides which, matching the two ways
+    /// the corpus prints it.
+    fn act_from_draw(&mut self, side: Side, dc: crate::state::DeckCard) {
+        let card = dc.card;
+        if card.def().kind() == Kind::Minion {
+            self.summon_with(side, card, dc.atk as i16, dc.hp as i16);
+            self.sweep_deaths();
+            return;
+        }
         if let Some(f) = behaviour_of(card).and_then(|b| b.spell) {
             f(
                 self,

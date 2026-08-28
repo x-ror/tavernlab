@@ -401,6 +401,15 @@ mod tokens {
     pub const EDR_WISP: CardId = token("EDR_851t");
     /// Frostburn Matriarch's 4/4 Dragon with Taunt.
     pub const FROSTBURN_BROODLING: CardId = token("FIR_901t");
+    /// Cards that act as they are drawn, and what they leave behind.
+    pub const ACORN: CardId = token("SW_439t");
+    pub const SATISFIED_SQUIRREL: CardId = token("SW_439t2");
+    pub const SHRED_OF_TIME: CardId = token("TIME_025t");
+    pub const FOUND_GEAR: CardId = token("JAIL_386t");
+    pub const TRIPPED_ARCANE: CardId = token("JAIL_881t");
+    pub const TRIPPED_BEAST: CardId = token("JAIL_879t");
+    pub const TORTOLLAN_NINJA: CardId = token("TLC_513t2");
+    pub const GREENWING_ILLUSION: CardId = token("EDR_260t");
     pub const FLAME_ELEMENTAL: CardId = token("UNG_809t1");
     pub const ARCANE_MISSILES: CardId = token("EX1_277");
     pub const MUGS_MAGIC: CardId = token("JAIL_800hp1");
@@ -8372,6 +8381,100 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     // it drifts. The corpus text says only that it swaps, so where it swaps
     // to is not derivable from it; a random other class each turn is the
     // rule the game actually uses.
+    // ------------------------------------------------------- acts when drawn
+    // Shuffled into a deck, these never reach a hand: they resolve on the way
+    // out of it. Each token's effect is its own printed text; see
+    // `DRAWN_ACTORS` for how the draw path finds them.
+
+    spell("Acorn", T::None, |g, c| {
+        g.summon(c.side, tokens::SATISFIED_SQUIRREL);
+    }),
+    spell("Shred of Time", T::None, |g, c| {
+        g.damage_hero(c.side, 3);
+    }),
+    spell("Found Gear!", T::None, |g, c| {
+        g.gain_armor(c.side, 2);
+    }),
+    spell("Tripped Arcane Tripwire", T::None, |g, c| {
+        g.damage_split(c.side, Area::AllEnemies, 4);
+    }),
+    spell("Tripped Beast Tripwire", T::None, |g, c| {
+        g.summon_random_where(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.cost == 5 && d.races.any(Races::BEAST)
+        });
+    }),
+
+    deathrattle("Vibrant Squirrel", |g, c| {
+        for _ in 0..4 {
+            g.shuffle_into_deck(c.side, tokens::ACORN);
+        }
+    }),
+    battlecry("Twilight Timehopper", T::None, |g, c| {
+        for _ in 0..2 {
+            g.shuffle_into_deck(c.side, tokens::SHRED_OF_TIME);
+        }
+    }),
+    spell("Scramble for Gear", T::None, |g, c| {
+        g.gain_armor(c.side, 2);
+        for _ in 0..5 {
+            g.shuffle_into_deck(c.side, tokens::FOUND_GEAR);
+        }
+    }),
+    spell("Arcane Tripwire", T::None, |g, c| {
+        g.damage_split(c.side, Area::AllEnemies, 4);
+        for _ in 0..2 {
+            g.shuffle_into_deck(c.side, tokens::TRIPPED_ARCANE);
+        }
+    }),
+    spell("Beast Tripwire", T::None, |g, c| {
+        g.summon_random_where(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.cost == 5 && d.races.any(Races::BEAST)
+        });
+        for _ in 0..2 {
+            g.shuffle_into_deck(c.side, tokens::TRIPPED_BEAST);
+        }
+    }),
+    spell("Interrogation", T::None, |g, c| {
+        for _ in 0..3 {
+            g.shuffle_into_deck(c.side, tokens::TORTOLLAN_NINJA);
+        }
+    }),
+    deathrattle("Illusory Greenwing", |g, c| {
+        for _ in 0..2 {
+            g.shuffle_into_deck(c.side, tokens::GREENWING_ILLUSION);
+        }
+    }),
+
+    // ---------------------------------------------------------------- Temporary
+    // A Temporary card is gone at the end of the turn it arrived on, unplayed.
+
+    battlecry("Frantic Forger", T::None, |g, c| {
+        let class = g.player(c.side).class;
+        if g.add_random_to_hand_where(c.side, move |d| {
+            d.kind() == super::Kind::Spell && (d.class() == class || d.class() == super::Class::Neutral)
+        }) {
+            g.make_last_temporary(c.side);
+        }
+    }),
+    deathrattle("Tunnel Terror", |g, c| {
+        for _ in 0..2 {
+            if g.add_random_to_hand_where(c.side, |d| {
+                d.kind() == super::Kind::Minion && d.cost == 2
+            }) {
+                g.make_last_temporary(c.side);
+            }
+        }
+    }),
+    // A Location: its activated ability lives in the `spell` hook.
+    spell("Bloodpetal Biome", T::None, |g, c| {
+        if g.discover(c.side, |d| d.kind() == super::Kind::Minion && d.cost == 1) {
+            g.make_last_temporary(c.side);
+        }
+    }),
+    battlecry("Spelunker", T::None, |g, c| {
+        g.player_mut(c.side).next_temporary_discount += 2;
+    }),
+
     // ------------------------------------------------------------- Dark Gifts
     // "Discover a ... with a Dark Gift": the Discover happens, then the card
     // it put in hand is given one of the ten. See `DARK_GIFTS`.
@@ -8982,19 +9085,43 @@ pub fn apply_game_setup(g: &mut Game, side: Side) {
     }
 }
 
-/// Cards that resolve on the way out of the deck instead of reaching hand.
+/// Cards that act on the way out of the deck instead of reaching hand.
 ///
-/// A name list rather than a keyword bit: the corpus spells this as the words
-/// "Casts When Drawn" at the head of the card's text and carries no mechanic
-/// for it, and the keyword word has one free bit left, which a mechanic on
-/// this many cards has no claim on yet. `tests` checks every name here really
-/// does print it.
-const CASTS_WHEN_DRAWN: &[&str] = &["Emerald Portal"];
+/// The corpus writes this two ways, on the card itself: "Casts When Drawn"
+/// on a spell and "Summoned When Drawn" on a minion. Which one applies
+/// follows from the card's own kind, so one list covers both.
+///
+/// A name list rather than a keyword bit: the corpus spells this only as
+/// words at the head of the text and carries no mechanic for it, and the
+/// keyword word has one free bit left, which this has no claim on yet.
+/// `tests` checks every name here really does print it.
+/// By id rather than by name, unlike the other name-keyed lists here: this
+/// one is read on *every draw of every card*, and comparing eight strings
+/// each time is a cost the hot path should not carry. Ids are safe here where
+/// names are elsewhere because each of these is a token with exactly one
+/// printing, which `tests` checks.
+const DRAWN_ACTORS: [CardId; 8] = [
+    token("EDR_445pt3"), // Emerald Portal:          Summon a random @-Cost Dragon.
+    token("SW_439t"),    // Acorn:                   Summon a 2/1 Squirrel.
+    token("TIME_025t"),  // Shred of Time:           Deal 3 damage to your hero.
+    token("JAIL_386t"),  // Found Gear!:             Gain 2 Armor.
+    token("JAIL_881t"),  // Tripped Arcane Tripwire: Deal 4 damage split among all enemies.
+    token("JAIL_879t"),  // Tripped Beast Tripwire:  Summon a random 5-Cost Beast.
+    token("TLC_513t2"),  // Tortollan Ninja:         summoned, a 3/3 with Stealth.
+    token("EDR_260t"),   // Illusion:                summoned, a 4/5 Dragon with Taunt.
+];
 
-/// Whether `card` casts itself as it is drawn.
-pub fn casts_when_drawn(card: CardId) -> bool {
-    let name = card.name();
-    CASTS_WHEN_DRAWN.iter().any(|n| *n == name)
+/// Whether `card` acts as it is drawn rather than reaching hand.
+#[inline]
+pub fn acts_when_drawn(card: CardId) -> bool {
+    let mut i = 0;
+    while i < DRAWN_ACTORS.len() {
+        if DRAWN_ACTORS[i].0 == card.0 {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// The behaviour attached to a card, if it has one.
@@ -9081,16 +9208,32 @@ mod tests {
     }
 
     #[test]
-    fn every_casts_when_drawn_card_really_prints_it() {
+    fn every_drawn_actor_really_prints_it() {
         // The list is by name because the corpus carries no mechanic for
         // this -- only the words at the head of the card's text. If a name
         // here stops printing them, the list is wrong.
-        for name in super::CASTS_WHEN_DRAWN {
-            let card = crate::cards::by_name(name)
-                .unwrap_or_else(|| panic!("{name} is not in the corpus"));
+        for card in super::DRAWN_ACTORS {
+            let name = card.name();
+            // Keyed by id, so nothing else may answer to the same name: a
+            // second printing would act on the draw for one copy and not the
+            // other.
+            assert_eq!(
+                crate::cards::all().filter(|c| c.name() == name).count(),
+                1,
+                "{name} has more than one printing"
+            );
+            let text = card.info().text;
             assert!(
-                card.info().text.contains("Casts When Drawn"),
-                "{name} does not print \"Casts When Drawn\""
+                text.contains("When Drawn"),
+                "{name} does not print \"When Drawn\""
+            );
+            // A spell casts, a minion is summoned; the card's own kind is
+            // what the draw path reads, so the two must agree.
+            let is_spell = card.def().kind() == crate::cards::Kind::Spell;
+            assert_eq!(
+                is_spell,
+                text.contains("Casts When Drawn"),
+                "{name} prints one thing and is another"
             );
         }
     }

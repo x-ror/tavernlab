@@ -317,6 +317,24 @@ impl Game {
         self.transform(t, pool[pick]);
     }
 
+    // -------------------------------------------------------------- Temporary
+
+    /// Mark the card last added to hand as Temporary: unplayed by the end of
+    /// this turn, it is gone.
+    ///
+    /// Spends any waiting discount (Spelunker) on the way, since that is the
+    /// point at which "your next Temporary card" has arrived.
+    pub fn make_last_temporary(&mut self, side: Side) -> bool {
+        let discount = self.player(side).next_temporary_discount;
+        let Some(hc) = self.player_mut(side).hand.last_mut() else {
+            return false;
+        };
+        hc.marks.insert(crate::state::Marks::TEMPORARY);
+        hc.cost_delta -= discount;
+        self.player_mut(side).next_temporary_discount = 0;
+        true
+    }
+
     // ------------------------------------------------------------ Dark Gifts
 
     /// Give the card at `hand_idx` a random Dark Gift, if it has none.
