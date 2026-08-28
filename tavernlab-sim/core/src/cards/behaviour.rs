@@ -421,6 +421,8 @@ mod tokens {
     pub const SOLETOS_WHOLE: CardId = token("TLC_817t5");
     /// Slime 'em!'s payout, one for each player.
     pub const ECTOPLASM: CardId = token("127118-ectoplasm");
+    /// What five Demon Hunter cards hand out.
+    pub const VOID_SOUL: CardId = token("JAIL_732");
     /// Supply Run, and the two halves it shatters into.
     pub const SUPPLY_RUN: CardId = token("CATA_820");
     pub const SUPPLY_RUN_DRAW: CardId = token("CATA_820t");
@@ -9364,6 +9366,63 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.summon_copy_of(c.side, t);
         }
     }),
+
+    // -------------------------------------------------------------- the Void
+    // Demon Hunter's Void Soul package. Four cards that hand out the same
+    // one-mana spell and one that makes Taunt stop mattering.
+    //
+    // The Void Soul's own number is not in the corpus: its text arrives
+    // template-stripped as "Summon a random -Cost Demon", with the value cut
+    // out where the number belongs. One is what the card prints, and that
+    // came from hearthstone.wiki.gg, not from the data -- named here because
+    // it is the one figure in this package the corpus cannot back. The other
+    // half of the card, "Improve your future Void Souls", has no rule stated
+    // anywhere that could be checked, so it is not implemented at all and is
+    // listed in `APPROXIMATE`. Guessing a step of one would be inventing a
+    // number twice over.
+    spell("Void Soul", T::None, |g, c| {
+        g.summon_random_where(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.cost == 1 && d.races.any(Races::DEMON)
+        });
+    }),
+
+    deathrattle("Vicious Voidscale", |g, c| {
+        // The corpus prints one Void Soul, on the Deathrattle. Some card
+        // listings elsewhere describe a Battlecry as well; the corpus is what
+        // this engine follows, and one is the weaker reading of the two.
+        g.give_token(c.side, tokens::VOID_SOUL);
+    }),
+
+    spell("Void Blast", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.spell_damage(c.side, Some(t), 3);
+        // "If it dies": the body is still on the board carrying lethal damage
+        // at this point -- the sweep runs once the spell has finished -- so
+        // the question is whether it is dead, not whether it is gone.
+        let dead = match t {
+            Target::Minion(s, i) => g
+                .player(s)
+                .board
+                .get(i as usize)
+                .is_none_or(crate::state::Permanent::is_dead),
+            Target::Hero(_) => false,
+        };
+        if dead {
+            g.give_token(c.side, tokens::VOID_SOUL);
+        }
+    }),
+
+    trigger("Stardust Scythe", |g, c| {
+        if matches!(c.event, Event::AfterAttack { attacker: Target::Hero(s), .. } if s == c.side) {
+            g.give_token(c.side, tokens::VOID_SOUL);
+        }
+    }),
+
+    spell("Hive Map", T::None, |g, c| {
+        g.discover(c.side, |d| {
+            d.kind() == super::Kind::Spell && d.school() == super::School::Fel
+        });
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -9378,6 +9437,18 @@ pub static BEHAVIOURS: &[Behaviour] = &[
 /// coverage figure that mixes exact and approximate cards is worse than a
 /// smaller honest one.
 pub const APPROXIMATE: &[(&str, &str)] = &[
+    (
+        "Void Soul",
+        "only the summon is implemented, and the 1-Cost it summons is the wiki's number rather than the corpus's -- the corpus text arrives template-stripped as \"a random -Cost Demon\". \"Improve your future Void Souls\" is not implemented at all: no source states what one improvement changes, and a step invented here would be a number this engine made up",
+    ),
+    (
+        "Hive Map",
+        "only the Discover is implemented; \"if you play it this turn, also pick one of the others\" needs the card to know it was the one just played, which no card in hand carries -- the same half Cultist Map is missing",
+    ),
+    (
+        "Cultist Map",
+        "only the Discover from the deck is implemented; \"if you play it this turn, also pick one of the others\" needs per-card state the engine does not have. Listed here late: the card has been implemented at half strength since the Discover batch, and was missing from this list rather than from the engine",
+    ),
     (
         "Ruby Sanctum",
         "whose Healing effect it is is read as whose turn it is, since a heal reaches the engine with no caster attached -- so an opposing trigger that heals during your own turn spends the charge early; and the charge catches only a heal that goes through `Game::heal`, so \"Restore a minion to full Health\" is not turned round at all and a split heal loses one point of its total rather than all of it",
@@ -9866,6 +9937,25 @@ pub fn combines(left: CardId, right: CardId) -> Option<CardId> {
 /// `AWAKENS` and `SHATTERS` above.
 const REBORN_KEEPS_ALL: [CardId; 1] = [token("127060-sinful-steed")];
 
+/// Minions whose controller's attacks ignore Taunt while they are in play.
+///
+/// "All friendly attacks ignore Taunt" is a standing rule about legality, not
+/// an effect that fires, and the two places that ask about Taunt are both in
+/// the engine -- so this is a side list read from there rather than a hook on
+/// the card. Nothing is stored for it: the board is the state.
+const IGNORES_TAUNT: [CardId; 2] = [token("BT_187"), token("CORE_BT_187")];
+
+pub fn lets_attacks_ignore_taunt(card: CardId) -> bool {
+    let mut i = 0;
+    while i < IGNORES_TAUNT.len() {
+        if IGNORES_TAUNT[i].0 == card.0 {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 pub fn reborn_keeps_enchantments(card: CardId) -> bool {
     let mut i = 0;
     while i < REBORN_KEEPS_ALL.len() {
@@ -9976,6 +10066,7 @@ pub fn is_implemented(card: CardId) -> bool {
     if awakened_by_dragon(card).is_some()
         || shatters_into(card).is_some()
         || reborn_keeps_enchantments(card)
+        || lets_attacks_ignore_taunt(card)
     {
         return true;
     }

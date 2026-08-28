@@ -12189,3 +12189,121 @@ fn schism_arrives_in_hand_already_in_two() {
         .collect();
     assert_eq!(ids, vec!["CATA_306t1", "CATA_306t2"]);
 }
+
+// ------------------------------------------------------------------ the Void
+// Demon Hunter's Void Soul package, and the minion that makes Taunt stop
+// mattering.
+
+#[test]
+fn a_void_soul_summons_a_one_cost_demon() {
+    let mut f = Fix::new();
+    f.play("Void Soul", None);
+    assert_eq!(f.g.players[0].board.len(), 1);
+    let d = f.mine(0).card.def();
+    assert_eq!(d.cost, 1, "the printed Cost, from the card and not from here");
+    assert!(d.races.any(Races::DEMON));
+}
+
+#[test]
+fn the_four_cards_that_hand_out_a_void_soul_all_do() {
+    // Vicious Voidscale, on dying.
+    let mut f = Fix::new().board(ME, &["Vicious Voidscale"]);
+    assert!(f.mine(0).has(Keywords::TAUNT));
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Void Soul");
+
+    // Void Blast, but only when the minion actually dies.
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7, survives 3
+    f.play("Void Blast", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 4);
+    assert!(f.g.players[0].hand.is_empty(), "it lived, so no Void Soul");
+    f.g.players[0].mana = 10;
+    f.g.players[1].board[0].damage = 5; // now three finishes it
+    f.play("Void Blast", foe_minion(0));
+    assert_eq!(f.their_board(), 0);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Void Soul");
+
+    // Stardust Scythe, after the hero swings.
+    let mut f = Fix::new();
+    f.play("Stardust Scythe", None);
+    assert!(f.g.apply(Action::HeroAttack { target: Target::Hero(FOE) }));
+    assert_eq!(f.g.players[1].hero_hp, 27, "the 3-Attack weapon connected");
+    let held: Vec<&str> = f.g.players[0].hand.iter().map(|h| h.card.name()).collect();
+    assert_eq!(held, vec!["Void Soul"]);
+}
+
+#[test]
+fn hive_map_discovers_a_fel_spell() {
+    let mut f = Fix::new();
+    f.play("Hive Map", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    let d = f.g.players[0].hand[0].card.def();
+    assert_eq!(d.kind(), Kind::Spell);
+    assert_eq!(d.school(), School::Fel);
+}
+
+#[test]
+fn kayn_sunfury_lets_the_whole_board_walk_past_a_taunt() {
+    let mut f = Fix::new()
+        .board(ME, &["Bloodfen Raptor"])
+        .board(FOE, &["Goldshire Footman"]); // 1/2 Taunt
+    f.g.players[0].weapon = Some(tavernlab_core::state::Weapon {
+        card: by_name("Fiery War Axe").unwrap(),
+        atk: 3,
+        durability: 2,
+    });
+
+    // Without him the Taunt stands, for the minion and for the hero alike.
+    assert!(f.g.must_respect_taunt(ME));
+    assert!(!f.g.apply(Action::Attack { from: 0, target: Target::Hero(FOE) }));
+
+    f.play("Kayn Sunfury", None);
+    assert!(!f.g.must_respect_taunt(ME), "his own line is 'all friendly attacks'");
+    assert!(f.g.apply(Action::Attack { from: 0, target: Target::Hero(FOE) }));
+    assert_eq!(f.g.players[1].hero_hp, 27);
+    assert!(f.g.apply(Action::HeroAttack { target: Target::Hero(FOE) }));
+    assert_eq!(f.g.players[1].hero_hp, 24, "the hero walks past it too");
+
+    // And the rule leaves with the body.
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "Kayn Sunfury")
+        .unwrap();
+    f.g.players[0].board[slot].damage = f.g.players[0].board[slot].max_hp;
+    f.g.sweep_deaths();
+    assert!(f.g.must_respect_taunt(ME));
+}
+
+#[test]
+fn a_taunt_that_is_ignored_is_still_offered_as_a_target() {
+    // The enumerator and `apply` have to agree, or a search finds swings the
+    // action list never had.
+    let f = Fix::new()
+        .board(ME, &["Bloodfen Raptor", "Kayn Sunfury"])
+        .board(FOE, &["Goldshire Footman", "Chillwind Yeti"]);
+    let mut legal = tavernlab_core::inline::Inline::new();
+    f.g.legal_actions(&mut legal);
+    let raptor_targets: Vec<Target> = legal
+        .iter()
+        .filter_map(|a| match a {
+            Action::Attack { from: 0, target } => Some(*target),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        raptor_targets.contains(&Target::Hero(FOE)),
+        "the face is legal past the Taunt: {raptor_targets:?}"
+    );
+    assert!(
+        raptor_targets.contains(&Target::Minion(FOE, 1)),
+        "so is the non-taunting Yeti: {raptor_targets:?}"
+    );
+    assert!(
+        raptor_targets.contains(&Target::Minion(FOE, 0)),
+        "and the Taunt itself is still a legal target: {raptor_targets:?}"
+    );
+}

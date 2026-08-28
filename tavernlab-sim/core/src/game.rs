@@ -774,7 +774,7 @@ impl Game {
         }
 
         // --- attacks
-        let must_taunt = self.player(side.other()).has_taunt();
+        let must_taunt = self.must_respect_taunt(side);
         for (i, m) in me.board.iter().enumerate() {
             if !m.can_attack() {
                 continue;
@@ -1614,6 +1614,25 @@ impl Game {
 
     // -------------------------------------------------------------- combat
 
+    /// Whether `side`'s attackers have to go through a Taunt.
+    ///
+    /// Two questions in one, and both have to be asked in both places an
+    /// attack is judged -- the action enumerator and `attack_with` -- or a
+    /// search could take a swing the enumerator never offered. The second
+    /// half is Kayn Sunfury's "All friendly attacks ignore Taunt": a standing
+    /// rule read off the board rather than a flag anywhere, so it arrives and
+    /// leaves exactly with the body.
+    pub fn must_respect_taunt(&self, side: Side) -> bool {
+        if !self.player(side.other()).has_taunt() {
+            return false;
+        }
+        !self
+            .player(side)
+            .board
+            .iter()
+            .any(|m| m.active() && crate::cards::lets_attacks_ignore_taunt(m.card))
+    }
+
     /// `from` is a board slot, or `None` for a hero attack.
     fn attack_with(&mut self, from: Option<usize>, target: Target) -> bool {
         let side = self.current;
@@ -1622,7 +1641,7 @@ impl Game {
         // Legality, including Taunt, which is enforced here and not left to
         // the action enumerator — a search or a replay can call `apply`
         // directly and must not be able to skip a Taunt.
-        let must_taunt = self.player(foe).has_taunt();
+        let must_taunt = self.must_respect_taunt(side);
         match target {
             Target::Hero(s) => {
                 if s != foe || must_taunt {
