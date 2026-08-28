@@ -461,6 +461,11 @@ impl Game {
         p.next_beast_discount = 0;
         // "It is Temporary": unplayed by the end of this turn, it is gone.
         p.hand.retain(|hc| !hc.marks.has(Marks::TEMPORARY));
+        // Follow the Fuse lends its effect "for a turn", and this is the end
+        // of it.
+        for hc in p.hand.iter_mut() {
+            hc.marks.remove(Marks::FUSED);
+        }
         // The Fins Beyond Time: swap back whatever hand this turn started
         // with, discarding the temporary starting-hand copies and anything
         // drawn into them since.
@@ -1043,6 +1048,7 @@ impl Game {
         if hc.marks.has(Marks::NOT_FROM_DECK) {
             p.cards_played_not_from_deck = p.cards_played_not_from_deck.saturating_add(1);
         }
+        let fused = hc.marks.has(Marks::FUSED);
         if def.kind() == Kind::Spell {
             p.spells_cast_turn += 1;
             p.schools_cast_turn |= 1 << def.school;
@@ -1285,6 +1291,14 @@ impl Game {
                 card: hc.card,
             });
         }
+        // Follow the Fuse, on the copy it was given to.
+        if fused {
+            let n = 2 + crate::cards::pirate_damage_bonus(self, side);
+            if let Some(t) = self.random_enemy(side) {
+                self.deal_damage(t, n);
+            }
+            self.sweep_deaths();
+        }
         // Living Nightmare: "When you play this minion, summon a 2/2 copy of
         // it." After the battlecry, so what arrives is a copy of the card and
         // not of whatever the battlecry did to the board.
@@ -1507,8 +1521,16 @@ impl Game {
                 if matches!(target, Target::Hero(_)) && !m.can_attack_face() {
                     return false;
                 }
+                // Blastpowder Engineer: "On your turn, friendly Pirates deal
+                // 1 more damage." The swing, not the printed Attack -- the
+                // body on the board is unchanged and so is what it shows.
+                let bonus = if m.races().any(Races::PIRATE) {
+                    crate::cards::pirate_damage_bonus(self, side)
+                } else {
+                    0
+                };
                 (
-                    m.atk,
+                    m.atk + bonus,
                     m.has(Keywords::POISONOUS),
                     m.has(Keywords::LIFESTEAL),
                 )
