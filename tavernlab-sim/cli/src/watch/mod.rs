@@ -759,6 +759,14 @@ fn live(app: &App, format: &str, args: &Args, dir: &Path) -> i32 {
         if files.first() != next.first() {
             // A new session directory, or the first one after waiting.
             if !files.is_empty() {
+                // Read the old files one last time before letting go of them.
+                // The client writes a session's final lines as it exits, and
+                // if the next launch lands inside the same poll those lines
+                // are still unread -- which drops the game that ended the old
+                // session, in a record whose whole job is not to drop one.
+                if let Ok(tail) = replay(&mut tr, &files, &mut offsets) {
+                    record(app, format, args, &tail);
+                }
                 println!("нова сесія: {}", next[0].display());
             }
             tr = Tracker::new(args.me.clone());

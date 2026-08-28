@@ -10,7 +10,9 @@
 //! prints the position it reconstructed precisely so that a mismatch against
 //! a real log is visible rather than silent.
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 const LOG: &str = "\
 D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME
@@ -511,4 +513,101 @@ D 09:05:00.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=PL
         home.join("history.sqlite").exists(),
         "and the file is where the rest of the program will look for it"
     );
+}
+
+/// The last game of a session is not lost when the client rotates.
+///
+/// The recorder follows the newest session directory. The client writes a
+/// session's final lines as it exits and starts a fresh directory on the next
+/// launch, and when those land inside one poll of each other the old file
+/// still has unread lines at the moment the recorder lets go of it. That
+/// dropped the game which ended the session — silently, in the one record
+/// whose whole job is not to drop one.
+///
+/// Slow by nature: this is the daemon, and the daemon polls. The waits are
+/// several times the poll interval so a loaded machine does not fail it.
+#[test]
+fn a_session_that_rotates_does_not_lose_its_last_game() {
+    fn game(minute: u8, hero_name: &str, hero_id: &str, turns: u8) -> String {
+        format!(
+            "D 09:0{minute}:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME\n\
+             D 09:0{minute}:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=1 local=False \
+             [entityName=Jaina Proudmoore id=64 zone=PLAY zonePos=0 cardId=HERO_08 player=1] \
+             zone from  -> FRIENDLY PLAY (Hero)\n\
+             D 09:0{minute}:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=2 local=False \
+             [entityName={hero_name} id=65 zone=PLAY zonePos=0 cardId={hero_id} player=2] \
+             zone from  -> OPPOSING PLAY (Hero)\n\
+             D 09:0{minute}:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE \
+             Entity=GameEntity tag=TURN value={turns}\n\
+             D 09:0{minute}:30.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE \
+             Entity=Me#1 tag=PLAYSTATE value=WON\n"
+        )
+    }
+    // The recorder ignores a Power.log too small to be a real session.
+    let pad = "D 09:00:00.0 [Power] pad ".to_string() + &"#".repeat(5000) + "\n";
+
+    let root = std::env::temp_dir().join(format!("tavernlab-rotate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let logs = root.join("logs");
+    let first = logs.join("S1");
+    std::fs::create_dir_all(&first).expect("session one");
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).expect("home");
+    let s1 = first.join("Power.log");
+    std::fs::write(&s1, format!("{}{pad}", game(1, "Garrosh Hellscream", "HERO_01", 12)))
+        .expect("write session one");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tavernsim"))
+        .args(["watch", "--quiet", "--logs"])
+        .arg(&logs)
+        .args(["--me", "Me#1"])
+        .env("TAVERNLAB_HOME", &home)
+        .env_remove("HS_DECK")
+        .env_remove("HS_ME")
+        .env_remove("HS_LOGS")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start the recorder");
+
+    // Let it take the first session in.
+    std::thread::sleep(Duration::from_millis(2500));
+
+    // The client finishes a game and rotates, both inside one poll.
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&s1)
+        .expect("append to session one");
+    f.write_all(game(3, "Uther Lightbringer", "HERO_04", 9).as_bytes())
+        .expect("the game that ends the session");
+    drop(f);
+    // Far enough apart that the two directories cannot share a modification
+    // time -- the recorder picks the newest, and with equal stamps there is
+    // no rotation to test -- and far inside one poll, which is the whole
+    // point: both land before the recorder looks again.
+    std::thread::sleep(Duration::from_millis(100));
+    let second = logs.join("S2");
+    std::fs::create_dir_all(&second).expect("session two");
+    std::fs::write(
+        second.join("Power.log"),
+        format!("{}{pad}", game(5, "Thrall", "HERO_02", 7)),
+    )
+    .expect("write session two");
+
+    std::thread::sleep(Duration::from_millis(2500));
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_tavernsim"))
+        .arg("history")
+        .env("TAVERNLAB_HOME", &home)
+        .output()
+        .expect("read the history back");
+    let out = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(out.contains("WARRIOR"), "the first session's game: {out}");
+    assert!(
+        out.contains("PALADIN"),
+        "the game that ended the rotated session — the one that used to go missing: {out}"
+    );
+    assert!(out.contains("SHAMAN"), "and the new session's game: {out}");
 }

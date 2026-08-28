@@ -19,6 +19,11 @@ PID  := $(DATA)/watch.pid
 LOG  := $(DATA)/watch.log
 ENV  := $(DATA)/watch.env
 
+# `watch-restart` names stop and start as prerequisites, and `make -j` would
+# be free to run them at once -- starting a recorder the stop is about to
+# kill. Nothing here is worth parallelising anyway; cargo does its own.
+.NOTPARALLEL:
+
 .PHONY: help build serve watch watch-start watch-stop watch-restart watch-status watch-log history
 
 help:
