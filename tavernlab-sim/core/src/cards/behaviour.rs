@@ -474,6 +474,9 @@ mod tokens {
     pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
     /// Imp Gang Stooge's "8/8 Demon with Taunt and Lifesteal".
     pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
+    /// Forced-attack batch: the bodies that arrive swinging.
+    pub const TEMPORAL_SHADOW: CardId = token("TIME_434t");
+    pub const ANGRY_TREANT: CardId = token("TLC_230t");
     /// Granted deathrattles: the bodies the granting cards promise.
     pub const STEGODON: CardId = token("UNG_810");
     pub const PLANT: CardId = token("UNG_999t2t1");
@@ -4942,6 +4945,197 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.add_random_to_hand(c.side, |d| {
                 d.kind() == super::Kind::Spell && d.class() == super::Class::Druid
             });
+        }
+    }),
+
+    // ---------------------------------------------- forced attacks
+    // `Game::forced_attack` assigns the target itself; these are the cards
+    // that do the assigning.
+    spell("Unholy Frenzy", T::EnemyMinion, |g, c| {
+        let Some(target) = c.target else { return };
+        // Recorded before the swings, so a minion that trades itself away can
+        // be put back.
+        let before: Inline<CardId, MAX_BOARD> =
+            g.player(c.side).board.iter().map(|m| m.card).collect();
+        let mut slot = 0;
+        while slot < g.player(c.side).board.len() {
+            let before_n = g.player(c.side).board.len();
+            g.forced_attack((c.side, slot as u8), target);
+            g.sweep_deaths();
+            // A minion that died has already pulled the rest forward.
+            if g.player(c.side).board.len() == before_n {
+                slot += 1;
+            }
+            if matches!(target, Target::Minion(s, i)
+                if g.player(s).board.get(i as usize).is_none())
+            {
+                break;
+            }
+        }
+        // "Resummon any that die": one body back for each one missing.
+        let mut done: Inline<CardId, MAX_BOARD> = Inline::new();
+        for card in before.iter().copied() {
+            if done.contains(&card) {
+                continue;
+            }
+            done.push(card);
+            let has = g.player(c.side).board.iter().filter(|m| m.card == card).count();
+            let had = before.iter().filter(|x| **x == card).count();
+            for _ in has..had {
+                if !g.summon(c.side, card) {
+                    break;
+                }
+            }
+        }
+    }),
+    deathrattle("Temporal Traveler", |g, c| {
+        if g.summon_token(c.side, tokens::TEMPORAL_SHADOW, 1) == 0 {
+            return;
+        }
+        let slot = g.player(c.side).board.len() as u8 - 1;
+        if let Some(t) = g.random_minion(c.side.other()) {
+            g.forced_attack((c.side, slot), t);
+        }
+    }),
+    trigger("Gnome Muncher", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side)
+            && let Some(t) = g.lowest_health_enemy(c.side)
+        {
+            g.forced_attack((c.side, c.slot), t);
+        }
+    }),
+    battlecry("High Cultist Herenn", T::None, |g, c| {
+        let before = g.player(c.side).board.len();
+        for _ in 0..2 {
+            if !g.summon_from_deck(c.side, |d| d.keywords.has(Keywords::DEATHRATTLE)) {
+                break;
+            }
+        }
+        // "They fight!" -- the two of them, with each other.
+        if g.player(c.side).board.len() >= before + 2 {
+            let a = before as u8;
+            let b = before as u8 + 1;
+            g.forced_attack((c.side, a), Target::Minion(c.side, b));
+        }
+    }),
+    trigger("Mythical Terror", |g, c| {
+        if !matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            return;
+        }
+        let foe = c.side.other();
+        let me = c.me();
+        let mut slot = 0;
+        while slot < g.player(foe).board.len() {
+            let before = g.player(foe).board.len();
+            g.forced_attack((foe, slot as u8), me);
+            g.sweep_deaths();
+            // A minion that died in the exchange has already shifted the ones
+            // behind it into its place.
+            if g.player(foe).board.len() == before {
+                slot += 1;
+            }
+            if g.player(c.side).board.get(c.slot as usize).is_none() {
+                break;
+            }
+        }
+    }),
+    trigger("Illidari Inquisitor", |g, c| {
+        if let Event::AfterAttack { attacker: Target::Hero(s), defender, defender_died: false } =
+            c.event
+            && s == c.side
+        {
+            g.forced_attack((c.side, c.slot), defender);
+        }
+    }),
+    spell("TREEEES!!!", T::AnyMinion, |g, c| {
+        let Some(target) = c.target else { return };
+        for _ in 0..4 {
+            if g.summon_token(c.side, tokens::ANGRY_TREANT, 1) == 0 {
+                break;
+            }
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.forced_attack((c.side, slot), target);
+            g.sweep_deaths();
+            if matches!(target, Target::Minion(s, i)
+                if g.player(s).board.get(i as usize).is_none())
+            {
+                break;
+            }
+        }
+    }),
+    deathrattle("Ankylodon", |g, c| {
+        for _ in 0..2 {
+            if !g.summon_random_where(c.side, |d| {
+                d.kind() == super::Kind::Minion && d.cost == 3 && d.races.any(Races::BEAST)
+            }) {
+                break;
+            }
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            if let Some(t) = g.random_enemy(c.side) {
+                g.forced_attack((c.side, slot), t);
+                g.sweep_deaths();
+            }
+        }
+    }),
+    trigger("Wilted Shadow", |g, c| {
+        if let Event::Healed { target, .. } = c.event
+            && matches!(target, Target::Hero(s) | Target::Minion(s, _) if s == c.side.other())
+        {
+            g.forced_attack((c.side, c.slot), target);
+        }
+    }),
+    spell("Behemoth Mask", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.set_attack(t, 8);
+        g.set_health(t, 10);
+        g.grant(t, Keywords::LIFESTEAL);
+        let foe = c.side.other();
+        let mut pool: Inline<u8, MAX_BOARD> = Inline::new();
+        for (i, m) in g.player(foe).board.iter().enumerate() {
+            if m.active() && m.is_minion() {
+                pool.push(i as u8);
+            }
+        }
+        if pool.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(pool.len());
+        g.forced_attack((foe, pool[pick]), t);
+    }),
+    battlecry("Warmaul Challenger", T::EnemyMinion, |g, c| {
+        let Some(target) = c.target else { return };
+        let Some(src) = c.source else { return };
+        // "To the death": they trade until one of them is gone. Bounded, since
+        // two bodies that cannot hurt each other would otherwise stand here
+        // forever.
+        for _ in 0..32 {
+            g.forced_attack((c.side, src), target);
+            g.sweep_deaths();
+            let mine_alive = g.player(c.side).board.get(src as usize).is_some_and(|m| {
+                m.active() && m.card.name() == "Warmaul Challenger"
+            });
+            let theirs_alive = matches!(target, Target::Minion(s, i)
+                if g.player(s).board.get(i as usize).is_some_and(|m| m.active()));
+            if !mine_alive || !theirs_alive {
+                break;
+            }
+        }
+    }),
+    battlecry("Rampaging Hound", T::None, |g, c| {
+        let Some(src) = c.source else { return };
+        let me = Target::Minion(c.side, src);
+        let foe = c.side.other();
+        let mut slot = 0;
+        while slot < g.player(foe).board.len() {
+            let before = g.player(foe).board.len();
+            g.forced_attack((foe, slot as u8), me);
+            g.sweep_deaths();
+            if g.player(foe).board.len() == before {
+                slot += 1;
+            }
+            if g.player(c.side).board.get(src as usize).is_none() {
+                break;
+            }
         }
     }),
 

@@ -9522,3 +9522,142 @@ fn photosynthesis_heals_and_pays_three_druid_spells() {
         assert_eq!(h.card.def().kind(), Kind::Spell);
     }
 }
+
+// -------------------------------------------------------- forced attacks
+
+#[test]
+fn unholy_frenzy_throws_your_board_and_puts_it_back() {
+    let mut f = Fix::new()
+        .board(ME, &["Wisp", "Wisp"])
+        .board(FOE, &["Chillwind Yeti"]); // 4/5, kills both
+    f.play("Unholy Frenzy", foe_minion(0));
+    assert_eq!(f.theirs(0).damage, 2, "two Wisps got in");
+    assert_eq!(f.g.players[0].board.len(), 2, "and both came back");
+    assert!(f.g.players[0].board.iter().all(|m| m.card.name() == "Wisp"));
+}
+
+#[test]
+fn temporal_traveler_leaves_a_shadow_that_swings() {
+    let mut f = Fix::new()
+        .board(ME, &["Temporal Traveler"])
+        .board(FOE, &["Chillwind Yeti"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.theirs(0).damage, 4, "the Shadow went straight in");
+    assert_eq!(f.g.players[0].board.len(), 0, "and died to the counter");
+}
+
+#[test]
+fn gnome_muncher_eats_the_weakest_each_turn() {
+    let mut f = Fix::new()
+        .board(ME, &["Gnome Muncher"]) // 5/6 Lifesteal
+        .board(FOE, &["Boulderfist Ogre", "Wisp"]);
+    f.g.players[0].hero_hp = 20;
+    f.g.end_turn();
+    assert_eq!(f.their_board(), 1, "the Wisp was the lowest");
+    assert_eq!(f.g.players[0].hero_hp, 25, "Lifesteal on a forced swing");
+}
+
+#[test]
+fn high_cultist_herenn_makes_the_two_fight() {
+    let mut f = Fix::new().deck(&["Cairne Bloodhoof", "Cairne Bloodhoof"]);
+    f.play("High Cultist Herenn", None);
+    // Two 5/5s trade, and each leaves a Baine.
+    let baines = f.g.players[0]
+        .board
+        .iter()
+        .filter(|m| m.card.name() == "Baine Bloodhoof")
+        .count();
+    assert_eq!(baines, 2);
+}
+
+#[test]
+fn mythical_terror_drags_their_whole_board_in() {
+    let mut f = Fix::new()
+        .board(ME, &["Mythical Terror"]) // 4/10 Lifesteal
+        .board(FOE, &["Wisp", "Wisp"]);
+    f.g.players[0].hero_hp = 20;
+    f.g.end_turn();
+    assert_eq!(f.their_board(), 0, "both threw themselves at it");
+    assert_eq!(f.mine(0).damage, 2);
+    assert_eq!(f.g.players[0].hero_hp, 28, "four back per swing");
+}
+
+#[test]
+fn illidari_inquisitor_follows_the_hero_in() {
+    let mut f = Fix::new()
+        .board(ME, &["Illidari Inquisitor"]) // 8/8
+        .board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.play("Fiery War Axe", None); // 3/2
+    assert!(f.g.apply(Action::HeroAttack { target: Target::Minion(FOE, 0) }));
+    assert_eq!(f.their_board(), 0, "three from the hero, eight from the Demon");
+    assert_eq!(f.mine(0).damage, 6, "and it took the counter");
+}
+
+#[test]
+fn treeees_throws_four_treants_at_one_minion() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.play("TREEEES!!!", foe_minion(0));
+    assert_eq!(f.their_board(), 0, "four twos is eight");
+    assert!(
+        f.g.players[0].board.len() < 4,
+        "and the Ogre took some with it"
+    );
+}
+
+#[test]
+fn ankylodon_leaves_two_beasts_swinging() {
+    let mut f = Fix::new()
+        .board(ME, &["Ankylodon"])
+        .board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    let dealt = f.g.players[1].board.first().map_or(0, |m| m.damage)
+        + (30 - f.g.players[1].hero_hp);
+    assert!(dealt > 0, "the Beasts went in on something");
+}
+
+#[test]
+fn wilted_shadow_punishes_healing_the_enemy() {
+    let mut f = Fix::new()
+        .board(ME, &["Wilted Shadow"]) // 6/7
+        .board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[1].board[0].damage = 3;
+    f.g.heal(Target::Minion(FOE, 0), 1);
+    assert_eq!(f.their_board(), 0, "six into a body on four");
+}
+
+#[test]
+fn behemoth_mask_makes_a_wall_and_a_victim() {
+    let mut f = Fix::new()
+        .board(ME, &["Wisp"])
+        .board(FOE, &["Bloodfen Raptor"]); // 3/2
+    f.play("Behemoth Mask", my_minion(0));
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (8, 10));
+    assert!(f.mine(0).has(Keywords::LIFESTEAL));
+    assert_eq!(f.their_board(), 0, "the Raptor was made to run into it");
+}
+
+#[test]
+fn warmaul_challenger_trades_until_one_falls() {
+    // Against something bigger the Challenger loses the duel: it deals one a
+    // round and takes six, so it gets two swings in and falls.
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.play("Warmaul Challenger", foe_minion(0)); // 1/10
+    assert_eq!(f.g.players[0].board.len(), 0);
+    assert_eq!(f.theirs(0).damage, 2);
+
+    // Against something it can outlast, the duel goes the other way.
+    let mut f = Fix::new().board(FOE, &["Bloodfen Raptor"]); // 3/2
+    f.play("Warmaul Challenger", foe_minion(0));
+    assert_eq!(f.their_board(), 0);
+    assert_eq!(f.mine(0).health(), 10 - 6, "two rounds of one, three back each");
+}
+
+#[test]
+fn rampaging_hound_pulls_the_far_board_onto_itself() {
+    let mut f = Fix::new().board(FOE, &["Wisp", "Wisp", "Wisp"]);
+    f.play("Rampaging Hound", None); // 4/12
+    assert_eq!(f.their_board(), 0);
+    assert_eq!(f.mine(0).damage, 3);
+}
