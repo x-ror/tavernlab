@@ -8568,6 +8568,66 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         }
     }),
 
+    // ------------------------------------------------------ the Lotus rackets
+    // Two of these count the cards you played for exactly two Mana; the third
+    // is a 4/4 for two that leaves after one swing.
+
+    battlecry("Lotus Troublemaker", T::None, |g, c| {
+        // "Shoot 1 time!", plus one for every 2-Mana card played while this
+        // sat in hand or deck. A copy that started in the deck has been there
+        // since turn zero, so the player's count is exactly its own; a copy
+        // conjured mid-game has not, and there is no per-copy counter to give
+        // it -- so it shoots once. Weaker than printed, never stronger.
+        let held_all_game = !c.marks.has(Marks::NOT_FROM_DECK);
+        let extra = if held_all_game {
+            g.player(c.side).cards_played_for_two
+        } else {
+            0
+        };
+        for _ in 0..1 + extra {
+            if let Some(t) = g.random_enemy(c.side) {
+                g.deal_damage(t, 1);
+            }
+        }
+        g.sweep_deaths();
+    }),
+
+    spell("Jade Guardians", T::None, |g, c| {
+        // "This game" here, not "while in hand or deck": the discount is the
+        // player's whole count, whatever this spell's own history is.
+        let off = g.player(c.side).cards_played_for_two as i16;
+        for _ in 0..2 {
+            let before = g.player(c.side).hand.len();
+            g.add_random_to_hand_where(c.side, |d| d.cost == 8 && d.kind() == super::Kind::Minion);
+            if g.player(c.side).hand.len() > before
+                && let Some(hc) = g.player_mut(c.side).hand.last_mut()
+            {
+                hc.cost_delta -= off;
+            }
+        }
+    }),
+
+    trigger("Escape Artist", |g, c| {
+        // "After this attacks and survives": the trigger only runs from a
+        // board slot a live minion is standing in, so surviving is what
+        // having been called at all means.
+        let slot = c.slot;
+        if !matches!(
+            c.event,
+            Event::AfterAttack { attacker: Target::Minion(s, i), .. }
+                if s == c.side && i == slot
+        ) {
+            return;
+        }
+        g.draw_cards(c.side, 1);
+        // "Escape the game": off the board, and not into the graveyard --
+        // nothing died, so no Deathrattle fires and nothing that counts
+        // friendly deaths counts this one.
+        g.player_mut(c.side).board.remove(slot as usize);
+        g.board_dirty = true;
+        g.recompute_auras();
+    }),
+
     // --------------------------------------------------------------- dragons
     // Three cards that wake up when a Dragon is played while they sit in hand,
     // and a spell that arrives already broken in two. `AWAKENS` and

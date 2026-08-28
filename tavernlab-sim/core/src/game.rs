@@ -1068,6 +1068,11 @@ impl Game {
         }
         p.hand.remove(hand_idx);
         p.cards_played_turn += 1;
+        // "Cards you played for 2 Mana": the price paid, which is why this
+        // counts `cost` and not the printed number.
+        if cost == 2 {
+            p.cards_played_for_two = p.cards_played_for_two.saturating_add(1);
+        }
         if hc.marks.has(Marks::NOT_FROM_DECK) {
             p.cards_played_not_from_deck = p.cards_played_not_from_deck.saturating_add(1);
         }
