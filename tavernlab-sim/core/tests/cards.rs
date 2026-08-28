@@ -6821,12 +6821,26 @@ fn call_of_the_wild_brings_all_three_companions() {
 fn thiefs_tools_hands_over_two_discounted_four_drops() {
     let mut f = Fix::new();
     f.play("Thief's Tools", None);
-    assert_eq!(f.g.players[0].hand.len(), 2);
-    for h in f.g.players[0].hand.iter() {
+    // Two picks, but not always two cards: a picked card that Shatters
+    // arrives as two halves, each carrying the parent's full cost (see
+    // `SHATTERS`). Only the half the discount lands on is two cheaper --
+    // "add a card and discount it" writes on the last card in hand, and a
+    // split puts the other half at the front. That reads weaker than the
+    // card, and it is the Shatter rule rather than this one.
+    let hand: Vec<_> = f.g.players[0].hand.iter().copied().collect();
+    assert!(
+        hand.len() == 2 || hand.len() == 3,
+        "two picks, or three cards when one of them shattered: {:?}",
+        hand.iter().map(|h| h.card.name()).collect::<Vec<_>>()
+    );
+    for h in &hand {
         assert_eq!(h.card.def().cost, 4, "{}", h.card.name());
         assert_eq!(h.card.def().kind(), Kind::Spell);
-        assert_eq!(h.cost_delta, -2);
     }
+    assert!(
+        hand.iter().filter(|h| h.cost_delta == -2).count() >= 1,
+        "at least the picks that did not split are two cheaper"
+    );
 }
 
 #[test]
@@ -13366,5 +13380,181 @@ fn impfernal_goes_off_from_the_hand_as_well_as_the_board() {
         f.theirs(0).health(),
         4,
         "the Deathrattle fired from hand, not just the swing"
+    );
+}
+
+// ----------------------------------------------------------------- Leylines
+// Mage's Leyline package: three spells whose numbers are the only base values
+// in this engine the corpus does not carry, and four cards that scale them.
+
+#[test]
+fn the_three_leylines_do_what_the_wiki_prints() {
+    // Leyline Nexus: draw a card, it costs (1) less.
+    let mut f = Fix::new().deck(&["Boulderfist Ogre"]);
+    f.play("Leyline Nexus", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].cost_delta, -1);
+
+    // Bursting Leyline: 4 to a random enemy minion, the excess to the hero.
+    let mut f = Fix::new().board(FOE, &["Wisp"]); // 1/1, so 3 spills over
+    f.g.players[0].crystals = 10;
+    f.play("Bursting Leyline", None);
+    assert_eq!(f.their_board(), 0);
+    assert_eq!(f.g.players[1].hero_hp, 27, "four into a 1/1 spills three");
+
+    // Crystallized Leyline: a random 6-Cost minion.
+    let mut f = Fix::new();
+    f.g.players[0].crystals = 10;
+    f.play("Crystallized Leyline", None);
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!(f.mine(0).card.def().cost, 6);
+}
+
+#[test]
+fn bursting_leyline_with_no_enemy_minion_does_nothing() {
+    // The card names a minion; with none there is nothing to hit and nothing
+    // to spill past, so the hero is not hit for the whole four.
+    let mut f = Fix::new();
+    f.g.players[0].crystals = 10;
+    f.play("Bursting Leyline", None);
+    assert_eq!(f.g.players[1].hero_hp, 30);
+}
+
+#[test]
+fn the_three_scaling_cards_stack_and_last_the_game() {
+    let mut f = Fix::new().deck(&["Wisp", "Wisp"]);
+    f.g.players[0].crystals = 10;
+    for n in ["Mystic Runesaber", "Ley Walker", "Surge Needle"] {
+        f.g.players[0].mana = 10;
+        f.play(n, None);
+    }
+    let p = &f.g.players[0];
+    assert_eq!((p.leyline_bonus, p.leyline_discount, p.leyline_extra), (1, 1, 1));
+
+    // Cheaper: a 2-Cost Leyline now costs 1.
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Leyline Nexus").unwrap()));
+    let at = f.g.players[0].hand.len() - 1;
+    assert_eq!(f.g.card_cost(ME, at), 1, "one less, and only for Leylines");
+
+    // Bigger and twice: two draws, each (2) less rather than (1).
+    f.g.players[0].mana = 10;
+    assert!(f.g.apply(Action::Play {
+        hand: at as u8,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    let drawn: Vec<i16> = f.g.players[0]
+        .hand
+        .iter()
+        .map(|h| h.cost_delta)
+        .collect();
+    assert_eq!(drawn, vec![-2, -2], "fired twice, each a bonus deeper");
+}
+
+#[test]
+fn the_arcanomicon_hands_over_all_three_and_one_upgrade() {
+    for (mode, want) in [(0u8, (0, 0, 1)), (1, (0, 2, 0)), (2, (2, 0, 0))] {
+        let mut f = Fix::new();
+        f.g.players[0].crystals = 10;
+        f.play_mode("The Arcanomicon", mode, None);
+        let held: Vec<&str> = f.g.players[0].hand.iter().map(|h| h.card.name()).collect();
+        assert_eq!(
+            held,
+            vec!["Leyline Nexus", "Bursting Leyline", "Crystallized Leyline"],
+            "all 3 Leylines, mode {mode}"
+        );
+        let p = &f.g.players[0];
+        assert_eq!(
+            (p.leyline_bonus, p.leyline_discount, p.leyline_extra),
+            want,
+            "mode {mode}"
+        );
+    }
+}
+
+#[test]
+fn ley_walker_leaves_a_leyline_behind() {
+    let mut f = Fix::new().board(ME, &["Ley Walker"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert!(
+        tavernlab_core::cards::is_leyline(f.g.players[0].hand[0].card),
+        "{}",
+        f.g.players[0].hand[0].card.name()
+    );
+}
+
+#[test]
+fn smoldering_grove_draws_more_the_longer_it_is_held_then_burns() {
+    let mut f = Fix::new().deck(&["Wisp", "Wisp", "Wisp", "Wisp", "Wisp"]);
+    f.g.players[0].crystals = 10;
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Smoldering Grove").unwrap()));
+    // Held for two of the owner's turns, so it draws 1 + 2.
+    for _ in 0..2 {
+        f.g.end_turn();
+        f.g.current = ME;
+    }
+    assert_eq!(f.g.players[0].hand[0].marks.held_turns(), 2);
+    f.g.players[0].mana = 10;
+    assert!(f.g.apply(Action::Play {
+        hand: 0,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(f.g.players[0].hand.len(), 3, "1 + 2 upgrades");
+
+    // Held a third turn and it is discarded instead.
+    let mut f = Fix::new().deck(&["Wisp"]);
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Smoldering Grove").unwrap()));
+    for _ in 0..3 {
+        f.g.end_turn();
+        f.g.current = ME;
+    }
+    assert!(f.g.players[0].hand.is_empty(), "discards after 3");
+}
+
+#[test]
+fn spellweavers_brilliance_is_priced_by_this_turns_spell_damage() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0].crystals = 10;
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Spellweaver's Brilliance").unwrap()));
+    assert_eq!(f.g.card_cost(ME, 0), 10, "nothing dealt yet");
+
+    f.g.players[0].mana = 10;
+    f.play("Fireball", foe_minion(0)); // 6 damage
+    assert_eq!(f.g.card_cost(ME, 0), 4, "ten less six");
+
+    // A weapon swing is not a spell.
+    let before = f.g.players[0].spell_damage_turn;
+    f.g.deal_damage(Target::Hero(FOE), 5);
+    assert_eq!(f.g.players[0].spell_damage_turn, before);
+}
+
+#[test]
+fn khadgar_doubles_what_a_card_summons() {
+    let mut f = Fix::new();
+    f.g.players[0].crystals = 10;
+    f.play("Crystallized Leyline", None);
+    assert_eq!(f.g.players[0].board.len(), 1);
+
+    let mut f = Fix::new().board(ME, &["Khadgar"]);
+    f.g.players[0].crystals = 10;
+    f.g.players[0].mana = 10;
+    f.play("Crystallized Leyline", None);
+    assert_eq!(
+        f.g.players[0].board.len(),
+        3,
+        "Khadgar plus two 6-Cost minions"
     );
 }

@@ -275,6 +275,18 @@ impl Game {
         if hc.card.def().kind() == Kind::Spell {
             cost -= self.player(side).next_spell_discount;
         }
+        // "Your Leylines cost (N) less this game" -- three cards say it and
+        // they stack, which is why this is a running total rather than a flag.
+        //
+        // The total is read first and the card identity second: this is the
+        // hottest function in the engine -- every card in hand, every time
+        // actions are enumerated -- and in the overwhelming majority of games
+        // nobody has played a Leyline card at all, so that is one byte
+        // instead of a lookup.
+        let leyline_discount = self.player(side).leyline_discount;
+        if leyline_discount > 0 && crate::cards::is_leyline(hc.card) {
+            cost -= leyline_discount as i16;
+        }
         if hc.card.def().kind() == Kind::Minion && hc.card.def().races.any(Races::BEAST) {
             cost -= self.player(side).next_beast_discount;
         }
@@ -345,6 +357,8 @@ impl Game {
         // whether anything queued a new one.
         p.spell_tax_active = p.spell_tax_pending;
         p.spell_tax_pending = 0;
+        // "for each damage you dealt with spells this turn" starts over.
+        p.spell_damage_turn = 0;
         for m in p.board.iter_mut() {
             m.attacks_done = 0;
             m.flags.remove(Flags::JUST_SUMMONED);
@@ -587,6 +601,17 @@ impl Game {
         p.minions_played_turn = false;
         // "It is Temporary": unplayed by the end of this turn, it is gone.
         p.hand.retain(|hc| !hc.marks.has(Marks::TEMPORARY));
+        // "(Upgrades each turn, but discards after 3!)": one more turn held,
+        // and gone once the two-bit counter is full. Ticked here so a card
+        // drawn this turn has been held for none of it yet.
+        for hc in p.hand.iter_mut() {
+            if crate::cards::upgrades_while_held(hc.card) {
+                let held = hc.marks.held_turns() + 1;
+                hc.marks.set_held_turns(held);
+            }
+        }
+        p.hand
+            .retain(|hc| !crate::cards::upgrades_while_held(hc.card) || hc.marks.held_turns() < 3);
         // Follow the Fuse and Follow the Footsteps both lend their effect
         // "for a turn", and this is the end of it.
         for hc in p.hand.iter_mut() {

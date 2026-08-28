@@ -56,13 +56,29 @@ impl Game {
         let Some(t) = target else { return false };
         let base = if self.wielding_atiesh(side) { base * 2 } else { base };
         let amount = base + self.player(side).spell_power();
+        self.note_spell_damage(side, amount);
         self.deal_damage(t, amount)
+    }
+
+    /// Bank damage a spell is about to deal, for the card that is priced by
+    /// how much of it there has been this turn (Spellweaver's Brilliance).
+    ///
+    /// Counted where a spell's damage is worked out rather than where damage
+    /// lands, which is the difference between "damage you dealt with spells"
+    /// and damage from anything else -- a weapon swing and a Hero Power both
+    /// reach `deal_damage` and neither is a spell.
+    fn note_spell_damage(&mut self, side: Side, amount: i16) {
+        if amount > 0 {
+            let p = self.player_mut(side);
+            p.spell_damage_turn = p.spell_damage_turn.saturating_add(amount.min(255) as u8);
+        }
     }
 
     /// Spell damage spread over an area.
     pub fn spell_damage_area(&mut self, side: Side, area: Area, base: i16) {
         let base = if self.wielding_atiesh(side) { base * 2 } else { base };
         let amount = base + self.player(side).spell_power();
+        self.note_spell_damage(side, amount);
         self.damage_area(side, area, amount);
     }
 
@@ -163,6 +179,7 @@ impl Game {
     /// fn`, and an id that no longer exists fails the build instead of
     /// summoning nothing at runtime.
     pub fn summon_token(&mut self, side: Side, card: CardId, n: usize) -> usize {
+        let n = self.doubled_summons(side, n);
         let mut made = 0;
         for _ in 0..n {
             if !self.summon(side, card) {
@@ -171,6 +188,25 @@ impl Game {
             made += 1;
         }
         made
+    }
+
+    /// How many bodies a card that summons `n` actually puts down.
+    ///
+    /// Khadgar: "Your cards that summon minions summon twice as many." Read
+    /// off the board, so it arrives and leaves with him. It doubles the *card's*
+    /// count, which is what the card says -- see `APPROXIMATE` for the summons
+    /// this cannot reach.
+    fn doubled_summons(&self, side: Side, n: usize) -> usize {
+        if self
+            .player(side)
+            .board
+            .iter()
+            .any(|m| crate::cards::doubles_summons(m.card) && m.active())
+        {
+            n * 2
+        } else {
+            n
+        }
     }
 
     /// Summon `n` of the token `card` creates.
@@ -1515,6 +1551,7 @@ impl Game {
         if pool.is_empty() {
             return 0;
         }
+        let n = self.doubled_summons(side, n);
         let mut made = 0;
         for _ in 0..n {
             let pick = self.rngs.effects.index(pool.len());
