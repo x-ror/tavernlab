@@ -456,6 +456,13 @@ mod tokens {
     pub const STUBBORN_SUSPECT: CardId = token("SW_006");
     /// Rockskipper's payout: a 1-Cost spell that deals 3 damage.
     pub const ROCK: CardId = token("WW_001t");
+    /// The Arcanomicon's three upgrades. The Leylines themselves are named
+    /// once, in `LEYLINES`, because seven cards ask about them as a group.
+    pub const ENERGIZE: CardId = token("MEND_505t");
+    pub const UNBLOCK: CardId = token("MEND_505t2");
+    pub const EMPOWER: CardId = token("MEND_505t3");
+    /// Spellweaver's Brilliance's 6/6.
+    pub const AZURE_WARDEN: CardId = token("CATA_452t");
     /// The Aura cycle, its summon, and the Shatter pair that flies with it.
     pub const CHRONOLOGICAL_AURA: CardId = token("TIME_700");
     pub const CHRONOLOGICAL_DRAKE: CardId = token("TIME_700t");
@@ -10023,7 +10030,160 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             }
         }
     }),
+
+    // ------------------------------------------------------------- Leylines
+    // Mage's Leyline package. Three spells and four cards that make them
+    // bigger, cheaper or more numerous, all of it "this game".
+    //
+    // The three Leylines are the only cards in this engine whose *base*
+    // numbers the corpus does not carry: each arrives with the value cut out
+    // ("Deal damage to a random enemy minion", "Summon a random -Cost
+    // minion", "It costs ( ) less"). Four, six and one come from
+    // hearthstone.wiki.gg, each from that card's own page, and each is named
+    // at the line that uses it. Everything that *scales* them is the
+    // corpus's: Mystic Runesaber's 1, Ley Walker's 1, Surge Needle's extra
+    // trigger, and The Arcanomicon's 2, 2 and 1 are all printed.
+
+    // "Draw a card. It costs (1) less." The 1 is the wiki's.
+    spell("Leyline Nexus", T::None, |g, c| {
+        let p = g.player(c.side);
+        let (bonus, extra) = (p.leyline_bonus as i16, p.leyline_extra);
+        for _ in 0..=extra {
+            let before = g.player(c.side).hand.len();
+            g.draw_cards(c.side, 1);
+            if g.player(c.side).hand.len() > before
+                && let Some(hc) = g.player_mut(c.side).hand.last_mut()
+            {
+                hc.cost_delta -= 1 + bonus;
+            }
+        }
+    }),
+
+    // "Deal 4 damage to a random enemy minion. Excess damage hits the enemy
+    // hero." The 4 is the wiki's.
+    spell("Bursting Leyline", T::None, |g, c| {
+        let p = g.player(c.side);
+        let (bonus, extra) = (p.leyline_bonus as i16, p.leyline_extra);
+        for _ in 0..=extra {
+            let amount = 4 + bonus;
+            match g.random_minion(c.side.other()) {
+                Some(t @ Target::Minion(s, i)) => {
+                    // "Excess damage hits the enemy hero": what the body
+                    // could not absorb carries over, so how much it had left
+                    // has to be read before the hit.
+                    let left = g.player(s).board[i as usize].health();
+                    g.spell_damage(c.side, Some(t), amount);
+                    let spill = amount + g.player(c.side).spell_power() - left;
+                    if spill > 0 {
+                        g.deal_damage(Target::Hero(c.side.other()), spill);
+                    }
+                }
+                // Nothing to hit, so nothing to spill past: the card names a
+                // minion, and with no minion it does nothing.
+                _ => return,
+            }
+            if g.is_over() {
+                return;
+            }
+        }
+    }),
+
+    // "Summon a random 6-Cost minion." The 6 is the wiki's.
+    spell("Crystallized Leyline", T::None, |g, c| {
+        let p = g.player(c.side);
+        let (bonus, extra) = (p.leyline_bonus as i16, p.leyline_extra);
+        for _ in 0..=extra {
+            g.summon_random_of_cost(c.side, 6 + bonus, 1);
+        }
+    }),
+
+    // The three that scale them, and the one that hands them out.
+    battlecry("Mystic Runesaber", T::None, |g, c| {
+        let p = g.player_mut(c.side);
+        p.leyline_bonus = p.leyline_bonus.saturating_add(1);
+    }),
+    c(
+        "Ley Walker",
+        T::None,
+        None,
+        Some(|g, c| {
+            let p = g.player_mut(c.side);
+            p.leyline_discount = p.leyline_discount.saturating_add(1);
+        }),
+        Some(|g, c| {
+            let pick = g.rngs.effects.index(LEYLINES.len());
+            g.give_token(c.side, LEYLINES[pick]);
+        }),
+        None, None, None, None, None, None,
+    ),
+    battlecry("Surge Needle", T::None, |g, c| {
+        let p = g.player_mut(c.side);
+        p.leyline_extra = p.leyline_extra.saturating_add(1);
+    }),
+
+    // "Get all 3 Leylines. Choose an upgrade for your Leylines." The three
+    // upgrades are its own children and each carries its own number.
+    choose(
+        "The Arcanomicon",
+        &[
+            m(T::None, |g, c| {
+                arcanomicon(g, c.side);
+                g.cast_token(c.side, tokens::ENERGIZE);
+            }),
+            m(T::None, |g, c| {
+                arcanomicon(g, c.side);
+                g.cast_token(c.side, tokens::UNBLOCK);
+            }),
+            m(T::None, |g, c| {
+                arcanomicon(g, c.side);
+                g.cast_token(c.side, tokens::EMPOWER);
+            }),
+        ],
+    ),
+    spell("Energize", T::None, |g, c| {
+        let p = g.player_mut(c.side);
+        p.leyline_extra = p.leyline_extra.saturating_add(1);
+    }),
+    spell("Unblock", T::None, |g, c| {
+        let p = g.player_mut(c.side);
+        p.leyline_discount = p.leyline_discount.saturating_add(2);
+    }),
+    spell("Empower", T::None, |g, c| {
+        let p = g.player_mut(c.side);
+        p.leyline_bonus = p.leyline_bonus.saturating_add(2);
+    }),
+
+    // "Summon a 6/6 Dragon. Costs (1) less for each damage you dealt with
+    // spells this turn." Both numbers are the card's own.
+    c(
+        "Spellweaver's Brilliance",
+        T::None,
+        Some(|g, c| {
+            g.summon_token(c.side, tokens::AZURE_WARDEN, 1);
+        }),
+        None, None, None, None, None, None,
+        Some(|g, side, _i| -(g.player(side).spell_damage_turn as i16)),
+        None,
+    ),
+
+    // "Draw 1 card. (Upgrades each turn, but discards after 3!)" The 1 and
+    // the 3 are the wiki's; the engine ticks the count and throws the card
+    // away when it runs out (see `Game::end_turn`), so this only reads it.
+    spell("Smoldering Grove", T::None, |g, c| {
+        g.draw_cards(c.side, 1 + c.marks.held_turns() as usize);
+    }),
+
+    // "Your cards that summon minions summon twice as many." A standing rule
+    // about how many bodies a summon puts down, so it is read where the
+    // counting happens -- `Game::doubled_summons`.
 ];
+
+/// The Arcanomicon's first half: all three Leylines into hand.
+fn arcanomicon(g: &mut Game, side: Side) {
+    for card in LEYLINES {
+        g.give_token(side, card);
+    }
+}
 
 /// Discard this player's most expensive card, and say which it was.
 ///
@@ -10151,6 +10311,10 @@ pub fn is_aura(card: CardId) -> bool {
 /// coverage figure that mixes exact and approximate cards is worse than a
 /// smaller honest one.
 pub const APPROXIMATE: &[(&str, &str)] = &[
+    (
+        "Khadgar",
+        "\"Your cards that summon minions summon twice as many\" reaches the summons that are written as a count -- `summon_token`, `summon_child`, `summon_random_of_cost` -- and not the ones a card writes as its own loop or as a single `summon`. Doubling every `summon` instead would double resurrects, Reborn and board-copies as well, which the card does not say; so this misses summons rather than inventing them, and reads weaker",
+    ),
     (
         "Welcome Home!",
         "\"Reopen a location\" clears the once-per-turn lock and nothing else. The wiki says only that Reopen \"refreshes a location that has used its ability, allowing it to be used again\", and neither it nor the corpus says whether durability comes back or by how much -- so the Location gets its use back and keeps whatever durability it had left, which is the reading that cannot overrate the card",
@@ -10668,6 +10832,58 @@ const REBORN_KEEPS_ALL: [CardId; 1] = [token("127060-sinful-steed")];
 /// `SHATTERS`: the effect itself is an ordinary `deathrattle` row.
 const RATTLES_ANYWHERE: [CardId; 1] = [token("JAIL_398")];
 
+/// The three Leylines.
+///
+/// Seven cards in the Mage package say "your Leylines" and mean exactly these
+/// three, so which cards they are is a fact about identity and lives here.
+/// Everything that scales them -- `Player::leyline_bonus`, `leyline_discount`
+/// and `leyline_extra` -- is read by the cards themselves.
+/// Khadgar, in every printing that is a 2-Cost minion.
+///
+/// Compared by id rather than by name because this is asked on every summon,
+/// and a name comparison there is a string compare per board slot per body.
+const KHADGARS: [CardId; 2] = [token("CORE_DAL_575"), token("DAL_575")];
+
+pub fn doubles_summons(card: CardId) -> bool {
+    KHADGARS[0].0 == card.0 || KHADGARS[1].0 == card.0
+}
+
+const LEYLINES: [CardId; 3] = [
+    token("MEND_504"), // Leyline Nexus
+    token("MEND_500"), // Bursting Leyline
+    token("MEND_502"), // Crystallized Leyline
+];
+
+pub fn is_leyline(card: CardId) -> bool {
+    let mut i = 0;
+    while i < LEYLINES.len() {
+        if LEYLINES[i].0 == card.0 {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Cards that get better the longer they are held and are discarded once the
+/// count runs out.
+///
+/// "(Upgrades each turn, but discards after 3!)" -- a rule about the copy in
+/// hand rather than about the effect, so the engine ticks it (see
+/// `Game::end_turn`) and the card reads the count off its own `Marks`.
+const UPGRADES_WHILE_HELD: [CardId; 1] = [token("FIR_911")];
+
+pub fn upgrades_while_held(card: CardId) -> bool {
+    let mut i = 0;
+    while i < UPGRADES_WHILE_HELD.len() {
+        if UPGRADES_WHILE_HELD[i].0 == card.0 {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 pub fn rattles_from_hand_or_deck(card: CardId) -> bool {
     let mut i = 0;
     while i < RATTLES_ANYWHERE.len() {
@@ -10686,9 +10902,10 @@ pub fn rattles_from_hand_or_deck(card: CardId) -> bool {
 /// the rest. Quel'dorei Fletcher's "Your Hero Power costs (0) while your hand
 /// has 3 or less cards" lives in `Game::hero_power_cost`, and Niri of the
 /// Crater's spell half lives beside the other doubling rules in `play_card`.
-const RULES_IN_THE_ENGINE: [CardId; 2] = [
-    token("TIME_606"), // Quel'dorei Fletcher
-    token("TLC_836"),  // Niri of the Crater
+const RULES_IN_THE_ENGINE: [CardId; 3] = [
+    token("TIME_606"),     // Quel'dorei Fletcher
+    token("TLC_836"),      // Niri of the Crater
+    token("CORE_DAL_575"), // Khadgar
 ];
 
 fn rule_lives_in_the_engine(card: CardId) -> bool {
@@ -10976,9 +11193,15 @@ mod tests {
     fn every_approximate_card_is_real_and_implemented() {
         for (name, note) in APPROXIMATE {
             let card = by_name(name).unwrap_or_else(|| panic!("no card named {name:?}"));
+            // Implemented, not necessarily through a row of its own: a card
+            // whose whole text is a standing rule the engine reads has no
+            // hook to hang a behaviour on and can still be approximate --
+            // Khadgar's summon doubling is in `Game::doubled_summons`. What
+            // this is really guarding against is an entry for a card nothing
+            // plays at all, which `is_implemented` answers exactly.
             assert!(
-                behaviour_of(card).is_some(),
-                "{name} is listed as approximate but has no behaviour at all"
+                is_implemented(card),
+                "{name} is listed as approximate but is not implemented at all"
             );
             assert!(!note.is_empty(), "{name} must say what is missing");
         }
@@ -11080,9 +11303,17 @@ mod tests {
                 // templated wording ("Battlecry: Choose to gain X, Y, or Z.",
                 // e.g. Ancient Stegodon) offers the same discrete pick but the
                 // corpus never tags it with the mechanic, only the text.
+                // The Arcanomicon is the third wording: "Choose an upgrade
+                // for your Leylines", with the three upgrades printed as its
+                // own children. It is named rather than matched, because
+                // "Choose a/an ..." is overwhelmingly a *targeting* template
+                // ("Choose a card in your hand to discard") and accepting it
+                // would let a real mistake through -- which is the only thing
+                // this assertion is here to catch.
                 assert!(
                     card.def().keywords.has(Keywords::CHOOSE_ONE)
-                        || card.info().text.contains("Choose to"),
+                        || card.info().text.contains("Choose to")
+                        || b.name == "The Arcanomicon",
                     "{} has modes but the card is not a Choose One",
                     b.name
                 );

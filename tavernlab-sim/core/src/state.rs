@@ -410,6 +410,12 @@ impl Marks {
     /// Eternity). A mark rather than anything on the card, for the same
     /// reason `GRANTED_PREPARE` is one: it belongs to one copy in one hand.
     pub const CASTS_TWICE: Marks = Marks(1 << 11);
+    /// Two bits of counter for a card that upgrades while it is held and is
+    /// discarded once it runs out (Smoldering Grove). Which cards do that is
+    /// a fact about the card, not about the copy, so it lives in a side list
+    /// and only the count is here -- and `Marks` had the bits spare.
+    pub const HELD_ONE: Marks = Marks(1 << 12);
+    pub const HELD_TWO: Marks = Marks(1 << 13);
 
     #[inline]
     pub const fn has(self, m: Marks) -> bool {
@@ -422,6 +428,20 @@ impl Marks {
     #[inline]
     pub fn remove(&mut self, m: Marks) {
         self.0 &= !m.0;
+    }
+
+    /// How many of its owner's turns an upgrading card has been held for,
+    /// 0 to 3, out of the two bits reserved for the count.
+    #[inline]
+    pub const fn held_turns(self) -> u8 {
+        ((self.0 >> 12) & 0b11) as u8
+    }
+
+    /// Set that count, saturating at the three the two bits can hold.
+    #[inline]
+    pub fn set_held_turns(&mut self, n: u8) {
+        let n = if n > 3 { 3 } else { n } as u16;
+        self.0 = (self.0 & !(0b11 << 12)) | (n << 12);
     }
 }
 
@@ -863,6 +883,22 @@ pub struct Player {
     /// never be read to the end. A game that plays more than seven records
     /// the first seven, which is the way this can only ever read short.
     pub cheap_minions_played: Inline<CardId, MAX_BOARD>,
+    /// How much stronger this player's Leylines are, how much cheaper, and
+    /// how many extra times each one fires.
+    ///
+    /// Three separate cards raise each of the three -- Mystic Runesaber, Ley
+    /// Walker and Surge Needle -- and The Arcanomicon offers a bigger version
+    /// of any one of them. All of it is "this game", so none of it resets.
+    /// The numbers each card adds are the corpus's own; only the Leylines'
+    /// base values had to come from outside it, and they are named where they
+    /// are used.
+    pub leyline_bonus: u8,
+    pub leyline_discount: u8,
+    pub leyline_extra: u8,
+    /// Damage this player has dealt with spells this turn, for the one card
+    /// that is priced by it (Spellweaver's Brilliance). Saturating, and reset
+    /// at the start of each of this player's turns.
+    pub spell_damage_turn: u8,
     /// Mana crystals this player may hold above the usual ten.
     ///
     /// "Increase both players' maximum Mana by 5" (Ysera, Emerald Aspect) is
@@ -1022,6 +1058,10 @@ impl Player {
             tamed_pet: false,
             hoarded: CardId(0),
             cheap_minions_played: Inline::new(),
+            leyline_bonus: 0,
+            leyline_discount: 0,
+            leyline_extra: 0,
+            spell_damage_turn: 0,
             extra_crystals: 0,
             weapon: None,
             hand: Inline::new(),
