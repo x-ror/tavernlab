@@ -24,6 +24,7 @@ use tavernlab_core::inline::Inline;
 use tavernlab_core::state::{Game, Outcome, Side};
 use tavernlab_json::Json;
 
+mod decks;
 mod serve;
 #[path = "watch/mod.rs"]
 mod watch_mod;
@@ -64,12 +65,13 @@ fn main() {
             _ => Formats::STANDARD,
         }),
         "gauntlet" => gauntlet(args.get(1).map(String::as_str)),
+        "decks" => decks::run(args.get(1).map(String::as_str)),
         "watch" => watch(&args[1..]),
         "backlog" => backlog(args.get(1).map(String::as_str)),
         other => {
             eprintln!("unknown command {other:?}");
             eprintln!(
-                "usage: tavernsim [serve|watch|bench|matrix|demo|coverage|gauntlet|backlog|art-urls] [args]"
+                "usage: tavernsim [serve|watch|bench|matrix|demo|coverage|gauntlet|decks|backlog|art-urls] [args]"
             );
             std::process::exit(2);
         }
