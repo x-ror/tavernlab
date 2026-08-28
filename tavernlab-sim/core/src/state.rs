@@ -98,6 +98,14 @@ impl Flags {
     /// summoned by a Deathrattle in the middle never had one, so neither
     /// swings when it should not.
     pub const FORCED_TO_ATTACK: Flags = Flags(1 << 12);
+    /// This body is the copy Reborn brought back, rather than the one that
+    /// was played (Raith Van Geist, Sinful Steed).
+    ///
+    /// Reborn already strips the keyword from the returning copy so it cannot
+    /// come back twice, which leaves nothing on the body to say it ever did.
+    /// This says it, and it is what `Player::reborn_dead` reads when that copy
+    /// dies in turn.
+    pub const CAME_BACK: Flags = Flags(1 << 13);
 
     #[inline]
     pub const fn has(self, f: Flags) -> bool {
@@ -745,6 +753,42 @@ pub struct Player {
     /// and one Sidequest active at the same time, and Quest Hunter runs one
     /// of each.
     pub sidequest: Option<(CardId, u8)>,
+    /// Spell schools cast on this player's previous turn, as a bitmask over
+    /// [`crate::cards::School`] -- the same shape as `schools_cast_turn`,
+    /// rolled over at end of turn.
+    ///
+    /// Kindred on a *spell* asks about the spell school rather than a tribe:
+    /// the keyword reads "you played a card with the same minion type or
+    /// spell school as this last turn", and a spell has no tribe to ask
+    /// about. `played_races_last` answers the minion half; this answers the
+    /// other one.
+    pub schools_cast_last: u8,
+    /// Which of this player's `graveyard` entries died *after* coming back
+    /// through Reborn, as a bitmask over graveyard slots (Raith Van Geist).
+    ///
+    /// A bitmask rather than a second list because a `Game` is copied by
+    /// value on every search node and the graveyard is already thirty-two
+    /// slots wide; four bytes answer the question exactly for every slot the
+    /// graveyard itself records. A death that fell past the graveyard's cap
+    /// is not marked here either, so this can only ever read short, never
+    /// long.
+    pub reborn_dead: u32,
+    /// The slice of `graveyard` that Slime 'em! put there: the start index in
+    /// the low five bits, the length in the top three.
+    ///
+    /// Its Ectoplasm resummons "all friendly minions that were slimed", and
+    /// naming them by graveyard position rather than by a copied list keeps
+    /// the whole feature to one byte a player -- which is what it had to
+    /// cost, since a `Game` is at 2544 of the 2560 bytes the size assertion
+    /// allows. Thirty-two graveyard slots need five bits and a board of seven
+    /// needs three, so the two halves fit a byte exactly. The graveyard is
+    /// append-only, so the slice keeps pointing at the same bodies for as
+    /// long as it is held, and minions that died after the wipe sit past it
+    /// and are not resummoned.
+    pub slimed: u8,
+    /// Set by Ruby Sanctum: the next Healing effect this turn deals its
+    /// damage instead of healing, and spends this.
+    pub heal_as_damage: bool,
     pub weapon: Option<Weapon>,
     pub hand: Inline<HandCard, MAX_HAND>,
     pub deck: Inline<DeckCard, MAX_DECK>,
@@ -888,6 +932,10 @@ impl Player {
             informant_class: class,
             quest: None,
             sidequest: None,
+            schools_cast_last: 0,
+            reborn_dead: 0,
+            slimed: 0,
+            heal_as_damage: false,
             weapon: None,
             hand: Inline::new(),
             deck: deck.iter().map(|&c| DeckCard::started(c)).collect(),
@@ -958,6 +1006,27 @@ impl Player {
     #[inline]
     pub fn is_dead(&self) -> bool {
         self.hero_hp <= 0
+    }
+
+    /// The graveyard slice Slime 'em! recorded, as `(start, length)`.
+    ///
+    /// `(0, 0)` when nothing is waiting, which is also what an Ectoplasm that
+    /// has already been spent leaves behind.
+    #[inline]
+    pub fn slimed_slice(&self) -> (usize, usize) {
+        ((self.slimed & 0x1f) as usize, (self.slimed >> 5) as usize)
+    }
+
+    /// Record a graveyard slice as slimed. `len` is clamped to the three bits
+    /// it has, and a `start` past the graveyard's own width records nothing --
+    /// there would be no slot to point at.
+    #[inline]
+    pub fn set_slimed(&mut self, start: usize, len: usize) {
+        if start >= GRAVEYARD || len == 0 {
+            self.slimed = 0;
+            return;
+        }
+        self.slimed = (start as u8) | ((len.min(7) as u8) << 5);
     }
 }
 
@@ -1140,8 +1209,22 @@ mod tests {
         // the same host). Paying for it by turning `locked_turn` into a tenth
         // mark, which is all the number ever meant, put `HandCard` back to
         // twelve bytes and the benchmark back to 15 643 against 15 389.
+        //
+        // The line moved a second time, from 2560, for the Priest Quest
+        // package: Raith Van Geist needs to know which graveyard entries came
+        // back through Reborn (four bytes of bitmask), Slime 'em! which slice
+        // of it was slimed (one, packed five bits and three), Gravedawn
+        // Sunbloom which spell schools were cast last turn (one) and Ruby
+        // Sanctum whether a heal is turned round (one). Seven bytes a player,
+        // and a `Player` that was already flush against its eight-byte
+        // alignment, so a `Game` went 2544 -> 2560. The measurement the note
+        // above asks for: `tavernsim bench`, best of five paired runs against
+        // a worktree of the merge base on the same host, 16 972 games/s after
+        // against 16 809 before -- inside the run-to-run spread, which was
+        // 15 380 to 16 972 across the ten runs. `tavernsim matrix 400` printed
+        // byte-identical win rates for all eleven classes.
         assert!(
-            n < 2560,
+            n < 2576,
             "Game is {n} bytes; it is meant to stay well under 3 KB"
         );
     }
