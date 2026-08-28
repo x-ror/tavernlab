@@ -305,6 +305,7 @@ fn pairs(v: Option<&Json>) -> Vec<(String, u32)> {
 mod tests {
     use super::super::paths;
     use super::*;
+    use tavernlab_core::gauntlet::Unfieldable;
 
     fn temp_home(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tavernlab-test-{tag}-{}", std::process::id()));
@@ -346,12 +347,29 @@ mod tests {
             field.iter().any(|d| d.playable()),
             "no Standard deck could be fielded at all"
         );
+        // An unplayable deck has to name its reason. There are two, and they
+        // are not the same problem: a card the engine cannot play is a gap in
+        // the engine, while a list of fewer than thirty cards is an
+        // incomplete entry in the gauntlet file. Asserting on `missing` alone
+        // would treat the second as a silent failure -- which is what
+        // happened to Thief Priest, a twenty-card entry that only stopped
+        // reporting a missing card once its last unimplemented one was
+        // implemented.
         for deck in field.iter().filter(|d| !d.playable()) {
-            assert!(
-                !deck.missing.is_empty(),
-                "{} is unplayable without saying why",
-                deck.name
-            );
+            match deck.problem() {
+                Some(Unfieldable::Cards) => assert!(
+                    !deck.missing.is_empty(),
+                    "{} is unplayable on cards without naming one",
+                    deck.name
+                ),
+                Some(Unfieldable::Size) => assert_ne!(
+                    deck.total(),
+                    30,
+                    "{} is called the wrong size at thirty cards",
+                    deck.name
+                ),
+                None => unreachable!("an unplayable deck has a problem"),
+            }
         }
         // The same call twice is the same allocation, not a second parse.
         assert!(Arc::ptr_eq(&field, &app.gauntlet("standard")));

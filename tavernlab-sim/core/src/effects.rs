@@ -303,6 +303,20 @@ impl Game {
         out
     }
 
+    /// Turn a minion into a random implemented minion of exactly `cost`.
+    ///
+    /// Nothing happens when the pool for that cost is empty, which is the
+    /// conservative reading: the minion stays as it is rather than becoming
+    /// something the cost does not name.
+    pub fn transform_into_random_of_cost(&mut self, t: Target, cost: i16) {
+        let pool = crate::cards::discover_pool(move |d| d.kind() == Kind::Minion && d.cost == cost);
+        if pool.is_empty() {
+            return;
+        }
+        let pick = self.rngs.effects.index(pool.len());
+        self.transform(t, pool[pick]);
+    }
+
     /// Buff every minion in an area.
     pub fn buff_area(&mut self, side: Side, area: Area, atk: i16, hp: i16) {
         let mut hits: Inline<Target, { MAX_BOARD * 2 + 2 }> = Inline::new();

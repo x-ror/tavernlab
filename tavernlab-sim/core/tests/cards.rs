@@ -10452,3 +10452,251 @@ fn violet_punisher_on_a_plain_body_is_just_a_body() {
     f.play("Violet Punisher", foe_minion(0));
     assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (4, 3), "nothing to steal");
 }
+
+// -------------------------------------------------------------------- Imbue
+//
+// "Imbue your Hero Power" installs the class's Blessing and raises a count,
+// and that count is the number every Blessing is written around: the corpus
+// writes all eight with `@` and carries no value anywhere. The scaling —
+// one more each time, no ceiling — was supplied from outside the card data;
+// the printed Plant Golem being a 1/1 is the one thing the data corroborates.
+
+#[test]
+fn imbue_installs_the_class_blessing_and_counts_up() {
+    let mut f = Fix::new(); // Mage
+    assert_eq!(f.g.players[0].hero_power.name(), "Fireblast");
+    f.play("Bitterbloom Knight", None);
+    assert_eq!(f.g.players[0].hero_power.name(), "Blessing of the Wisp");
+    assert_eq!(f.g.players[0].imbue_count, 1);
+
+    f.play("Flutterwing Guardian", None);
+    assert_eq!(f.g.players[0].imbue_count, 2, "the second raises the count");
+    assert_eq!(
+        f.g.players[0].hero_power.name(),
+        "Blessing of the Wisp",
+        "and leaves the Blessing in place"
+    );
+}
+
+#[test]
+fn a_class_with_no_blessing_still_counts_its_imbues() {
+    // The Emerald Dream set printed eight Blessings; Warlock is not among
+    // them. A Neutral Imbue card is still legal in a Warlock deck.
+    let mut g = Game::new((Class::Warlock, &[]), (Class::Mage, &[]), 1).unwrap();
+    g.players[0].mana = 10;
+    g.players[0].crystals = 10;
+    let mut f = Fix { g };
+    f.play("Bitterbloom Knight", None);
+    assert_eq!(f.g.players[0].imbue_count, 1);
+    assert_eq!(
+        f.g.players[0].hero_power.name(),
+        "Life Tap",
+        "nothing to install, so the basic power stays"
+    );
+}
+
+#[test]
+fn blessing_of_the_golem_summons_a_plant_golem_the_size_of_the_count() {
+    let mut g = Game::new((Class::Druid, &[]), (Class::Mage, &[]), 1).unwrap();
+    g.players[0].mana = 10;
+    g.players[0].crystals = 10;
+    let mut f = Fix { g };
+    f.play("Bitterbloom Knight", None); // Imbue once
+    assert!(f.g.apply(Action::HeroPower {
+        target: None,
+        second: false
+    }));
+    let golem = f.mine(f.g.players[0].board.len() - 1);
+    assert_eq!(golem.card.name(), "Plant Golem");
+    assert_eq!((golem.atk, golem.max_hp), (1, 1), "one Imbue, a 1/1");
+
+    // A second Imbue, and the next Golem is a 2/2.
+    f.g.players[0].hero_power_uses = 0;
+    f.g.players[0].mana = 10;
+    f.g.imbue(ME);
+    assert!(f.g.apply(Action::HeroPower {
+        target: None,
+        second: false
+    }));
+    let golem = f.mine(f.g.players[0].board.len() - 1);
+    assert_eq!((golem.atk, golem.max_hp), (2, 2));
+}
+
+#[test]
+fn blessing_of_the_wisp_scales_both_halves_with_the_count() {
+    let mut f = Fix::new(); // Mage
+    f.play("Bitterbloom Knight", None);
+    f.g.imbue(ME); // count 2
+    f.g.players[0].mana = 10;
+    let before = f.g.players[1].hero_hp;
+    assert!(f.g.apply(Action::HeroPower {
+        target: None,
+        second: false
+    }));
+    let wisps = f.g.players[0]
+        .board
+        .iter()
+        .filter(|m| m.card.name() == "Wisp")
+        .count();
+    assert_eq!(wisps, 2, "two Imbues, two Wisps");
+    assert_eq!(before - f.g.players[1].hero_hp, 2, "and two damage");
+}
+
+#[test]
+fn blessing_of_the_wolf_arms_a_beast_in_hand() {
+    let mut g = Game::new((Class::Hunter, &[]), (Class::Mage, &[]), 1).unwrap();
+    g.players[0].mana = 10;
+    g.players[0].crystals = 10;
+    let mut f = Fix { g };
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Bloodfen Raptor").unwrap()));
+    f.play("Bitterbloom Knight", None);
+    f.g.players[0].mana = 10;
+    assert!(f.g.apply(Action::HeroPower {
+        target: None,
+        second: false
+    }));
+    let hc = f.g.players[0].hand[0];
+    assert_eq!(hc.card.name(), "Bloodfen Raptor");
+    assert_eq!((hc.atk, hc.hp), (1, 0), "+1 Attack at one Imbue");
+    assert_eq!(f.g.card_cost(ME, 0), hc.card.def().cost - 1);
+}
+
+#[test]
+fn blessing_of_the_dragon_shuffles_portals_that_cast_themselves_on_the_draw() {
+    let mut g = Game::new((Class::Paladin, &[]), (Class::Mage, &[]), 1).unwrap();
+    g.players[0].mana = 10;
+    g.players[0].crystals = 10;
+    let mut f = Fix { g };
+    f.play("Bitterbloom Knight", None);
+    f.g.players[0].mana = 10;
+    assert!(f.g.apply(Action::HeroPower {
+        target: None,
+        second: false
+    }));
+    assert_eq!(f.g.players[0].deck.len(), 2, "two Portals");
+    assert!(
+        f.g.players[0]
+            .deck
+            .iter()
+            .all(|d| d.name() == "Emerald Portal")
+    );
+
+    let hand = f.g.players[0].hand.len();
+    let board = f.g.players[0].board.len();
+    f.g.draw(ME, 1);
+    assert_eq!(
+        f.g.players[0].hand.len(),
+        hand,
+        "a Portal never reaches hand"
+    );
+    assert_eq!(
+        f.g.players[0].board.len(),
+        board + 1,
+        "it casts itself instead"
+    );
+    let dragon = f.mine(f.g.players[0].board.len() - 1);
+    assert!(dragon.races().any(Races::DRAGON));
+    assert_eq!(dragon.card.def().cost, 1, "one Imbue, a 1-Cost Dragon");
+}
+
+#[test]
+fn blessing_of_the_moon_hands_over_a_temporary_discounted_card() {
+    let mut g = Game::new((Class::Priest, &[]), (Class::Mage, &[]), 1).unwrap();
+    g.players[0].mana = 10;
+    g.players[0].crystals = 10;
+    let mut f = Fix { g };
+    f.play("Lunarwing Messenger", None);
+    f.g.players[0].mana = 10;
+    assert!(f.g.apply(Action::HeroPower {
+        target: None,
+        second: false
+    }));
+    let at = f.g.players[0].hand.len() - 1;
+    let hc = f.g.players[0].hand[at];
+    assert_eq!(hc.card.def().class(), Class::Priest);
+    assert_eq!(f.g.card_cost(ME, at), hc.card.def().cost - 1);
+    assert!(hc.marks.has(tavernlab_core::state::Marks::TEMPORARY));
+
+    // Unplayed by the end of the turn, it is gone.
+    f.g.end_turn();
+    assert!(
+        !f.g.players[0]
+            .hand
+            .iter()
+            .any(|h| h.marks.has(tavernlab_core::state::Marks::TEMPORARY)),
+        "Temporary cards burn at end of turn"
+    );
+}
+
+#[test]
+fn blessing_of_the_wind_grows_a_minion_by_the_count() {
+    let mut g = Game::new((Class::Shaman, &[]), (Class::Mage, &[]), 1).unwrap();
+    g.players[0].mana = 10;
+    g.players[0].crystals = 10;
+    let mut f = Fix { g };
+    f.play("Bitterbloom Knight", None); // a 2-cost body, Imbue once
+    let slot = (f.g.players[0].board.len() - 1) as u8;
+    let was = f.mine(slot as usize).card.def().cost;
+    f.g.players[0].mana = 10;
+    assert!(f.g.apply(Action::HeroPower {
+        target: Some(Target::Minion(ME, slot)),
+        second: false
+    }));
+    assert_eq!(
+        f.mine(slot as usize).card.def().cost,
+        was + 1,
+        "one Imbue, one Mana more"
+    );
+}
+
+#[test]
+fn wisprider_imbues_then_fires_the_power_for_free() {
+    let mut f = Fix::new(); // Mage
+    f.play("Wisprider", None);
+    assert_eq!(f.g.players[0].imbue_count, 1);
+    assert!(
+        f.g.players[0]
+            .board
+            .iter()
+            .any(|m| m.card.name() == "Wisp"),
+        "the Blessing fired on the way in"
+    );
+    assert_eq!(
+        f.g.players[0].hero_power_uses, 0,
+        "and the turn's own Hero Power is still available"
+    );
+}
+
+#[test]
+fn finality_imbues_twice() {
+    let mut g = Game::new(
+        (Class::DeathKnight, &[by_name("Frail Ghoul").unwrap()]),
+        (Class::Mage, &[]),
+        1,
+    )
+    .unwrap();
+    g.players[0].mana = 10;
+    g.players[0].crystals = 10;
+    let mut f = Fix { g };
+    f.play("Finality", None);
+    assert_eq!(f.g.players[0].imbue_count, 2);
+    assert_eq!(
+        f.g.players[0].hero_power.name(),
+        "Blessing of the Infinite"
+    );
+}
+
+#[test]
+fn petal_picker_waits_for_the_second_imbue() {
+    let mut f = Fix::new().deck(&["Wisp", "Wisp"]);
+    f.play("Petal Picker", None);
+    assert!(f.g.players[0].hand.is_empty(), "one Imbue short of anything");
+
+    let mut f = Fix::new().deck(&["Wisp", "Wisp"]);
+    f.g.imbue(ME);
+    f.g.imbue(ME);
+    f.play("Petal Picker", None);
+    assert_eq!(f.g.players[0].hand.len(), 2);
+}
