@@ -1,0 +1,294 @@
+//! Reading Hearthstone's own log files.
+//!
+//! The game writes these itself, when `log.config` asks it to. Nothing here
+//! reads the game's memory, intercepts its traffic or types into it — the
+//! same line every deck tracker stays on, and the one `docs/DESIGN.md` drew
+//! for this project.
+//!
+//! Hand-rolled rather than regex, because the workspace has no dependencies
+//! and a scanner for `key=value` inside square brackets is smaller than the
+//! engine that would parse the pattern. The line shapes are the ones the
+//! project's earlier Python reader was built against and validated on real
+//! logs; `tests` pins each of them against a sample line.
+
+/// What a line of the log tells us.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Event {
+    /// A new game is starting. Everything before it belongs to the last one.
+    NewGame,
+    /// A card entered or left a zone, from the point of view of the player
+    /// whose client wrote the log.
+    Zone(ZoneMove),
+    /// `Entity=<n> CardID=<id>`: a card that was hidden has been revealed.
+    Reveal { entity: u32, card_id: String },
+    /// The turn counter moved.
+    Turn(u16),
+    /// Mana crystals owned, and mana spent so far this turn, for one player.
+    Resources { player_name: String, total: i16, used: i16 },
+    /// Whose turn it is, by player name and whether they are now current.
+    CurrentPlayer { player_name: String, current: bool },
+    /// The game ended for one player.
+    Result { player_name: String, won: bool },
+}
+
+/// One card moving between zones -- the richest line either file writes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ZoneMove {
+    pub name: String,
+    pub entity: u32,
+    pub card_id: String,
+    pub player: u8,
+    /// Whether the move is on the side of the player whose client wrote the
+    /// log, which is how that player is identified at all.
+    pub mine: bool,
+    pub zone: String,
+    /// `Hero`, `Hero Power`, or nothing — the parenthesised note the log
+    /// puts after the zone.
+    pub kind: Option<String>,
+}
+
+/// The text after `key=`, up to the next space or `]`.
+fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let at = line.find(key)? + key.len();
+    let rest = &line[at..];
+    let end = rest
+        .find([' ', ']'])
+        .unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+/// `entityName=` runs until ` id=`, because a card name has spaces in it.
+fn entity_name(line: &str) -> Option<&str> {
+    let at = line.find("entityName=")? + "entityName=".len();
+    let rest = &line[at..];
+    let end = rest.find(" id=")?;
+    Some(&rest[..end])
+}
+
+/// A `TAG_CHANGE Entity=<name> tag=<tag> value=<value>` line, where the name
+/// is a battletag and may hold spaces but never ` tag=`.
+fn tag_change(line: &str) -> Option<(&str, &str, &str)> {
+    let at = line.find("TAG_CHANGE Entity=")? + "TAG_CHANGE Entity=".len();
+    let rest = &line[at..];
+    let name_end = rest.find(" tag=")?;
+    let name = &rest[..name_end];
+    let tag = field(rest, "tag=")?;
+    let value = field(rest, "value=")?;
+    Some((name, tag, value))
+}
+
+/// Read one line. `None` for the great majority of them, which say nothing
+/// this needs.
+pub fn parse(line: &str) -> Option<Event> {
+    if line.contains("CREATE_GAME") {
+        return Some(Event::NewGame);
+    }
+
+    // A zone move, from Zone.log. The richest line in either file: it names
+    // the card, its entity, its owner, and which side of the board it is on.
+    if line.contains("zone from") && line.contains("entityName=") {
+        // Read the fields from inside the bracketed descriptor only. The
+        // line carries its own `id=` before the bracket -- `id=3 local=False
+        // [entityName=... id=42 ...]` -- and taking the first match would
+        // read the change's id where the entity's belongs.
+        // The descriptor ends at the bracket that "zone from" follows, not
+        // at the first one: an unrevealed card is named
+        // `UNKNOWN ENTITY [cardType=INVALID]`, brackets and all.
+        let open = line.find("[entityName=")?;
+        let close = line.find("] zone from")?;
+        if close < open {
+            return None;
+        }
+        let desc = &line[open..=close];
+        let name = entity_name(desc)?.to_string();
+        let entity: u32 = field(desc, " id=")?.parse().ok()?;
+        let card_id = field(desc, "cardId=").unwrap_or("").to_string();
+        let player: u8 = field(desc, "player=")?.parse().ok()?;
+        let arrow = line.rfind("-> ")? + 3;
+        let tail = &line[arrow..];
+        let mine = tail.starts_with("FRIENDLY");
+        if !mine && !tail.starts_with("OPPOSING") {
+            return None;
+        }
+        let mut words = tail.split_whitespace();
+        words.next()?; // FRIENDLY / OPPOSING
+        let zone = words.next()?.to_string();
+        let kind = tail
+            .find('(')
+            .and_then(|i| tail[i + 1..].find(')').map(|j| tail[i + 1..i + 1 + j].to_string()));
+        return Some(Event::Zone(ZoneMove {
+            name,
+            entity,
+            card_id,
+            player,
+            mine,
+            zone,
+            kind,
+        }));
+    }
+
+    if let Some(at) = line.find("SHOW_ENTITY - Updating Entity=") {
+        let rest = &line[at + "SHOW_ENTITY - Updating Entity=".len()..];
+        // Either a bare id, or a bracketed descriptor holding one.
+        let entity: u32 = if rest.starts_with('[') {
+            field(rest, " id=")?.parse().ok()?
+        } else {
+            rest.split_whitespace().next()?.parse().ok()?
+        };
+        let card_id = field(rest, "CardID=")?.to_string();
+        if card_id.is_empty() {
+            return None;
+        }
+        return Some(Event::Reveal { entity, card_id });
+    }
+
+    let (name, tag, value) = tag_change(line)?;
+    match tag {
+        "TURN" => value.parse().ok().map(Event::Turn),
+        "RESOURCES" => Some(Event::Resources {
+            player_name: name.to_string(),
+            total: value.parse().ok()?,
+            used: -1,
+        }),
+        "RESOURCES_USED" => Some(Event::Resources {
+            player_name: name.to_string(),
+            total: -1,
+            used: value.parse().ok()?,
+        }),
+        "CURRENT_PLAYER" => Some(Event::CurrentPlayer {
+            player_name: name.to_string(),
+            current: value == "1",
+        }),
+        "PLAYSTATE" if value == "WON" || value == "LOST" => Some(Event::Result {
+            player_name: name.to_string(),
+            won: value == "WON",
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Every line below is the shape the game actually writes, kept verbatim
+    // from what the project's earlier reader was built against. If Blizzard
+    // changes one, this is where it shows up rather than in silence.
+
+    #[test]
+    fn a_zone_move_names_the_card_its_owner_and_the_side() {
+        let line = "D 09:12:33.1 [Zone] ZoneChangeList.ProcessChanges() - \
+             id=3 local=False [entityName=Chillwind Yeti id=42 zone=HAND \
+             zonePos=3 cardId=CS2_182 player=1] zone from FRIENDLY HAND -> \
+             FRIENDLY PLAY";
+        let Some(Event::Zone(m)) = parse(line) else {
+            panic!("not parsed: {line}")
+        };
+        let ZoneMove {
+            name,
+            entity,
+            card_id,
+            player,
+            mine,
+            zone,
+            kind,
+        } = m;
+        assert_eq!(name, "Chillwind Yeti");
+        assert_eq!(entity, 42);
+        assert_eq!(card_id, "CS2_182");
+        assert_eq!(player, 1);
+        assert!(mine);
+        assert_eq!(zone, "PLAY");
+        assert_eq!(kind, None);
+    }
+
+    #[test]
+    fn a_hero_landing_is_marked_as_one() {
+        let line = "[Zone] [entityName=Jaina Proudmoore id=64 zone=PLAY \
+             zonePos=0 cardId=HERO_08 player=2] zone from  -> OPPOSING PLAY (Hero)";
+        let Some(Event::Zone(m)) = parse(line) else {
+            panic!("not parsed")
+        };
+        assert!(!m.mine, "the opponent's side");
+        assert_eq!(m.kind.as_deref(), Some("Hero"));
+    }
+
+    #[test]
+    fn an_unnamed_card_still_parses() {
+        // The opponent's hand is written without a name or a card id.
+        let line = "[Zone] [entityName=UNKNOWN ENTITY [cardType=INVALID] id=9 \
+             zone=DECK zonePos=0 cardId= player=2] zone from OPPOSING DECK -> \
+             OPPOSING HAND";
+        let Some(Event::Zone(m)) = parse(line) else {
+            panic!("not parsed")
+        };
+        assert_eq!(m.card_id, "");
+        assert_eq!(m.zone, "HAND");
+    }
+
+    #[test]
+    fn tag_changes_carry_the_players_name_with_its_hash() {
+        assert_eq!(
+            parse("D [Power] TAG_CHANGE Entity=Player#12345 tag=RESOURCES value=7"),
+            Some(Event::Resources {
+                player_name: "Player#12345".into(),
+                total: 7,
+                used: -1
+            })
+        );
+        assert_eq!(
+            parse("D [Power] TAG_CHANGE Entity=Player#12345 tag=RESOURCES_USED value=3"),
+            Some(Event::Resources {
+                player_name: "Player#12345".into(),
+                total: -1,
+                used: 3
+            })
+        );
+        assert_eq!(
+            parse("D [Power] TAG_CHANGE Entity=Player#12345 tag=CURRENT_PLAYER value=1"),
+            Some(Event::CurrentPlayer {
+                player_name: "Player#12345".into(),
+                current: true
+            })
+        );
+        assert_eq!(
+            parse("D [Power] TAG_CHANGE Entity=GameEntity tag=TURN value=11"),
+            Some(Event::Turn(11))
+        );
+        assert_eq!(
+            parse("D [Power] TAG_CHANGE Entity=Player#12345 tag=PLAYSTATE value=WON"),
+            Some(Event::Result {
+                player_name: "Player#12345".into(),
+                won: true
+            })
+        );
+    }
+
+    #[test]
+    fn a_reveal_carries_the_card_id_in_both_spellings() {
+        assert_eq!(
+            parse("D [Power] SHOW_ENTITY - Updating Entity=42 CardID=CS2_182"),
+            Some(Event::Reveal {
+                entity: 42,
+                card_id: "CS2_182".into()
+            })
+        );
+        assert_eq!(
+            parse(
+                "D [Power] SHOW_ENTITY - Updating Entity=[entityName=Fireball \
+                 id=57 zone=HAND zonePos=1 cardId= player=1] CardID=CS2_029"
+            ),
+            Some(Event::Reveal {
+                entity: 57,
+                card_id: "CS2_029".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_new_game_is_recognised_and_noise_is_not() {
+        assert_eq!(parse("D [Power] CREATE_GAME"), Some(Event::NewGame));
+        assert_eq!(parse("D [Power] BLOCK_START BlockType=PLAY"), None);
+        assert_eq!(parse(""), None);
+    }
+}

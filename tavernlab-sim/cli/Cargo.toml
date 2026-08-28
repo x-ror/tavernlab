@@ -19,3 +19,9 @@ doctest = false
 [[test]]
 name = "serve"
 path = "tests/serve.rs"
+
+# The watcher is driven the same way: the real binary, a whole log file, and
+# the answers a user would read.
+[[test]]
+name = "watch"
+path = "tests/watch.rs"
