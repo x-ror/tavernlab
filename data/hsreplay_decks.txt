@@ -1,0 +1,325 @@
+# HSReplay deck codes — 2026-08-28
+# https://hsreplay.net/decks/trending/
+# https://hsreplay.net/meta/
+# trending as_of 2026-08-27T21:19:47Z
+# meta as_of     2026-08-27T15:46:47Z
+# Ranked Standard. Each block is a real deck page "Copy Deck" code.
+# Meta is a tier list (no codes on the page). Archetypes that appear
+# in trending get source: trending+meta; the rest are listed at the end.
+
+### Corpse Death Knight
+# class: DEATHKNIGHT
+# archetype: Corpse Death Knight
+# source: trending+meta
+# winrate: 60.31
+# games: 1867
+# url: https://hsreplay.net/decks/D84gWXppicM8jOh5nqPkIe/
+AAECAfHhBALtnweI3QcOkeQEhfYEsvcE1J4G1uUGyIwHupUHopcH0q0H4rEH/78H9sEHrNoHptwHAAA=
+
+### Egg Death Knight
+# class: DEATHKNIGHT
+# archetype: Egg Death Knight
+# source: trending+meta
+# winrate: 47.22
+# games: 164
+# url: https://hsreplay.net/decks/0661lBOd4S1KxxsAntRLVg/
+AAECAfHhBAjDgwf1mAfsmwfXnQftnwfSrged2we/3wcLodQEl4IHvJQHupUH4J0Hn54H4rEH2tcHrtoHtNoHptwHAAA=
+
+### Herald Death Knight
+# class: DEATHKNIGHT
+# archetype: Herald Death Knight
+# source: trending+meta
+# winrate: 54.48
+# games: 111
+# url: https://hsreplay.net/decks/hFKLE6GdhihaEX82DvOicd/
+AAECAfHhBBDUngbY5QaXggfDgwefngf0qgftrAfSrgeosQfisQfLtgePvgfQvwfqyQeb1Ae/3wcHh/YEgf0GupUHkasHjr8HmsUH0MUHAAA=
+
+### Void Demon Hunter
+# class: DEMONHUNTER
+# archetype: Void Demon Hunter
+# source: trending+meta
+# winrate: 57.81
+# games: 1929
+# url: https://hsreplay.net/decks/Ybj9zDNw9pNGKEtRrlR67e/
+AAECAea5AwKongbNngYOtKAE4fgF0J4G054G3v8GtJcHtpcHzpsH6LEHlb8HxN0Hxt0Hx90HteEHAAA=
+
+### Void Demon Hunter
+# class: DEMONHUNTER
+# archetype: Void Demon Hunter
+# source: trending+meta
+# winrate: 58.82
+# games: 613
+# url: https://hsreplay.net/decks/dzkeQLKMPkquzGhyIes4Rf/
+AAECAea5AwSongaKqgeSqgeTqgcN4fgFzZ4G0J4G054G3v8GtpcH6LEHkr8Hlb8HxN0Hxt0Hx90HteEHAAA=
+
+### Merithra Druid
+# class: DRUID
+# archetype: Merithra Druid
+# source: trending+meta
+# winrate: 57.15
+# games: 3391
+# url: https://hsreplay.net/decks/1eYrkjb0VbEp2LM5cbLaMe/
+AAECAZICCM2eBq+HB4KYB+DAB+LAB93EB+XEB6PaBwuunwSIgweqrwesrwfosQe+sgfXwAeR2gfH5ge85wfK5wcAAA==
+
+### Chef Druid
+# class: DRUID
+# archetype: Chef Druid
+# source: trending+meta
+# winrate: 52.84
+# games: 739
+# url: https://hsreplay.net/decks/3kF8owed3Z0rF5kpG7Uw2e/
+AAECAZICAtnEB93YBw7igQeIgwekiQeqrwesrwfosQfLtgffwAePwQep2Af92QeR2ge85wfK5wcAAA==
+
+### Druid (unclassified)
+# class: DRUID
+# source: trending
+# winrate: 53.55
+# games: 90
+# url: https://hsreplay.net/decks/Lub5EUixyGjz6c2NdgQ9vh/
+AAECAZICBqn1BqX8Bq+HB/ioB/moB/qoBwyunwSIgweQlweqrwesrwfosQe4sge+sgfXwAeYxAfZxAeT8QcAAA==
+
+### Face Hunter
+# class: HUNTER
+# archetype: Face Hunter
+# source: trending+meta
+# winrate: 58.03
+# games: 694
+# url: https://hsreplay.net/decks/kDRkVO7kJ8SbVGXqWw4a3b/
+AAECAR8EmacHmqcHm6cHxbEHDamfBKqfBK+SB4WVB86bB5inB7nAB7vAB97EB6zYB9faB9PbB9fbBwAA
+
+### Face Hunter
+# class: HUNTER
+# archetype: Face Hunter
+# source: trending+meta
+# winrate: 53.74
+# games: 237
+# url: https://hsreplay.net/decks/PKZuHEJ800nBoks4Vsv4Rg/
+AAECAR8Gu6AEyZ4GmacHmqcHm6cHp/cHDKmfBM6bB5CnB5inB8ayB7TAB4zGB97XB6zYB9faB9PbB9fbBwAA
+
+### Dragon Hunter
+# class: HUNTER
+# archetype: Dragon Hunter
+# source: trending+meta
+# winrate: 51.81
+# games: 89
+# url: https://hsreplay.net/decks/DsASth7i3tNIAlswAIxUTc/
+AAECAR8Cw4MH978HDveDB7GHB8GPB6+SB5iwB+yyB523B4S9B/O/B/W/B4PAB7XAB7nAB/nDBwAA
+
+### Quest Mage
+# class: MAGE
+# archetype: Quest Mage
+# source: trending+meta
+# winrate: 57.02
+# games: 353
+# url: https://hsreplay.net/decks/j0K5WlAdSBy6gxFgBEzsQh/
+AAECAf0EBu/8BsODB6ebB/KyB6TZB6f3Bwyb8gbxkQewmwf6mwfRpgfLtgf5wweGxAeSxAeG4Afg9gecgggAAA==
+
+### Leyline Mage
+# class: MAGE
+# archetype: Leyline Mage
+# source: trending+meta
+# winrate: 50.5
+# games: 293
+# url: https://hsreplay.net/decks/DEpvZ8XYSCSebsulRZYXZg/
+AAECAf0EBJegBIi+B/rEB//fBw2zhwfopQeLsQfWvAeSxAfnxAfoxAfwxAfzxAf0xAf7xAesxgeT2gcAAA==
+
+### Quest Mage
+# class: MAGE
+# archetype: Quest Mage
+# source: trending+meta
+# winrate: 54.57
+# games: 119
+# url: https://hsreplay.net/decks/spWbJasXnjl3EHG0NmmQNd/
+AAECAf0ECO/8BsODB6ebB/WlB/KyB6TZB5PaB6f3Bwub8gbxkQewmwf6mwfRpgfLtgf5wweGxAeSxAeG4AecgggAAA==
+
+### Aura Paladin
+# class: PALADIN
+# archetype: Aura Paladin
+# source: trending+meta
+# winrate: 60.18
+# games: 1446
+# url: https://hsreplay.net/decks/I5QgnH8sRCDQwzPmUaNw3/
+AAECAZ8FBvD+Bu6oB++oB/CoB+XBB5vdBwzJoAS6lgfLqQfErge+sgfiwQfowQfqwQeDwgerxgfc1Qea3QcAAA==
+
+### Aura Paladin
+# class: PALADIN
+# archetype: Aura Paladin
+# source: trending+meta
+# winrate: 56.95
+# games: 98
+# url: https://hsreplay.net/decks/s4RJNAfY9JAUK3iUObMVrg/
+AAECAZ8FBvD+BsODB+6oB++oB/CoB+XBBwzJoAS6lgfLqQfErgf1rwe+sgfiwQfowQfqwQf2wQeDwgerxgcAAA==
+
+### Quest Priest
+# class: PRIEST
+# archetype: Quest Priest
+# source: trending+meta
+# winrate: 48.28
+# games: 2722
+# url: https://hsreplay.net/decks/p99ld88GR7DKaJb73QGUv/
+AAECAa0GBsODB6iWB/WYB5LcB9zgB/TgBwzFlAfSrweFvwebvwf6vweyxQevyQewyQeT3wew3wfV4AfZ4AcAAA==
+
+### Quest Priest
+# class: PRIEST
+# archetype: Quest Priest
+# source: trending+meta
+# winrate: 52.96
+# games: 1396
+# url: https://hsreplay.net/decks/uHxI80rs0IFBvuSRRxZxyf/
+AAECAa0GBqiWB/WYB/ypB4CqB4SqB9zgBwyEnwTwnwSg+waFhgedrQfSrweyxQevyQeT3wfV4AfZ4Af04AcAAA==
+
+### Quest Priest
+# class: PRIEST
+# archetype: Quest Priest
+# source: trending+meta
+# winrate: 51.15
+# games: 521
+# url: https://hsreplay.net/decks/1DHR9LIMT7Rj0RAmi8Z4p/
+AAECAa0GBMODB6iWB/WYB9zgBw3FlAfSrweFvwebvwf6vweyxQevyQewyQeT3wew3wfU4AfV4AfZ4AcAAA==
+
+### Herald Rogue
+# class: ROGUE
+# archetype: Herald Rogue
+# source: trending+meta
+# winrate: 49.17
+# games: 365
+# url: https://hsreplay.net/decks/3w9rQd5tpWHpRQOQlk0UOg/
+AAECAaIHCJGfBOylB4+tB9C/B4rUB5vUB4jZB9DgBwv3nwTBlwedxQfVxQeN2gej4Ae04AfB4AfO4Afh4AfD8gcAAA==
+
+### Herald Rogue
+# class: ROGUE
+# archetype: Herald Rogue
+# source: trending+meta
+# winrate: 41.08
+# games: 228
+# url: https://hsreplay.net/decks/hA5yx2KNLrCwWqtFF7tx9b/
+AAECAaIHBuylB9C/B4rUB5vUB4jZB9DgBwz3nwTZogbBlwedxQfVxQeN2gej4Ae04AfB4AfO4Afh4AfD8gcAAA==
+
+### Troublemaker Rogue
+# class: ROGUE
+# archetype: Troublemaker Rogue
+# source: trending+meta
+# winrate: 55.77
+# games: 147
+# url: https://hsreplay.net/decks/gSzOrS2OMm1Y6xk2oFD5Yd/
+AAECAaIHBpegBNCeBoaoB4eoB4ioB4jZBwz3nwSd1ATZogb3gQfBlweaswf5wwfVxQfL1QeN2ge/9wfl9wcAAA==
+
+### Aggro Shaman
+# class: SHAMAN
+# archetype: Aggro Shaman
+# source: trending+meta
+# winrate: 57.91
+# games: 2735
+# url: https://hsreplay.net/decks/yMK8AIylRQtEFNBsL0nO3/
+AAECAaoIDJ7UBM2eBteXB5KkB/SqB9C/B7XAB4LUB5vUB9DbB4jdB9/lBwnt5gb1gQfgnQftrAexsAePvgfJwAfI5Qfm/QcAAA==
+
+### Aggro Shaman
+# class: SHAMAN
+# archetype: Aggro Shaman
+# source: trending+meta
+# winrate: 58.29
+# games: 305
+# url: https://hsreplay.net/decks/wGiuAHTyOrwU1wExyfg3ue/
+AAECAaoICp7UBM2eBsODB/SqB9C/B4LUB5vUB9DbB4jdB9/lBwrTngbt5gbXlwfgnQftrAexsAePvgfJwAfI5Qfm/QcAAA==
+
+### Zee Shaman
+# class: SHAMAN
+# archetype: Zee Shaman
+# source: trending+meta
+# winrate: 57.44
+# games: 59
+# url: https://hsreplay.net/decks/F8aSGjjYZN3mZ99DiysEAd/
+AAECAaoICJ7UBPSqB9C/B4LUB5vUB9DbB4jdB9/lBwvQngbTngbt5gbXlwfgnQftrAePvgfJwAfJ2wfI5Qfm/QcAAA==
+
+### Hand Warlock
+# class: WARLOCK
+# archetype: Hand Warlock
+# source: trending+meta
+# winrate: 55.43
+# games: 1259
+# url: https://hsreplay.net/decks/Fx0Shi0uI5FD7g0cpZfzNd/
+AAECAf0GBNC/B5vUB63ZB9vgBw2PnwTnoATTngaEmQeTvgfYvgfgvgfd1wew2Qex2Qe32QeN3AfS4AcAAA==
+
+### Hand Warlock
+# class: WARLOCK
+# archetype: Hand Warlock
+# source: trending+meta
+# winrate: 52.63
+# games: 185
+# url: https://hsreplay.net/decks/UWLo9LTmTdr1hLv6jf1dA/
+AAECAf0GBNC/B5vUB63ZB9vgBw2PnwTnoATTngaEmQeTvgfYvgfgvgfa1wfd1wew2Qex2Qe32QeN3AcAAA==
+
+### Warlock (unclassified)
+# class: WARLOCK
+# source: trending
+# winrate: 43.86
+# games: 156
+# url: https://hsreplay.net/decks/Zm8ZkQBaWsQ6wt6bHPOYyh/
+AAECAf0GBNC/B5vUB63ZB9vgBw2piAeEmQftrAeTvgfYvgfgvgfd1wew2Qe32QeN3Ae94AfR4AfS4AcAAA==
+
+### Warrior (unclassified)
+# class: WARRIOR
+# source: trending
+# winrate: 58.59
+# games: 10053
+# url: https://hsreplay.net/decks/Bru7nrb3z0LPd9bzu8sri/
+AAECAQcE69YHstgHpeAHq+AHDa+gBOPmBqWFB+iHB5XCB5vCB5zCB6bgB6fgB6jgB6ngB/DgB/vgBwAA
+
+### Dragon Warrior
+# class: WARRIOR
+# archetype: Dragon Warrior
+# source: trending+meta
+# winrate: 60.29
+# games: 6963
+# url: https://hsreplay.net/decks/xlhkwoTx1AVnOE3ho71l4/
+AAECAQcE69YHstgHp+AHq+AHDePmBqr8Bqv8BqWFB+iHB9KXB+yyB7XAB5XCB5zCB6bgB6ngB/vgBwAA
+
+### Warrior (unclassified)
+# class: WARRIOR
+# source: trending
+# winrate: 59.46
+# games: 5852
+# url: https://hsreplay.net/decks/8WzZ1ESS0oyvOmSVRytd3c/
+AAECAQcE69YHstgHpeAHq+AHDePmBqWFB+iHB9CyB5XCB5vCB5zCB6bgB6fgB6jgB6ngB/DgB/vgBwAA
+
+# ------------------------------------------------------------
+# Meta archetypes with no public deck code (37).
+# HSReplay /meta/ has no Copy Deck; /decks/ list is Premium.
+# ------------------------------------------------------------
+# Azalina Priest                PRIEST        wr  52.3%  games 89512
+# Rafaam Warlock                WARLOCK       wr  54.0%  games 62129
+# Herald Warrior                WARRIOR       wr  52.8%  games 48158
+# Quest Hunter                  HUNTER        wr  55.4%  games 38332
+# Burn Mage                     MAGE          wr  54.6%  games 24473
+# Attack Druid                  DRUID         wr  53.6%  games 18582
+# Herald Shaman                 SHAMAN        wr  53.4%  games 15218
+# Coin Rogue                    ROGUE         wr  44.2%  games 15163
+# Control Warrior               WARRIOR       wr  52.4%  games 11507
+# Imbue Priest                  PRIEST        wr  46.8%  games 11174
+# Manastorm Mage                MAGE          wr  47.4%  games 9752
+# Broxigar Demon Hunter         DEMONHUNTER   wr  35.3%  games 8782
+# Control Priest                PRIEST        wr  46.0%  games 8392
+# Imbue Rogue                   ROGUE         wr  44.7%  games 7119
+# Beatrix Paladin               PALADIN       wr  54.0%  games 6425
+# Companion Hunter              HUNTER        wr  44.6%  games 5228
+# Aggro Paladin                 PALADIN       wr  48.6%  games 5000
+# Tripwire Hunter               HUNTER        wr  41.4%  games 4917
+# Mug Shaman                    SHAMAN        wr  46.1%  games 4853
+# Imbue Paladin                 PALADIN       wr  45.9%  games 4460
+# Imbue Mage                    MAGE          wr  34.5%  games 3923
+# Contraband Mage               MAGE          wr  45.4%  games 3665
+# Arena Warrior                 WARRIOR       wr  34.0%  games 2496
+# Egg Warrior                   WARRIOR       wr  48.1%  games 2489
+# Egg Paladin                   PALADIN       wr  42.5%  games 2460
+# Quest Paladin                 PALADIN       wr  45.1%  games 2450
+# Unholy Death Knight           DEATHKNIGHT   wr  56.0%  games 2428
+# Egg Warlock                   WARLOCK       wr  46.0%  games 2333
+# Quest Demon Hunter            DEMONHUNTER   wr  44.9%  games 2213
+# Quest Warrior                 WARRIOR       wr  42.5%  games 1762
+# Quest Rogue                   ROGUE         wr  32.6%  games 1673
+# Imbue Druid                   DRUID         wr  39.2%  games 1571
+# Big Demon Hunter              DEMONHUNTER   wr  23.3%  games 1392
+# Silver Hand Paladin           PALADIN       wr  50.7%  games 1222
+# Herald Demon Hunter           DEMONHUNTER   wr  45.4%  games 989
+# Imbue Death Knight            DEATHKNIGHT   wr  33.0%  games 685
+# Aggro Druid                   DRUID         wr  49.4%  games 611

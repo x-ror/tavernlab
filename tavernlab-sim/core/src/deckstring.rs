@@ -227,6 +227,23 @@ pub fn encode(hero_dbf: u32, cards: &[(u32, u32)], format_byte: u32) -> String {
     b64_encode(&data)
 }
 
+/// Collapse a list of card instances into `(dbfId, copies)` and encode it.
+///
+/// The optimizer works in ids, one entry per copy; a deck code talks in
+/// counts. This is the bridge so a measured swap can be pasted back into
+/// the game as a list.
+pub fn encode_ids(hero_dbf: u32, ids: &[CardId], format_byte: u32) -> String {
+    let mut cards: Vec<(u32, u32)> = Vec::new();
+    for id in ids {
+        let dbf = id.info().dbf;
+        match cards.iter_mut().find(|(d, _)| *d == dbf) {
+            Some((_, n)) => *n += 1,
+            None => cards.push((dbf, 1)),
+        }
+    }
+    encode(hero_dbf, &cards, format_byte)
+}
+
 struct Reader<'a> {
     data: &'a [u8],
     pos: usize,
@@ -601,6 +618,22 @@ mod tests {
         let r = resolve(code).expect("it resolves");
         assert_eq!(r.class, Class::Shaman);
         assert_eq!(r.total(), 30);
+    }
+
+    #[test]
+    fn encode_ids_collapses_copies() {
+        let (hero, _) = a_real_deck();
+        let fireball = by_name("Fireball").unwrap();
+        let frostbolt = by_name("Frostbolt").unwrap();
+        let code = encode_ids(hero, &[fireball, fireball, frostbolt], 2);
+        let d = decode(&code).expect("the collapsed list encodes");
+        let mut got = d.cards;
+        got.sort_unstable();
+        let mut want = vec![(fireball.info().dbf, 2), (frostbolt.info().dbf, 1)];
+        want.sort_unstable();
+        assert_eq!(got, want);
+        assert_eq!(d.heroes, vec![hero]);
+        assert_eq!(d.format, 2);
     }
 
     #[test]

@@ -377,30 +377,59 @@ pub fn optimize_deck(app: &Arc<App>, req: &Request) -> Response {
             |line| p.say(line),
         );
         app.count_games(report.games);
-        let swap = |o: &mut Out, s: &optimize::Swap, delta: f64| {
-            o.arr(|a| {
-                a.str_item(s.out);
-                a.str_item(s.inn);
-                a.item(|v| v.round(delta, 4));
-            })
-        };
+        let pasted = deck_key(&code);
+        let decoded = deckstring::decode(&pasted).ok();
+        let hero = decoded
+            .as_ref()
+            .and_then(|d| d.heroes.first().copied())
+            .or_else(|| hero_dbf(loaded.resolved.class));
+        let format_byte = decoded
+            .as_ref()
+            .map(|d| d.format)
+            .unwrap_or(if loaded.format.has(Formats::STANDARD) {
+                2
+            } else {
+                1
+            });
+        let emit_code = |ids: &[CardId]| hero.map(|h| deckstring::encode_ids(h, ids, format_byte));
+        let improved = emit_code(&report.deck);
+        let kept_codes: Vec<Option<String>> = report
+            .kept
+            .iter()
+            .map(|s| emit_code(&apply_swap(&loaded.resolved.ids, s.out, s.inn)))
+            .collect();
+        let near_codes: Vec<Option<String>> = report
+            .near
+            .iter()
+            .map(|s| emit_code(&apply_swap(&loaded.resolved.ids, s.out, s.inn)))
+            .collect();
         Ok(to_string(|o| {
             o.obj(|o| {
                 o.field("base", |v| v.round(report.base, 4));
                 o.field("new_avg", |v| v.round(report.best, 4));
                 o.int_field("games", report.games as i64);
                 o.int_field("confirm_games", budget.confirm_games as i64);
+                o.field("code", |v| v.opt(improved.as_deref(), |v, c| v.str(c)));
                 o.field("swaps", |v| {
                     v.arr(|a| {
-                        for s in &report.kept {
-                            a.item(|v| swap(v, s, s.confirmed_delta.unwrap_or(0.0)));
+                        for (s, code) in report.kept.iter().zip(&kept_codes) {
+                            a.item(|v| {
+                                write_swap(v, s, s.confirmed_delta.unwrap_or(0.0), code.as_deref())
+                            });
                         }
                     })
                 });
                 o.field("near", |v| {
                     v.arr(|a| {
-                        for s in &report.near {
-                            a.item(|v| swap(v, s, s.confirmed_delta.unwrap_or(s.screen_delta)));
+                        for (s, code) in report.near.iter().zip(&near_codes) {
+                            a.item(|v| {
+                                write_swap(
+                                    v,
+                                    s,
+                                    s.confirmed_delta.unwrap_or(s.screen_delta),
+                                    code.as_deref(),
+                                )
+                            });
                         }
                     })
                 });
@@ -908,6 +937,27 @@ fn export(deck: &MetaDeck, format: Formats) -> Option<(String, bool)> {
         deckstring::encode(hero, &cards, format_byte),
         complete && total == 30,
     ))
+}
+
+fn write_swap(o: &mut Out, s: &optimize::Swap, delta: f64, code: Option<&str>) {
+    o.obj(|o| {
+        o.str_field("out", s.out);
+        o.str_field("inn", s.inn);
+        o.field("delta", |v| v.round(delta, 4));
+        o.field("code", |v| v.opt(code, |v, c| v.str(c)));
+    })
+}
+
+/// The submitted list with one named card swapped for another.
+fn apply_swap(deck: &[CardId], out: &str, inn: &str) -> Vec<CardId> {
+    let mut next = deck.to_vec();
+    let Some(pos) = next.iter().position(|c| c.name() == out) else {
+        return next;
+    };
+    if let Some(id) = by_name(inn) {
+        next[pos] = id;
+    }
+    next
 }
 
 /// The classic hero portrait for a class, which is what a deck code names.

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Button, Flex, Item, Picker, ProgressBar, Text } from '@adobe/react-spectrum'
+import { ActionButton, Button, Flex, Item, Picker, ProgressBar, Text } from '@adobe/react-spectrum'
 import * as api from '../api'
-import { useApp } from '../store'
+import { go, useApp } from '../store'
 import { useT } from '../i18n'
 import { useMetaDecks } from '../meta'
 import HeroPortrait from '../components/HeroPortrait'
-import { Caveats, ErrorNote, Loading, Panel } from '../components/ui'
+import { Caveats, CopyButton, ErrorNote, Loading, Panel } from '../components/ui'
 import { classColor, classWash } from '../classes'
 import { formatName, pct } from '../format'
 
@@ -176,7 +176,12 @@ export default function Meta() {
       ) : (
         <Flex direction="column" gap="size-200">
           {data.decks.map((deck, i) => (
-            <TierRow key={deck.name} deck={deck} rank={i + 1} />
+            <TierRow
+              key={deck.name}
+              deck={deck}
+              rank={i + 1}
+              source={(field || []).find((d) => d.name === deck.name)}
+            />
           ))}
         </Flex>
       )}
@@ -184,13 +189,15 @@ export default function Meta() {
   )
 }
 
-function TierRow({ deck, rank }) {
+function TierRow({ deck, rank, source }) {
   const { t } = useT()
+  const { setDeckCode } = useApp()
   const tone = classColor(deck.cls)
   const tier = TIER_COLOR[deck.tier] || TIER_COLOR.C
   const sorted = Object.entries(deck.vs || {}).sort((a, b) => b[1] - a[1])
   const best = sorted.slice(0, 2)
   const worst = sorted.slice(-2).reverse()
+  const code = source?.deckstring
 
   return (
     <div
@@ -231,6 +238,19 @@ function TierRow({ deck, rank }) {
             {t(`class.${deck.cls}`)}
             {deck.archetype ? ` · ${deck.archetype}` : ''}
           </span>
+          <Flex direction="row" gap="size-100" wrap marginTop="size-75">
+            <CopyButton text={code} />
+            {code && source?.playable !== false && (
+              <ActionButton
+                onPress={() => {
+                  setDeckCode(code)
+                  go('deck/rating')
+                }}
+              >
+                {t('ui.meta.use')}
+              </ActionButton>
+            )}
+          </Flex>
         </Flex>
 
         <Matchups label={t('ui.tiers.vs_best')} rows={best} />

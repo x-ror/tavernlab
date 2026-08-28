@@ -1,7 +1,32 @@
-import { Content, Flex, Heading, InlineAlert, ProgressCircle, Text } from '@adobe/react-spectrum'
+import { useState } from 'react'
+import { ActionButton, Content, Flex, Heading, InlineAlert, ProgressCircle, Text } from '@adobe/react-spectrum'
 import { useT } from '../i18n'
 import { classColor } from '../classes'
 import ClassCrest from './ClassCrest'
+
+/** Copy a deck code (or any short string) to the clipboard. Hidden when
+ *  there is nothing to copy, so a missing code does not leave a dead
+ *  button. */
+export function CopyButton({ text, children }) {
+  const { t } = useT()
+  const [copied, setCopied] = useState(false)
+  if (!text) return null
+  return (
+    <ActionButton
+      onPress={async () => {
+        try {
+          await navigator.clipboard.writeText(text)
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1600)
+        } catch {
+          /* clipboard blocked: nothing to fall back to */
+        }
+      }}
+    >
+      {copied ? t('ui.meta.copied') : children || t('ui.meta.copy_code')}
+    </ActionButton>
+  )
+}
 
 /** A titled panel. The page rhythm comes from these and the spacing
  *  between them, not from rules and boxes inside them. */

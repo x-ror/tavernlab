@@ -3,6 +3,7 @@ import {
   ActionButton,
   Button,
   Flex,
+  Icon,
   Item,
   Picker,
   ProgressBar,
@@ -17,7 +18,7 @@ import { go, useApp } from '../store'
 import { useT } from '../i18n'
 import CardCombo from '../components/CardCombo'
 import Gauntlet from './Gauntlet'
-import { Caveats, ErrorNote, FieldNote, Loading, Panel, Pill, RateBar, Stat } from '../components/ui'
+import { Caveats, CopyButton, ErrorNote, FieldNote, Loading, Panel, Pill, RateBar, Stat } from '../components/ui'
 import ClassCrest from '../components/ClassCrest'
 import HeroPortrait from '../components/HeroPortrait'
 import { CLASS_KEYS as CLASSES, classColor } from '../classes'
@@ -281,13 +282,18 @@ function Improve() {
       <ErrorNote error={error} />
       {result && (
         <Flex direction="column" gap="size-200">
-          <Text UNSAFE_style={{ fontWeight: 600 }}>
-            {t('optimize.new_avg', { v: (result.new_avg * 100).toFixed(1) })}
-          </Text>
+          <Flex direction="row" alignItems="center" gap="size-150" wrap>
+            <Text UNSAFE_style={{ fontWeight: 600 }}>
+              {t('optimize.new_avg', { v: (result.new_avg * 100).toFixed(1) })}
+            </Text>
+            {result.swaps?.length > 0 && (
+              <CopyButton text={result.code}>{t('ui.improve.copy_deck')}</CopyButton>
+            )}
+          </Flex>
           {result.swaps?.length ? (
             <Flex direction="column" gap="size-100">
-              {result.swaps.map(([out, inn, delta], i) => (
-                <Swap key={i} out={out} inn={inn} delta={delta} />
+              {result.swaps.map((s, i) => (
+                <Swap key={i} swap={s} />
               ))}
             </Flex>
           ) : (
@@ -297,8 +303,8 @@ function Improve() {
             <View marginTop="size-150">
               <Text UNSAFE_style={{ fontWeight: 600 }}>{t('optimize.near')}</Text>
               <Flex direction="column" gap="size-75" marginTop="size-100">
-                {result.near.map(([out, inn, delta], i) => (
-                  <Swap key={i} out={out} inn={inn} delta={delta} muted />
+                {result.near.map((s, i) => (
+                  <Swap key={i} swap={s} muted />
                 ))}
               </Flex>
             </View>
@@ -316,20 +322,31 @@ function Improve() {
   )
 }
 
-function Swap({ out, inn, delta, muted }) {
+function Swap({ swap, muted }) {
+  const { out, inn, delta, code } = readSwap(swap)
   return (
     <Flex
       direction="row"
       alignItems="center"
       gap="size-150"
+      wrap
       UNSAFE_style={{ opacity: muted ? 0.7 : 1 }}
     >
       <Text UNSAFE_style={{ textDecoration: 'line-through', opacity: 0.7 }}>{out}</Text>
       <Text>→</Text>
       <Text UNSAFE_style={{ fontWeight: 600 }}>{inn}</Text>
       <Pill tone={delta > 0 ? 'pos' : 'neutral'}>{signedPct(delta)}</Pill>
+      <CopyButton text={code} />
     </Flex>
   )
+}
+
+/** Optimize used to ship swaps as `[out, inn, delta]`. The code is a
+ *  fourth field on an object now, but a leftover in-memory result from
+ *  before the rebuild still has to render. */
+function readSwap(s) {
+  if (Array.isArray(s)) return { out: s[0], inn: s[1], delta: s[2], code: s[3] }
+  return { out: s.out, inn: s.inn, delta: s.delta, code: s.code }
 }
 
 function Mulligan() {
@@ -592,10 +609,10 @@ function ClassPicker({ label, value, onChange }) {
     >
       {(item) => (
         <Item textValue={item.name}>
-          <Flex direction="row" alignItems="center" gap="size-100">
-            <ClassCrest cls={item.id} size={15} />
-            <Text>{item.name}</Text>
-          </Flex>
+          <Icon>
+            <ClassCrest cls={item.id} size={18} />
+          </Icon>
+          <Text>{item.name}</Text>
         </Item>
       )}
     </Picker>

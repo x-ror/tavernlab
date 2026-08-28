@@ -40,7 +40,7 @@ const PATHS = {
 
 const STROKED = new Set(['antler', 'candle', 'rune'])
 
-export default function ClassCrest({ cls, size = 20, color, title }) {
+export default function ClassCrest({ cls, size = 20, color, title, className, style, ...rest }) {
   const meta = classOf(cls)
   const tone = color || meta.color
   const d = PATHS[meta.crest] || PATHS.sword
@@ -54,7 +54,9 @@ export default function ClassCrest({ cls, size = 20, color, title }) {
       role={title ? 'img' : 'presentation'}
       aria-label={title || undefined}
       aria-hidden={title ? undefined : 'true'}
-      style={{ flex: '0 0 auto', display: 'block' }}
+      className={className}
+      style={{ flex: '0 0 auto', display: 'block', ...style }}
+      {...rest}
     >
       {title && <title>{title}</title>}
       <path
