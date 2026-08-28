@@ -364,6 +364,13 @@ impl Game {
         let mut fired: Inline<Pending, 4> = Inline::new();
         let mut remaining: Inline<Pending, 4> = Inline::new();
         for entry in p.pending.iter().copied() {
+            // An Aura is printed "at the end of your turn" and belongs to the
+            // other tick, in `end_turn`. It rides in the same queue so that
+            // "do you control an Aura" has one place to look.
+            if entry.kind.at_end_of_turn() {
+                remaining.push(entry);
+                continue;
+            }
             if !entry.kind.delayed() || entry.turns_left <= 1 {
                 fired.push(entry);
             }
@@ -428,6 +435,11 @@ impl Game {
                     p.crystals = entry.amount.min(crate::state::MAX_MANA);
                     p.mana = p.crystals;
                 }
+                // Queued against the other tick; see `end_turn`.
+                PendingKind::AuraSummon
+                | PendingKind::AuraHeal
+                | PendingKind::AuraBuff
+                | PendingKind::AuraDouble => {}
                 PendingKind::None => {}
             }
         }
@@ -437,11 +449,98 @@ impl Game {
         self.fire(Event::TurnStart { side });
     }
 
+    /// Fire and age this player's Auras, at the end of their own turn.
+    ///
+    /// The mirror of the queue walk in `begin_turn`, for the entries that are
+    /// printed "at the end of your turn" instead. An Aura played this turn
+    /// fires this turn: it is queued with its full count and spends one of
+    /// them here, which is what "Lasts 3 turns" reads as at the table.
+    ///
+    /// Auras fire after `Event::TurnEnd`, so a minion's own end of turn
+    /// effect goes first -- and Sandfury Aura, which doubles those, has
+    /// already done its work by the time the queue is walked.
+    fn tick_auras(&mut self, side: Side) {
+        // Every turn of every game reaches this, and almost none of them has
+        // an Aura up: the walk below is only worth starting when there is
+        // something in the queue that belongs to it.
+        if !self
+            .player(side)
+            .pending
+            .iter()
+            .any(|e| e.kind.at_end_of_turn())
+        {
+            return;
+        }
+        let mut fired: Inline<Pending, 4> = Inline::new();
+        let mut remaining: Inline<Pending, 4> = Inline::new();
+        for entry in self.player(side).pending.iter().copied() {
+            if !entry.kind.at_end_of_turn() {
+                remaining.push(entry);
+                continue;
+            }
+            fired.push(entry);
+            if entry.turns_left > 1 {
+                remaining.push(Pending {
+                    turns_left: entry.turns_left - 1,
+                    ..entry
+                });
+            }
+        }
+        self.player_mut(side).pending = remaining;
+        for entry in fired.iter().copied() {
+            match entry.kind {
+                PendingKind::AuraSummon => {
+                    self.summon(side, entry.card);
+                }
+                PendingKind::AuraHeal => {
+                    self.heal(Target::Hero(side), entry.amount);
+                    for i in 0..self.player(side).board.len() {
+                        let m = self.player(side).board[i];
+                        if m.is_minion() && m.active() {
+                            self.heal(Target::Minion(side, i as u8), entry.amount);
+                        }
+                    }
+                }
+                PendingKind::AuraBuff => {
+                    if let Some(t) = self.random_minion(side) {
+                        self.buff(t, entry.amount, entry.amount);
+                        self.grant(t, Keywords::DIVINE_SHIELD);
+                    }
+                }
+                // Read by `Game::fire`, not fired here -- it is a modifier on
+                // the sweep that has already happened.
+                PendingKind::AuraDouble => {}
+                _ => {}
+            }
+            if self.is_over() {
+                return;
+            }
+        }
+    }
+
+    /// Whether this player has an Aura in play, for the cards that ask.
+    pub fn controls_aura(&self, side: Side) -> bool {
+        self.player(side)
+            .pending
+            .iter()
+            .any(|e| e.kind.is_aura() && e.turns_left > 0)
+    }
+
+    /// Whether this player's minions' end of turn effects trigger twice
+    /// (Sandfury Aura).
+    pub fn doubles_end_of_turn(&self, side: Side) -> bool {
+        self.player(side)
+            .pending
+            .iter()
+            .any(|e| e.kind == PendingKind::AuraDouble && e.turns_left > 0)
+    }
+
     pub fn end_turn(&mut self) {
         let side = self.current;
         // Fired before anything is cleaned up, so an end-of-turn effect sees
         // the board as the player left it.
         self.fire(Event::TurnEnd { side });
+        self.tick_auras(side);
         let burn = self.player(side).end_turn_burn;
         if burn > 0 {
             self.damage_hero(side.other(), burn);
@@ -774,7 +873,7 @@ impl Game {
         }
 
         // --- attacks
-        let must_taunt = self.player(side.other()).has_taunt();
+        let must_taunt = self.must_respect_taunt(side);
         for (i, m) in me.board.iter().enumerate() {
             if !m.can_attack() {
                 continue;
@@ -1614,6 +1713,25 @@ impl Game {
 
     // -------------------------------------------------------------- combat
 
+    /// Whether `side`'s attackers have to go through a Taunt.
+    ///
+    /// Two questions in one, and both have to be asked in both places an
+    /// attack is judged -- the action enumerator and `attack_with` -- or a
+    /// search could take a swing the enumerator never offered. The second
+    /// half is Kayn Sunfury's "All friendly attacks ignore Taunt": a standing
+    /// rule read off the board rather than a flag anywhere, so it arrives and
+    /// leaves exactly with the body.
+    pub fn must_respect_taunt(&self, side: Side) -> bool {
+        if !self.player(side.other()).has_taunt() {
+            return false;
+        }
+        !self
+            .player(side)
+            .board
+            .iter()
+            .any(|m| m.active() && crate::cards::lets_attacks_ignore_taunt(m.card))
+    }
+
     /// `from` is a board slot, or `None` for a hero attack.
     fn attack_with(&mut self, from: Option<usize>, target: Target) -> bool {
         let side = self.current;
@@ -1622,7 +1740,7 @@ impl Game {
         // Legality, including Taunt, which is enforced here and not left to
         // the action enumerator — a search or a replay can call `apply`
         // directly and must not be able to skip a Taunt.
-        let must_taunt = self.player(foe).has_taunt();
+        let must_taunt = self.must_respect_taunt(side);
         match target {
             Target::Hero(s) => {
                 if s != foe || must_taunt {
@@ -2512,6 +2630,16 @@ impl Game {
     /// spell hook without the hand, the mana or the "you cast a spell"
     /// bookkeeping a real play carries.
     pub fn cast_token(&mut self, side: Side, card: CardId) {
+        self.cast_token_at(side, card, None);
+    }
+
+    /// [`cast_token`](Self::cast_token) with something pointed at.
+    ///
+    /// A card that casts another card's spell on the caster's behalf may
+    /// still have a target for it -- Violet Treasuregill's "(targets this if
+    /// possible)". The caller is what checks the requirement; this only
+    /// carries what it chose.
+    pub fn cast_token_at(&mut self, side: Side, card: CardId, target: Option<Target>) {
         let Some(f) = behaviour_of(card).and_then(|b| b.spell) else {
             return;
         };
@@ -2520,7 +2648,7 @@ impl Game {
             &Ctx {
                 card,
                 side,
-                target: None,
+                target,
                 source: None,
                 outcast: false,
                 dying: None,

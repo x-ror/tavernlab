@@ -12189,3 +12189,322 @@ fn schism_arrives_in_hand_already_in_two() {
         .collect();
     assert_eq!(ids, vec!["CATA_306t1", "CATA_306t2"]);
 }
+
+// ------------------------------------------------------------------ the Void
+// Demon Hunter's Void Soul package, and the minion that makes Taunt stop
+// mattering.
+
+#[test]
+fn a_void_soul_summons_a_one_cost_demon() {
+    let mut f = Fix::new();
+    f.play("Void Soul", None);
+    assert_eq!(f.g.players[0].board.len(), 1);
+    let d = f.mine(0).card.def();
+    assert_eq!(d.cost, 1, "the printed Cost, from the card and not from here");
+    assert!(d.races.any(Races::DEMON));
+}
+
+#[test]
+fn the_four_cards_that_hand_out_a_void_soul_all_do() {
+    // Vicious Voidscale, on dying.
+    let mut f = Fix::new().board(ME, &["Vicious Voidscale"]);
+    assert!(f.mine(0).has(Keywords::TAUNT));
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Void Soul");
+
+    // Void Blast, but only when the minion actually dies.
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7, survives 3
+    f.play("Void Blast", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 4);
+    assert!(f.g.players[0].hand.is_empty(), "it lived, so no Void Soul");
+    f.g.players[0].mana = 10;
+    f.g.players[1].board[0].damage = 5; // now three finishes it
+    f.play("Void Blast", foe_minion(0));
+    assert_eq!(f.their_board(), 0);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Void Soul");
+
+    // Stardust Scythe, after the hero swings.
+    let mut f = Fix::new();
+    f.play("Stardust Scythe", None);
+    assert!(f.g.apply(Action::HeroAttack { target: Target::Hero(FOE) }));
+    assert_eq!(f.g.players[1].hero_hp, 27, "the 3-Attack weapon connected");
+    let held: Vec<&str> = f.g.players[0].hand.iter().map(|h| h.card.name()).collect();
+    assert_eq!(held, vec!["Void Soul"]);
+}
+
+#[test]
+fn hive_map_discovers_a_fel_spell() {
+    let mut f = Fix::new();
+    f.play("Hive Map", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    let d = f.g.players[0].hand[0].card.def();
+    assert_eq!(d.kind(), Kind::Spell);
+    assert_eq!(d.school(), School::Fel);
+}
+
+#[test]
+fn kayn_sunfury_lets_the_whole_board_walk_past_a_taunt() {
+    let mut f = Fix::new()
+        .board(ME, &["Bloodfen Raptor"])
+        .board(FOE, &["Goldshire Footman"]); // 1/2 Taunt
+    f.g.players[0].weapon = Some(tavernlab_core::state::Weapon {
+        card: by_name("Fiery War Axe").unwrap(),
+        atk: 3,
+        durability: 2,
+    });
+
+    // Without him the Taunt stands, for the minion and for the hero alike.
+    assert!(f.g.must_respect_taunt(ME));
+    assert!(!f.g.apply(Action::Attack { from: 0, target: Target::Hero(FOE) }));
+
+    f.play("Kayn Sunfury", None);
+    assert!(!f.g.must_respect_taunt(ME), "his own line is 'all friendly attacks'");
+    assert!(f.g.apply(Action::Attack { from: 0, target: Target::Hero(FOE) }));
+    assert_eq!(f.g.players[1].hero_hp, 27);
+    assert!(f.g.apply(Action::HeroAttack { target: Target::Hero(FOE) }));
+    assert_eq!(f.g.players[1].hero_hp, 24, "the hero walks past it too");
+
+    // And the rule leaves with the body.
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "Kayn Sunfury")
+        .unwrap();
+    f.g.players[0].board[slot].damage = f.g.players[0].board[slot].max_hp;
+    f.g.sweep_deaths();
+    assert!(f.g.must_respect_taunt(ME));
+}
+
+#[test]
+fn a_taunt_that_is_ignored_is_still_offered_as_a_target() {
+    // The enumerator and `apply` have to agree, or a search finds swings the
+    // action list never had.
+    let f = Fix::new()
+        .board(ME, &["Bloodfen Raptor", "Kayn Sunfury"])
+        .board(FOE, &["Goldshire Footman", "Chillwind Yeti"]);
+    let mut legal = tavernlab_core::inline::Inline::new();
+    f.g.legal_actions(&mut legal);
+    let raptor_targets: Vec<Target> = legal
+        .iter()
+        .filter_map(|a| match a {
+            Action::Attack { from: 0, target } => Some(*target),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        raptor_targets.contains(&Target::Hero(FOE)),
+        "the face is legal past the Taunt: {raptor_targets:?}"
+    );
+    assert!(
+        raptor_targets.contains(&Target::Minion(FOE, 1)),
+        "so is the non-taunting Yeti: {raptor_targets:?}"
+    );
+    assert!(
+        raptor_targets.contains(&Target::Minion(FOE, 0)),
+        "and the Taunt itself is still a legal target: {raptor_targets:?}"
+    );
+}
+
+// ------------------------------------------------------------------ Auras
+// A spell that stays in the hero zone, fires at the end of each of its
+// owner's turns, and is gone after three of them.
+
+/// End the current player's turn without handing play over, so an Aura's
+/// firing can be watched a turn at a time.
+fn end_my_turn(f: &mut Fix) {
+    f.g.end_turn();
+    f.g.current = ME;
+    f.g.players[0].mana = 10;
+}
+
+#[test]
+fn chronological_aura_summons_on_the_turn_it_is_played_and_lasts_three() {
+    let mut f = Fix::new();
+    f.play("Chronological Aura", None);
+    assert!(f.g.controls_aura(ME), "it is in play the moment it is cast");
+    assert!(f.g.players[0].board.is_empty(), "and does nothing until the turn ends");
+
+    for n in 1..=3 {
+        end_my_turn(&mut f);
+        assert_eq!(f.g.players[0].board.len(), n, "after {n} of its turns");
+        assert_eq!(f.mine(0).card.name(), "Chronological Drake");
+        assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (3, 5));
+        assert!(f.mine(0).has(Keywords::TAUNT));
+    }
+    assert!(!f.g.controls_aura(ME), "three turns and it is spent");
+    end_my_turn(&mut f);
+    assert_eq!(f.g.players[0].board.len(), 3, "and summons nothing after that");
+}
+
+#[test]
+fn gnomish_aura_heals_every_friendly_character() {
+    let mut f = Fix::new().board(ME, &["Boulderfist Ogre"]).board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0].hero_hp = 20;
+    f.g.players[0].board[0].damage = 5;
+    f.g.players[1].board[0].damage = 5;
+    f.play("Gnomish Aura", None);
+    end_my_turn(&mut f);
+    assert_eq!(f.g.players[0].hero_hp, 24, "the hero is a character too");
+    assert_eq!(f.mine(0).health(), 6, "5 damage, 4 healed");
+    assert_eq!(f.theirs(0).health(), 2, "'all your characters', not all of them");
+}
+
+#[test]
+fn mekkatorques_aura_buffs_and_shields_one_friendly_minion() {
+    let mut f = Fix::new().board(ME, &["Bloodfen Raptor"]); // 3/2
+    f.play("Mekkatorque's Aura", None);
+    end_my_turn(&mut f);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (7, 6));
+    assert!(f.mine(0).has(Keywords::DIVINE_SHIELD));
+}
+
+#[test]
+fn sandfury_aura_makes_an_end_of_turn_effect_fire_twice() {
+    // Strength Totem gives *another* friendly minion +1 Attack at the end of
+    // its owner's turn, so with exactly one other minion out, how many times
+    // it fired is readable straight off that minion.
+    let mut once = Fix::new().board(ME, &["Strength Totem", "Bloodfen Raptor"]);
+    end_my_turn(&mut once);
+    assert_eq!(once.mine(1).atk, 4, "once, with no Aura up");
+
+    let mut f = Fix::new().board(ME, &["Strength Totem", "Bloodfen Raptor"]);
+    f.play("Sandfury Aura", None);
+    end_my_turn(&mut f);
+    assert_eq!(f.mine(1).atk, 5, "twice, under the Aura");
+}
+
+#[test]
+fn sandfury_aura_does_not_double_the_other_players_minions() {
+    let mut f = Fix::new().board(FOE, &["Strength Totem", "Bloodfen Raptor"]);
+    let before = f.theirs(1).atk;
+    f.play("Sandfury Aura", None);
+    f.g.end_turn();
+    assert_eq!(
+        f.theirs(1).atk, before,
+        "'your minions', and it is not even their turn"
+    );
+}
+
+#[test]
+fn manifested_timeways_only_fires_while_an_aura_is_up() {
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti"]);
+    f.play("Manifested Timeways", None);
+    assert_eq!(f.theirs(0).health(), 5, "no Aura, no damage");
+    assert_eq!(f.g.players[1].hero_hp, 30);
+
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti"]);
+    f.play("Sandfury Aura", None);
+    f.g.players[0].mana = 10;
+    f.play("Manifested Timeways", None);
+    assert_eq!(f.theirs(0).health(), 2);
+    assert_eq!(f.g.players[1].hero_hp, 27, "all enemies, hero included");
+}
+
+#[test]
+fn gelbin_puts_one_of_each_aura_from_the_deck_into_play() {
+    let mut f = Fix::new().deck(&[
+        "Chronological Aura",
+        "Chronological Aura",
+        "Sandfury Aura",
+        "Chillwind Yeti",
+    ]);
+    f.play("Gelbin of Tomorrow", None);
+    assert_eq!(f.g.players[0].pending.len(), 2, "one of each, not one of every copy");
+    let left: Vec<&str> = f.g.players[0].deck.iter().map(|d| d.card.name()).collect();
+    assert_eq!(
+        left,
+        vec!["Chronological Aura", "Chillwind Yeti"],
+        "'from your deck': the ones put into play left it"
+    );
+}
+
+#[test]
+fn flight_maneuvers_whole_summons_and_buffs_and_each_half_does_one() {
+    let mut f = Fix::new().board(ME, &["Bloodfen Raptor"]); // 3/2
+    f.g.players[0].hand.push(HandCard::new(by_id("CATA_479").unwrap()));
+    assert!(f.g.apply(Action::Play {
+        hand: 0,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(f.g.players[0].board.len(), 3, "the Raptor and two Drakes");
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (4, 2), "+1 Attack");
+    assert!(f.mine(0).has(Keywords::DIVINE_SHIELD));
+    assert_eq!(f.mine(1).card.name(), "Sky Drake");
+    assert_eq!(
+        (f.mine(1).atk, f.mine(1).max_hp),
+        (5, 2),
+        "the Drakes are summoned first, so they are 'your minions' by the time          the buff lands: a printed 4/2 with the card's own +1"
+    );
+    assert!(f.mine(1).has(Keywords::DIVINE_SHIELD));
+
+    // The summoning half alone leaves the Raptor as it was.
+    let mut f = Fix::new().board(ME, &["Bloodfen Raptor"]);
+    f.g.players[0].hand.push(HandCard::new(by_id("CATA_479t").unwrap()));
+    assert!(f.g.apply(Action::Play {
+        hand: 0,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(f.g.players[0].board.len(), 3);
+    assert_eq!(f.mine(0).atk, 3, "no buff from this half");
+}
+
+#[test]
+fn inspiring_maul_fires_one_friendly_minions_end_of_turn_effect() {
+    let mut f = Fix::new().board(ME, &["Strength Totem", "Bloodfen Raptor"]);
+    f.play("Inspiring Maul", None);
+    f.g.destroy_weapon(ME);
+    assert_eq!(
+        f.mine(1).atk,
+        4,
+        "the Totem's end of turn effect ran with no turn ending"
+    );
+}
+
+#[test]
+fn gnomeregan_advances_an_age_per_use_and_keeps_what_is_left() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.play("Past Gnomeregan", None);
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "Past Gnomeregan")
+        .unwrap() as u8;
+
+    assert!(f.g.apply(Action::UseLocation { slot, target: my_minion(0) }));
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (6, 6));
+    assert_eq!(f.g.players[0].board[slot as usize].card.name(), "Present Gnomeregan");
+    assert_eq!(
+        f.g.players[0].board[slot as usize].health(),
+        2,
+        "one use spent, and the age it became does not get it back"
+    );
+
+    // Next turn, the present.
+    f.g.end_turn();
+    f.g.current = ME;
+    f.g.begin_turn();
+    assert!(f.g.apply(Action::UseLocation { slot, target: my_minion(0) }));
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (8, 7));
+    assert_eq!(f.mine(0).granted_rattle.name(), "Leper Gnome");
+    assert_eq!(f.g.players[0].board[slot as usize].card.name(), "Future Gnomeregan");
+
+    // And the future, which is the last of the three.
+    f.g.end_turn();
+    f.g.current = ME;
+    f.g.begin_turn();
+    assert!(f.g.apply(Action::UseLocation { slot, target: my_minion(0) }));
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (10, 8));
+    assert!(f.mine(0).has(Keywords::DIVINE_SHIELD));
+    f.g.sweep_deaths();
+    assert!(
+        !f.g.players[0].board.iter().any(|m| m.card.name().ends_with("Gnomeregan")),
+        "three ages, three uses, then it is gone"
+    );
+}

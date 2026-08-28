@@ -24,7 +24,7 @@ ENV  := $(DATA)/watch.env
 # kill. Nothing here is worth parallelising anyway; cargo does its own.
 .NOTPARALLEL:
 
-.PHONY: help build serve watch watch-start watch-stop watch-restart watch-status watch-log history
+.PHONY: help build serve watch watch-start watch-stop watch-restart watch-status watch-log history bench
 
 help:
 	@echo "make watch          перезібрати й (пере)запустити запис ігор"
@@ -34,6 +34,7 @@ help:
 	@echo "make history        показати записані бої"
 	@echo "make serve          зібрати й відкрити інтерфейс"
 	@echo "make build          лише зібрати (PROFILE=release для оптимізованого)"
+	@echo "make bench          пропускна здатність (див. tools/ab-bench.sh для порівнянь)"
 	@echo
 	@echo "бойовий тег і тека логів — у $(ENV), не в репозиторії:"
 	@echo "  HS_ME='Ваш#12345'"
@@ -100,3 +101,9 @@ watch-log:
 
 history: build
 	$(BIN) history
+
+# Throughput of this checkout. To compare two builds, use tools/ab-bench.sh
+# instead -- and read its header first: a naive best-of-five comparison on a
+# shared host reports a 2% regression for a binary against a copy of itself.
+bench: build
+	$(BIN) bench
