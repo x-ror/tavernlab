@@ -306,6 +306,9 @@ impl Game {
         p.friendly_damaged_turn = 0;
         p.hero_damaged_turn = false;
         p.hero_health_moved_turn = false;
+        p.hero_healed_turn = false;
+        p.discovered_turn = false;
+        p.graveyard_at_turn_start = p.graveyard.len() as u8;
         p.friendly_deaths_turn = 0;
         p.hero_attacks_done = 0;
         p.hero_bonus_atk = 0;
@@ -1687,7 +1690,9 @@ impl Game {
         // not wake "whenever a character is healed".
         let restored = p.hero_hp - before;
         if restored > 0 {
-            self.player_mut(side).hero_health_moved_turn = true;
+            let p = self.player_mut(side);
+            p.hero_health_moved_turn = true;
+            p.hero_healed_turn = true;
             self.fire(Event::Healed {
                 target: Target::Hero(side),
                 amount: restored,

@@ -505,6 +505,13 @@ pub struct Player {
     /// counts minions too. Both reset at this player's own turn start.
     pub hero_damaged_turn: bool,
     pub hero_health_moved_turn: bool,
+    /// Whether this player has restored Health this turn, and whether they
+    /// have Discovered. Both are printed conditions with no other home.
+    pub hero_healed_turn: bool,
+    pub discovered_turn: bool,
+    /// How long the graveyard was when this player's turn began, so "that
+    /// died this turn" is the slice past it.
+    pub graveyard_at_turn_start: u8,
     /// Friendly minions that have died this turn.
     pub friendly_deaths_turn: u8,
     /// The active Quest, as (card, progress). A Quest's own printed number
@@ -619,6 +626,9 @@ impl Player {
             friendly_damaged_turn: 0,
             hero_damaged_turn: false,
             hero_health_moved_turn: false,
+            hero_healed_turn: false,
+            discovered_turn: false,
+            graveyard_at_turn_start: 0,
             friendly_deaths_turn: 0,
             quest: None,
             sidequest: None,
