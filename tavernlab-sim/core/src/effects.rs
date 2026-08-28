@@ -591,6 +591,7 @@ impl Game {
     /// policy needs an agent hook inside effect resolution, which is a change
     /// to how effects are called rather than a change here.
     pub fn discover(&mut self, side: Side, pred: fn(&crate::cards::CardDef) -> bool) -> bool {
+        self.player_mut(side).discovered_turn = true;
         let pool = crate::cards::discover_pool(pred);
         if pool.is_empty() {
             return false;
@@ -812,6 +813,7 @@ impl Game {
     /// for the cards whose pool depends on the position — "from another
     /// class" has to know which class you are.
     pub fn discover_where(&mut self, side: Side, pred: impl Fn(&crate::cards::CardDef) -> bool) -> bool {
+        self.player_mut(side).discovered_turn = true;
         let pool = crate::cards::discover_pool(pred);
         if pool.is_empty() {
             return false;

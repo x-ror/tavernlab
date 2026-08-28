@@ -474,6 +474,9 @@ mod tokens {
     pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
     /// Imp Gang Stooge's "8/8 Demon with Taunt and Lifesteal".
     pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
+    /// Forced-attack batch: the bodies that arrive swinging.
+    pub const TEMPORAL_SHADOW: CardId = token("TIME_434t");
+    pub const ANGRY_TREANT: CardId = token("TLC_230t");
     /// Granted deathrattles: the bodies the granting cards promise.
     pub const STEGODON: CardId = token("UNG_810");
     pub const PLANT: CardId = token("UNG_999t2t1");
@@ -4945,6 +4948,439 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         }
     }),
 
+    // ------------------------------------------------- last sweep
+    battlecry("Ymirjar Frostbreaker", T::None, |g, c| {
+        let frost = g
+            .player(c.side)
+            .hand
+            .iter()
+            .filter(|h| h.card.def().school() == super::School::Frost)
+            .count() as i16;
+        if frost > 0 && let Some(src) = c.source {
+            g.buff(Target::Minion(c.side, src), frost, 0);
+        }
+    }),
+    spell("Nurturing Nature", T::FriendlyBeast, |g, c| {
+        if let Some(t) = c.target {
+            g.buff(t, 2, 2);
+        }
+        let mut beasts: Inline<u16, MAX_HAND> = Inline::new();
+        for (i, h) in g.player(c.side).hand.iter().enumerate() {
+            if h.card.def().races.any(Races::BEAST) {
+                beasts.push(i as u16);
+            }
+        }
+        if beasts.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(beasts.len());
+        if let Some(h) = g.player_mut(c.side).hand.get_mut(beasts[pick] as usize) {
+            h.enchant(2, 2);
+        }
+    }),
+    spell("Release the Beasts", T::None, |g, c| {
+        for h in g.player_mut(c.side).hand.iter_mut() {
+            let d = h.card.def();
+            if d.kind() != super::Kind::Minion {
+                continue;
+            }
+            h.enchant(1, 1);
+            if d.rarity() == super::Rarity::Legendary {
+                h.enchant(2, 1);
+            }
+        }
+    }),
+    battlecry("Dimensional Weaponsmith", T::None, |g, c| {
+        for h in g.player_mut(c.side).hand.iter_mut() {
+            if matches!(h.card.def().kind(), super::Kind::Minion | super::Kind::Weapon) {
+                h.enchant(2, 0);
+            }
+        }
+    }),
+    spell("Power Word: Barrier", T::AnyCharacter, |g, c| {
+        match c.target {
+            Some(Target::Minion(s, i)) => g.grant(Target::Minion(s, i), Keywords::DIVINE_SHIELD),
+            Some(Target::Hero(s)) => g.player_mut(s).hero_divine_shield = true,
+            None => {}
+        }
+        for h in g.player_mut(c.side).hand.iter_mut() {
+            if h.card.def().kind() == super::Kind::Minion {
+                h.enchant(0, 2);
+            }
+        }
+    }),
+    c(
+        "Dig for Freedom",
+        T::FriendlyMinion,
+        Some(|g, c| grant_rattle(g, c.target, c.card)),
+        None,
+        Some(|g, c| {
+            g.summon_random_of_cost(c.side, 4, 2);
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    c(
+        "Threshrider's Blessing",
+        T::FriendlyMinion,
+        Some(|g, c| {
+            if let Some(t) = c.target {
+                g.buff(t, 4, 4);
+            }
+            grant_rattle(g, c.target, c.card);
+        }),
+        None,
+        Some(|g, c| {
+            g.summon_random_of_cost(c.side, 4, 1);
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    c(
+        "Lo'Gosh's Last Stand",
+        T::AnyMinion,
+        Some(|g, c| grant_rattle(g, c.target, c.card)),
+        None,
+        Some(|g, c| {
+            let n = g.player(c.side).hand.len();
+            if n == 0 {
+                return;
+            }
+            let pick = g.rngs.effects.index(n);
+            let card = g.player(c.side).hand[pick].card;
+            if card.def().kind() == super::Kind::Minion {
+                g.player_mut(c.side).hand.remove(pick);
+                g.summon(c.side, card);
+            }
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    c(
+        "Amphibian's Spirit",
+        T::AnyMinion,
+        Some(|g, c| {
+            if let Some(t) = c.target {
+                g.buff(t, 2, 2);
+            }
+            grant_rattle(g, c.target, c.card);
+        }),
+        None,
+        Some(|g, c| {
+            // "…and this Deathrattle": it moves on to whoever it buffs.
+            let Some(t) = g.random_minion(c.side) else { return };
+            g.buff(t, 2, 2);
+            grant_rattle(g, Some(t), c.card);
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    c(
+        "Sheep Mask",
+        T::AnyMinion,
+        Some(|g, c| {
+            let Some(t) = c.target else { return };
+            g.set_attack(t, 1);
+            g.set_health(t, 1);
+            grant_rattle(g, Some(t), c.card);
+        }),
+        None,
+        Some(|g, c| {
+            g.damage_area(c.side, Area::AllMinions, 2);
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    spell("Charity", T::None, |g, c| {
+        let from = g.player(c.side).graveyard_at_turn_start as usize;
+        let dead: Inline<CardId, { crate::state::GRAVEYARD }> = g
+            .player(c.side)
+            .graveyard
+            .iter()
+            .skip(from)
+            .copied()
+            .collect();
+        for card in dead.iter().copied() {
+            if !g.give_token(c.side, card) {
+                break;
+            }
+            if let Some(h) = g.player_mut(c.side).hand.last_mut() {
+                h.enchant(3, 3);
+            }
+        }
+    }),
+    battlecry("Priest of An'she", T::None, |g, c| {
+        if g.player(c.side).hero_healed_turn
+            && let Some(src) = c.source
+        {
+            g.buff(Target::Minion(c.side, src), 3, 3);
+        }
+    }),
+    battlecry("Envoy of the Glade", T::None, |g, c| {
+        let pool = super::discover_pool(|d| d.class() == super::Class::Druid);
+        if pool.is_empty() {
+            return;
+        }
+        for i in 0..g.player(c.side).deck.len() {
+            if g.player(c.side).deck[i].def().class() != super::Class::Neutral {
+                continue;
+            }
+            let pick = g.rngs.effects.index(pool.len());
+            g.player_mut(c.side).deck[i] = pool[pick];
+        }
+    }),
+    battlecry("Hellraiser", T::None, |g, c| {
+        if !g.discover_from_deck(c.side, |_| true)
+            && let Some(src) = c.source
+        {
+            g.buff(Target::Minion(c.side, src), 4, 4);
+        }
+    }),
+    c(
+        "Storage Scuffle",
+        T::AnyMinion,
+        Some(|g, c| {
+            g.spell_damage(c.side, c.target, 3);
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(|g, side, _i| if g.player(side).discovered_turn { -3 } else { 0 }),
+        None,
+    ),
+    spell("Unearthed Artifacts", T::None, |g, c| {
+        let cost = if g.player(c.side).discovered_turn { 4 } else { 2 };
+        g.summon_random_of_cost(c.side, cost, 1);
+    }),
+    battlecry("Diabolus Rex", T::None, |g, c| {
+        if !(g.kindred(c.side, Races::BEAST) || g.kindred(c.side, Races::DEMON)) {
+            return;
+        }
+        let foe = c.side.other();
+        let n = g.player(foe).board.len();
+        if n == 0 {
+            return;
+        }
+        g.deal_damage(Target::Minion(foe, 0), 6);
+        if n > 1 {
+            g.deal_damage(Target::Minion(foe, n as u8 - 1), 6);
+        }
+    }),
+
+    // ---------------------------------------------- forced attacks
+    // `Game::forced_attack` assigns the target itself; these are the cards
+    // that do the assigning.
+    spell("Unholy Frenzy", T::EnemyMinion, |g, c| {
+        let Some(target) = c.target else { return };
+        // Recorded before the swings, so a minion that trades itself away can
+        // be put back.
+        let before: Inline<CardId, MAX_BOARD> =
+            g.player(c.side).board.iter().map(|m| m.card).collect();
+        let mut slot = 0;
+        while slot < g.player(c.side).board.len() {
+            let before_n = g.player(c.side).board.len();
+            g.forced_attack((c.side, slot as u8), target);
+            g.sweep_deaths();
+            // A minion that died has already pulled the rest forward.
+            if g.player(c.side).board.len() == before_n {
+                slot += 1;
+            }
+            if matches!(target, Target::Minion(s, i)
+                if g.player(s).board.get(i as usize).is_none())
+            {
+                break;
+            }
+        }
+        // "Resummon any that die": one body back for each one missing.
+        let mut done: Inline<CardId, MAX_BOARD> = Inline::new();
+        for card in before.iter().copied() {
+            if done.contains(&card) {
+                continue;
+            }
+            done.push(card);
+            let has = g.player(c.side).board.iter().filter(|m| m.card == card).count();
+            let had = before.iter().filter(|x| **x == card).count();
+            for _ in has..had {
+                if !g.summon(c.side, card) {
+                    break;
+                }
+            }
+        }
+    }),
+    deathrattle("Temporal Traveler", |g, c| {
+        if g.summon_token(c.side, tokens::TEMPORAL_SHADOW, 1) == 0 {
+            return;
+        }
+        let slot = g.player(c.side).board.len() as u8 - 1;
+        if let Some(t) = g.random_minion(c.side.other()) {
+            g.forced_attack((c.side, slot), t);
+        }
+    }),
+    trigger("Gnome Muncher", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side)
+            && let Some(t) = g.lowest_health_enemy(c.side)
+        {
+            g.forced_attack((c.side, c.slot), t);
+        }
+    }),
+    battlecry("High Cultist Herenn", T::None, |g, c| {
+        let before = g.player(c.side).board.len();
+        for _ in 0..2 {
+            if !g.summon_from_deck(c.side, |d| d.keywords.has(Keywords::DEATHRATTLE)) {
+                break;
+            }
+        }
+        // "They fight!" -- the two of them, with each other.
+        if g.player(c.side).board.len() >= before + 2 {
+            let a = before as u8;
+            let b = before as u8 + 1;
+            g.forced_attack((c.side, a), Target::Minion(c.side, b));
+        }
+    }),
+    trigger("Mythical Terror", |g, c| {
+        if !matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            return;
+        }
+        let foe = c.side.other();
+        let me = c.me();
+        let mut slot = 0;
+        while slot < g.player(foe).board.len() {
+            let before = g.player(foe).board.len();
+            g.forced_attack((foe, slot as u8), me);
+            g.sweep_deaths();
+            // A minion that died in the exchange has already shifted the ones
+            // behind it into its place.
+            if g.player(foe).board.len() == before {
+                slot += 1;
+            }
+            if g.player(c.side).board.get(c.slot as usize).is_none() {
+                break;
+            }
+        }
+    }),
+    trigger("Illidari Inquisitor", |g, c| {
+        if let Event::AfterAttack { attacker: Target::Hero(s), defender, defender_died: false } =
+            c.event
+            && s == c.side
+        {
+            g.forced_attack((c.side, c.slot), defender);
+        }
+    }),
+    spell("TREEEES!!!", T::AnyMinion, |g, c| {
+        let Some(target) = c.target else { return };
+        for _ in 0..4 {
+            if g.summon_token(c.side, tokens::ANGRY_TREANT, 1) == 0 {
+                break;
+            }
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.forced_attack((c.side, slot), target);
+            g.sweep_deaths();
+            if matches!(target, Target::Minion(s, i)
+                if g.player(s).board.get(i as usize).is_none())
+            {
+                break;
+            }
+        }
+    }),
+    deathrattle("Ankylodon", |g, c| {
+        for _ in 0..2 {
+            if !g.summon_random_where(c.side, |d| {
+                d.kind() == super::Kind::Minion && d.cost == 3 && d.races.any(Races::BEAST)
+            }) {
+                break;
+            }
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            if let Some(t) = g.random_enemy(c.side) {
+                g.forced_attack((c.side, slot), t);
+                g.sweep_deaths();
+            }
+        }
+    }),
+    trigger("Wilted Shadow", |g, c| {
+        if let Event::Healed { target, .. } = c.event
+            && matches!(target, Target::Hero(s) | Target::Minion(s, _) if s == c.side.other())
+        {
+            g.forced_attack((c.side, c.slot), target);
+        }
+    }),
+    spell("Behemoth Mask", T::AnyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        g.set_attack(t, 8);
+        g.set_health(t, 10);
+        g.grant(t, Keywords::LIFESTEAL);
+        let foe = c.side.other();
+        let mut pool: Inline<u8, MAX_BOARD> = Inline::new();
+        for (i, m) in g.player(foe).board.iter().enumerate() {
+            if m.active() && m.is_minion() {
+                pool.push(i as u8);
+            }
+        }
+        if pool.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(pool.len());
+        g.forced_attack((foe, pool[pick]), t);
+    }),
+    battlecry("Warmaul Challenger", T::EnemyMinion, |g, c| {
+        let Some(target) = c.target else { return };
+        let Some(src) = c.source else { return };
+        // "To the death": they trade until one of them is gone. Bounded, since
+        // two bodies that cannot hurt each other would otherwise stand here
+        // forever.
+        for _ in 0..32 {
+            g.forced_attack((c.side, src), target);
+            g.sweep_deaths();
+            let mine_alive = g.player(c.side).board.get(src as usize).is_some_and(|m| {
+                m.active() && m.card.name() == "Warmaul Challenger"
+            });
+            let theirs_alive = matches!(target, Target::Minion(s, i)
+                if g.player(s).board.get(i as usize).is_some_and(|m| m.active()));
+            if !mine_alive || !theirs_alive {
+                break;
+            }
+        }
+    }),
+    battlecry("Rampaging Hound", T::None, |g, c| {
+        let Some(src) = c.source else { return };
+        let me = Target::Minion(c.side, src);
+        let foe = c.side.other();
+        let mut slot = 0;
+        while slot < g.player(foe).board.len() {
+            let before = g.player(foe).board.len();
+            g.forced_attack((foe, slot as u8), me);
+            g.sweep_deaths();
+            if g.player(foe).board.len() == before {
+                slot += 1;
+            }
+            if g.player(c.side).board.get(src as usize).is_none() {
+                break;
+            }
+        }
+    }),
+
     // ----------------------------------------- granted deathrattles
     // Each of these grants *itself* as the rattle: the card's own row carries
     // the effect, and `Permanent::granted_rattle` points back at it.
@@ -7966,7 +8402,21 @@ pub const GRANTED_RATTLES: &[&str] = &[
     "Talanji's Last Stand",
     "Ulfar",
     "Living Spores",
+    "Dig for Freedom",
+    "Threshrider's Blessing",
+    "Lo'Gosh's Last Stand",
+    "Amphibian's Spirit",
+    "Sheep Mask",
 ];
+
+/// Point a minion's `granted_rattle` at `carrier`.
+fn grant_rattle(g: &mut Game, t: Option<Target>, carrier: CardId) {
+    if let Some(Target::Minion(s, i)) = t
+        && let Some(m) = g.player_mut(s).board.get_mut(i as usize)
+    {
+        m.granted_rattle = carrier;
+    }
+}
 
 /// Turn a minion into a random one of `cost` (Dangerous Variant, Unknown
 /// Voyager).
