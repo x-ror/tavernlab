@@ -30,6 +30,16 @@ impl Drop for Server {
 
 impl Server {
     fn start() -> Server {
+        Server::start_in(None)
+    }
+
+    /// Start with a prepared data home, for a test that needs a file the
+    /// server reads rather than one it writes.
+    fn start_with_home(home: &std::path::Path) -> Server {
+        Server::start_in(Some(home.to_path_buf()))
+    }
+
+    fn start_in(prepared: Option<std::path::PathBuf>) -> Server {
         // Ask the OS for a free port and hand it straight over: a fixed port
         // makes the test fail when the developer has the app open.
         let port = TcpListener::bind(("127.0.0.1", 0))
@@ -37,7 +47,8 @@ impl Server {
             .local_addr()
             .expect("its address")
             .port();
-        let home = std::env::temp_dir().join(format!("tavernlab-serve-test-{port}"));
+        let home = prepared
+            .unwrap_or_else(|| std::env::temp_dir().join(format!("tavernlab-serve-test-{port}")));
         let _ = std::fs::create_dir_all(&home);
 
         let child = Command::new(env!("CARGO_BIN_EXE_tavernsim"))
@@ -348,4 +359,73 @@ fn unknown_routes_and_methods_are_refused_rather_than_guessed() {
     // A GET of the UI with no build present is still an answer, not a hang.
     let (status, _) = server.get("/");
     assert!(status == 200 || status == 404, "unexpected status {status}");
+}
+
+/// The history the watcher wrote is the history the front end reads.
+///
+/// The two halves are separate processes writing and reading one SQLite file,
+/// which is exactly where a format bug would hide: the writer agreeing with
+/// itself proves nothing about the reader on the other side of a restart.
+#[test]
+fn the_history_written_by_watch_is_served_to_the_ui() {
+    const LOG: &str = "\
+D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME
+D 09:00:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=1 local=False [entityName=Jaina Proudmoore id=64 zone=PLAY zonePos=0 cardId=HERO_08 player=1] zone from  -> FRIENDLY PLAY (Hero)
+D 09:00:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=2 local=False [entityName=Garrosh Hellscream id=65 zone=PLAY zonePos=0 cardId=HERO_01 player=2] zone from  -> OPPOSING PLAY (Hero)
+D 09:00:00.2 [Zone] ZoneChangeList.ProcessChanges() - id=3 local=False [entityName=The Coin id=11 zone=DECK zonePos=0 cardId=GAME_005 player=1] zone from  -> FRIENDLY HAND
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=12
+D 09:05:00.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=PLAYSTATE value=WON
+D 09:06:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME
+D 09:06:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=1 local=False [entityName=Jaina Proudmoore id=64 zone=PLAY zonePos=0 cardId=HERO_08 player=1] zone from  -> FRIENDLY PLAY (Hero)
+D 09:06:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=2 local=False [entityName=Uther Lightbringer id=65 zone=PLAY zonePos=0 cardId=HERO_04 player=2] zone from  -> OPPOSING PLAY (Hero)
+D 09:06:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=8
+D 09:09:00.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Them#2 tag=PLAYSTATE value=WON
+";
+    let home = std::env::temp_dir().join(format!("tavernlab-history-e2e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("home");
+    let log = home.join("session.log");
+    std::fs::write(&log, LOG).expect("write the log");
+
+    let watch = Command::new(env!("CARGO_BIN_EXE_tavernsim"))
+        .args(["watch", "--log"])
+        .arg(&log)
+        .args(["--me", "Me#1", "--once"])
+        .env("TAVERNLAB_HOME", &home)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("watch runs");
+    assert!(watch.status.success(), "watch failed");
+    assert!(
+        home.join("history.sqlite").exists(),
+        "the watcher created the database"
+    );
+
+    let s = Server::start_with_home(&home);
+    let (status, body) = s.get("/api/history");
+    assert_eq!(status, 200, "{body}");
+    let doc = json(&body);
+    assert_eq!(doc.i64_or_zero("games"), 2, "{body}");
+    assert_eq!(doc.i64_or_zero("resolved"), 2, "{body}");
+    assert_eq!(doc.i64_or_zero("wins"), 1, "one of the two was mine: {body}");
+    assert!(
+        doc.str_or_empty("path").ends_with("history.sqlite"),
+        "the page shows where the file is: {body}"
+    );
+
+    let rows = doc.arr_or_empty("rows");
+    assert_eq!(rows.len(), 2);
+    // Newest first, which is the game you just played.
+    assert_eq!(rows[0].str_or_empty("opponent_class"), "PALADIN", "{body}");
+    assert_eq!(rows[1].str_or_empty("opponent_class"), "WARRIOR", "{body}");
+    assert_eq!(rows[1].i64_or_zero("turns"), 12);
+
+    // Below the sample floor the rate is absent, not small: the UI must not
+    // be able to render one game as a hundred per cent.
+    for row in doc.arr_or_empty("by_opponent") {
+        assert!(
+            matches!(row.get("rate"), None | Some(tavernlab_json::Json::Null)),
+            "{body}"
+        );
+    }
 }

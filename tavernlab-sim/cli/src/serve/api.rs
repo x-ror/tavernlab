@@ -1170,6 +1170,100 @@ pub fn settings(app: &App, req: &Request) -> Response {
 
 /// `GET /api/metrics` — local counters and what this build can actually do.
 /// Nothing is sent anywhere; this is the whole of the observability story.
+/// `GET /api/history` — the games you have played, and what they add up to.
+///
+/// Read straight off the SQLite file every time rather than cached: the
+/// watcher is a separate process writing it while this one serves, and a
+/// cache here would show a stale record of the game that just ended.
+pub fn history(_app: &App) -> Response {
+    let path = crate::history::default_path();
+    let games = match crate::history::read(&path) {
+        Ok(g) => g,
+        Err(e) => {
+            return Response::json(
+                200,
+                to_string(|o| {
+                    o.obj(|o| {
+                        o.str_field("error", &e);
+                        o.str_field("path", &path.display().to_string());
+                    })
+                }),
+            );
+        }
+    };
+    let summary = crate::history::summarise(&games);
+    fn tally(o: &mut tavernlab_json::ObjOut<'_>, name: &str, rows: &[crate::history::Tally]) {
+        o.field(name, |v| {
+            v.arr(|a| {
+                for t in rows {
+                    a.item(|v| {
+                        v.obj(|o| {
+                            o.str_field("key", &t.key);
+                            o.int_field("games", t.games as i64);
+                            o.int_field("wins", t.wins as i64);
+                            // The rate is absent below the sample floor rather
+                            // than printed small: four wins out of four is not
+                            // a hundred per cent, and the UI must not be able
+                            // to render it as one.
+                            o.field("rate", |v| v.opt(t.rate(), |v, r| v.num(r)));
+                        })
+                    });
+                }
+            })
+        });
+    }
+
+    Response::json(
+        200,
+        to_string(|o| {
+            o.obj(|o| {
+                o.str_field("path", &path.display().to_string());
+                o.int_field("games", summary.games as i64);
+                o.int_field("resolved", summary.resolved as i64);
+                o.int_field("wins", summary.wins as i64);
+                tally(o, "by_opponent", &summary.by_opponent);
+                tally(o, "by_my_class", &summary.by_my_class);
+                tally(o, "by_opponent_deck", &summary.by_opponent_deck);
+                o.field("rows", |v| {
+                    v.arr(|a| {
+                        // Newest first: the game you want to look at is the
+                        // one you just played.
+                        for g in games.iter().rev() {
+                            a.item(|v| {
+                                v.obj(|o| {
+                                    o.int_field("played_at", g.played_at);
+                                    o.str_field("my_class", &g.my_class);
+                                    o.str_field("opponent_class", &g.opponent_class);
+                                    o.field("won", |v| v.opt(g.won, |v, w| v.bool(w)));
+                                    o.int_field("turns", g.turns);
+                                    o.field("coin", |v| v.opt(g.coin, |v, c| v.bool(c)));
+                                    o.str_field("opponent_deck", &g.opponent_deck);
+                                    o.int_field("opponent_hits", g.opponent_hits);
+                                    o.int_field("opponent_seen", g.opponent_seen);
+                                    o.field("opening", |v| {
+                                        v.arr(|a| {
+                                            for c in &g.opening {
+                                                a.str_item(c);
+                                            }
+                                        })
+                                    });
+                                    o.field("opponent_cards", |v| {
+                                        v.arr(|a| {
+                                            for c in &g.opponent_cards {
+                                                a.str_item(c);
+                                            }
+                                        })
+                                    });
+                                })
+                            });
+                        }
+                    })
+                });
+            })
+        }),
+    )
+}
+
 pub fn metrics(app: &App) -> Response {
     let counts = |fmt: Formats| -> (usize, usize) {
         let deckable: Vec<CardId> = tavernlab_core::cards::all()

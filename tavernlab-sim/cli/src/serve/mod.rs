@@ -100,6 +100,7 @@ fn route(app: &Arc<App>, req: &Request) -> Response {
     match (req.method.as_str(), path) {
         ("GET", "/api/settings") | ("POST", "/api/settings") => return api::settings(app, req),
         ("GET", "/api/metrics") => return api::metrics(app),
+        ("GET", "/api/history") => return api::history(app),
         ("GET", "/api/tiers") => return api::tiers_read(app, req),
         ("POST", "/api/tiers") => return api::tiers_start(app, req),
         ("POST", "/api/resolve") => return api::resolve(app, req),

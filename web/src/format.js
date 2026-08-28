@@ -50,3 +50,14 @@ export function deckProblem(info, t) {
   }
   return info.error || t('ui.common.error')
 }
+
+/** A count and its noun, in a language that inflects the noun.
+ *
+ *  Ukrainian has three forms and English two, and `{n} боїв` reads as a
+ *  bug in the program rather than in the grammar: four games is "4 бої".
+ *  `Intl.PluralRules` knows the categories; the strings supply the words.
+ */
+export function plural(t, key, n, lang) {
+  const rules = new Intl.PluralRules(lang === 'uk' ? 'uk-UA' : 'en-GB')
+  return t(`${key}_${rules.select(n)}`, { n })
+}
