@@ -18,7 +18,8 @@ pub use behaviour::{
     apply_game_setup, behaviour_of, gift_card, gift_keywords, gift_stats,
     awakened_by_dragon, drawn_acts_for_opponent, is_approximate, is_implemented,
     combines, is_aura, lets_attacks_ignore_taunt, pirate_damage_bonus,
-    reborn_keeps_enchantments, recombines, shatters_into,
+    rattles_from_hand_or_deck, reborn_keeps_enchantments, recombines, shatters_into,
+    windrunner_bit, windrunner_sisters,
 };
 pub use table::{BY_DBF, BY_ID, BY_NAME, CHILD_IDS, CHILD_SLICES, DEFS, INFO};
 

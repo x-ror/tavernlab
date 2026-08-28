@@ -9,7 +9,7 @@
 //! should have changed.
 
 use tavernlab_core::cards::{
-    Class, Formats, Keywords, Kind, Races, Rarity, School, behaviour_of, by_id, by_name,
+    CardId, Class, Formats, Keywords, Kind, Races, Rarity, School, behaviour_of, by_id, by_name,
 };
 use tavernlab_core::game::{Action, Agent};
 use tavernlab_core::state::{
@@ -103,6 +103,7 @@ fn make_ctx(card: tavernlab_core::cards::CardId, side: Side) -> tavernlab_core::
         target: None,
         source: None,
         outcast: false,
+        centre: false,
         dying: None,
         marks: Marks::NONE,
         mana_spent: 0,
@@ -13074,4 +13075,296 @@ fn welcome_home_is_offered_a_location_and_nothing_else() {
         .collect();
     assert_eq!(targets.len(), 1, "one Location and nothing else: {targets:?}");
     assert!(matches!(targets[0], Target::Minion(ME, _)));
+}
+
+// ------------------------------------------------------------ the Windrunners
+// Hunter's face package: three sisters who each count the others, and the
+// cheap bodies and burn around them.
+
+#[test]
+fn each_windrunner_repeats_once_per_sister_already_played() {
+    // Sylvanas alone: 2 damage to all enemies, once.
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.g.players[0].crystals = 10;
+    f.play("Ranger General Sylvanas", None);
+    assert_eq!(f.theirs(0).health(), 5);
+    assert_eq!(f.g.players[1].hero_hp, 28);
+
+    // With one sister already played, twice; with both, three times.
+    for (sisters, hits) in [(1u32, 2), (2, 3)] {
+        let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+        f.g.players[0].crystals = 10;
+        f.g.players[0].rangers_played = match sisters {
+            1 => 0b010,
+            _ => 0b110,
+        };
+        f.play("Ranger General Sylvanas", None);
+        assert_eq!(
+            f.g.players[1].hero_hp,
+            30 - 2 * hits,
+            "with {sisters} sister(s) played"
+        );
+    }
+}
+
+#[test]
+fn a_windrunner_does_not_count_herself() {
+    // Playing Sylvanas records her, and her own Battlecry must not read that
+    // record as a sister.
+    let mut f = Fix::new();
+    f.g.players[0].crystals = 10;
+    f.play("Ranger General Sylvanas", None);
+    assert_eq!(f.g.players[1].hero_hp, 28, "once, not twice");
+    assert_ne!(f.g.players[0].rangers_played, 0, "but she was recorded");
+
+    // The next sister sees her.
+    f.g.players[0].mana = 10;
+    f.play("Ranger Initiate Vereesa", None);
+    // Vereesa gives minions in the deck +1/+1, twice.
+    let mut f2 = Fix::new().deck(&["Bloodfen Raptor"]);
+    f2.g.players[0].crystals = 10;
+    f2.g.players[0].rangers_played = 0b001; // Sylvanas
+    f2.play("Ranger Initiate Vereesa", None);
+    let dc = f2.g.players[0].deck[0];
+    assert_eq!((dc.atk, dc.hp), (2, 2), "+1/+1 twice");
+}
+
+#[test]
+fn quel_dorei_fletcher_makes_the_hero_power_free_on_a_small_hand() {
+    let mut f = Fix::new().board(ME, &["Quel'dorei Fletcher"]);
+    f.g.players[0].crystals = 10;
+    f.g.players[0].mana = 1;
+    let hp = f.g.players[0].hero_power;
+    assert_eq!(f.g.hero_power_cost(ME, hp), 0, "hand of nothing is 3 or less");
+    assert!(f.g.apply(Action::HeroPower {
+        target: Some(Target::Hero(FOE)),
+        second: false
+    }));
+    assert_eq!(f.g.players[0].mana, 1, "it cost nothing");
+
+    // A fourth card in hand and the price comes back.
+    let mut f = Fix::new().board(ME, &["Quel'dorei Fletcher"]);
+    for _ in 0..4 {
+        f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    }
+    assert_eq!(f.g.hero_power_cost(ME, hp), hp.def().cost);
+}
+
+#[test]
+fn sylvanas_triumph_hits_everything_only_on_the_second_copy() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0].crystals = 10;
+    f.play("Sylvanas's Triumph", Some(Target::Hero(FOE)));
+    assert_eq!(f.g.players[1].hero_hp, 27);
+    assert_eq!(f.theirs(0).health(), 7, "the first copy hits one thing");
+
+    f.g.players[0].mana = 10;
+    f.play("Sylvanas's Triumph", Some(Target::Hero(FOE)));
+    assert_eq!(f.g.players[1].hero_hp, 24);
+    assert_eq!(f.theirs(0).health(), 4, "the second hits all enemies");
+}
+
+#[test]
+fn confront_the_tolvir_summons_the_cheap_minions_played_this_game() {
+    let mut f = Fix::new();
+    f.g.players[0].crystals = 10;
+    // Two 1-Cost minions and one that is not.
+    for n in ["Reinforcement Rallier", "Reinforcement Rallier", "Bloodfen Raptor"] {
+        f.g.players[0].mana = 10;
+        f.play(n, None);
+    }
+    f.g.players[0].board.clear();
+    f.g.players[0].mana = 10;
+    f.play("Confront the Tol'vir", None);
+    let back: Vec<&str> = f.g.players[0]
+        .board
+        .iter()
+        .map(|m| m.card.name())
+        .collect();
+    assert_eq!(
+        back,
+        vec!["Reinforcement Rallier", "Reinforcement Rallier"],
+        "each 1-Cost minion, and only those"
+    );
+}
+
+#[test]
+fn niri_doubles_a_cheap_minion_and_casts_a_cheap_spell_twice() {
+    let mut f = Fix::new().board(ME, &["Niri of the Crater"]);
+    f.g.players[0].crystals = 10;
+    f.g.players[0].mana = 10;
+    f.play("Bloodfen Raptor", None); // 3/2, costs 2 -- untouched
+    let raptor = f.g.players[0].board.last().unwrap();
+    assert_eq!((raptor.atk, raptor.max_hp), (3, 2));
+
+    f.g.players[0].mana = 10;
+    f.play("Reinforcement Rallier", None); // 2/2, costs 1
+    let cheap = f.g.players[0].board.last().unwrap();
+    assert_eq!((cheap.atk, cheap.max_hp), (4, 4), "doubled");
+
+    // And a 1-Cost spell casts twice.
+    let mut f = Fix::new()
+        .board(ME, &["Niri of the Crater"])
+        .board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0].crystals = 10;
+    f.g.players[0].mana = 10;
+    f.play("Holy Smite", foe_minion(0)); // 1 mana, 3 damage
+    assert_eq!(f.theirs(0).health(), 1, "3 twice, not once");
+}
+
+#[test]
+fn rockskipper_hands_over_a_rock_that_deals_three() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0].crystals = 10;
+    f.play("Rockskipper", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Rock");
+    assert_eq!(f.g.players[0].hand[0].card.def().cost, 1);
+    f.g.players[0].mana = 10;
+    assert!(f.g.apply(Action::Play {
+        hand: 0,
+        target: foe_minion(0),
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(f.theirs(0).health(), 4);
+}
+
+#[test]
+fn tame_pet_swaps_the_companions_for_beasts_one_mana_bigger() {
+    let mut f = Fix::new().deck(&["Wisp"]);
+    f.g.players[0].crystals = 10;
+    f.play("Animal Companion", None);
+    let plain = f.g.players[0].board[0].card;
+    assert!(
+        ["Huffer", "Leokk", "Misha"].contains(&plain.name()),
+        "one of the three: {}",
+        plain.name()
+    );
+
+    let mut f = Fix::new().deck(&["Wisp"]);
+    f.g.players[0].crystals = 10;
+    f.g.players[0].mana = 10;
+    f.play("Tame Pet", None);
+    assert!(f.g.players[0].tamed_pet);
+    assert_eq!(f.g.players[0].hand.len(), 1, "and drew a card");
+    f.g.players[0].mana = 10;
+    f.play("Animal Companion", None);
+    let tamed = f.g.players[0].board.last().unwrap().card;
+    assert!(
+        !["Huffer", "Leokk", "Misha"].contains(&tamed.name()),
+        "not a Companion any more: {}",
+        tamed.name()
+    );
+    assert_eq!(tamed.def().cost, 4, "one more than the 3-Cost Companions");
+    assert!(tamed.def().races.any(Races::BEAST));
+}
+
+#[test]
+fn gemstone_hoarder_gives_back_what_it_took_a_mana_cheaper() {
+    let mut f = Fix::new();
+    f.g.players[0].crystals = 10;
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Boulderfist Ogre").unwrap())); // 7, the costliest
+    f.play("Gemstone Hoarder", None);
+    let held: Vec<&str> = f.g.players[0].hand.iter().map(|h| h.card.name()).collect();
+    assert_eq!(held, vec!["Wisp"], "the most expensive card went");
+    assert_eq!(f.g.players[0].hoarded.name(), "Boulderfist Ogre");
+
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "Gemstone Hoarder")
+        .unwrap();
+    f.g.players[0].board[slot].damage = f.g.players[0].board[slot].max_hp;
+    f.g.sweep_deaths();
+    let back = f.g.players[0]
+        .hand
+        .iter()
+        .find(|h| h.card.name() == "Boulderfist Ogre")
+        .expect("it came back");
+    assert_eq!(back.cost_delta, -1, "a mana cheaper");
+    assert_eq!(f.g.players[0].hoarded, CardId::default(), "and only once");
+}
+
+#[test]
+fn precise_shot_deals_five_only_from_the_exact_middle() {
+    // A hand of five with the Shot third: the middle.
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0].crystals = 10;
+    for _ in 0..2 {
+        f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    }
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Precise Shot").unwrap()));
+    for _ in 0..2 {
+        f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    }
+    assert!(f.g.apply(Action::Play {
+        hand: 2,
+        target: foe_minion(0),
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(f.theirs(0).health(), 2, "five from the middle");
+
+    // A hand of four has no middle at all.
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0].crystals = 10;
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Precise Shot").unwrap()));
+    for _ in 0..2 {
+        f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    }
+    assert!(f.g.apply(Action::Play {
+        hand: 1,
+        target: foe_minion(0),
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(f.theirs(0).health(), 4, "an even hand has no exact centre");
+}
+
+#[test]
+fn chronoclaws_throws_away_the_biggest_card_after_each_swing() {
+    let mut f = Fix::new();
+    f.g.players[0].crystals = 10;
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Boulderfist Ogre").unwrap()));
+    f.play("Chronoclaws", None);
+    assert!(f.g.apply(Action::HeroAttack { target: Target::Hero(FOE) }));
+    let held: Vec<&str> = f.g.players[0].hand.iter().map(|h| h.card.name()).collect();
+    assert_eq!(held, vec!["Wisp"], "the highest Cost card");
+}
+
+#[test]
+fn impfernal_goes_off_from_the_hand_as_well_as_the_board() {
+    // On the board, the ordinary way.
+    let mut f = Fix::new().board(ME, &["IMPFERNAL!"]).board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.theirs(0).health(), 4, "3 to all other characters");
+    assert_eq!(f.g.players[1].hero_hp, 27);
+    assert_eq!(f.g.players[0].hero_hp, 27, "*all* other characters");
+
+    // And discarded out of hand -- "(Also triggers in hand or deck.)"
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0].crystals = 10;
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("IMPFERNAL!").unwrap()));
+    f.play("Chronoclaws", None); // 4 cost; IMPFERNAL! is 6, so it is the biggest
+    assert!(f.g.apply(Action::HeroAttack { target: Target::Hero(FOE) }));
+    assert_eq!(
+        f.theirs(0).health(),
+        4,
+        "the Deathrattle fired from hand, not just the swing"
+    );
 }

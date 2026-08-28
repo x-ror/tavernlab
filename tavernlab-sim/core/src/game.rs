@@ -201,6 +201,7 @@ impl Game {
                         target: None,
                         source: None,
                         outcast: false,
+                        centre: false,
                         dying: None,
                         marks: Marks::NONE,
                         mana_spent: 0,
@@ -955,7 +956,7 @@ impl Game {
             if pays_with_corpses(hp) {
                 me.corpses >= hp.def().cost
             } else {
-                me.mana >= hp.def().cost
+                me.mana >= self.hero_power_cost(side, hp)
             }
         };
         if me.hero_power_uses == 0
@@ -1259,6 +1260,7 @@ impl Game {
         // before the card leaves it. A one-card hand is both ends at once.
         let hand_len = self.player(side).hand.len();
         let outcast = hand_idx == 0 || hand_idx + 1 == hand_len;
+        let centre = hand_len % 2 == 1 && hand_idx == hand_len / 2;
 
         // Everything above is pure validation; this is the last check before
         // any state changes, so a card paid for in Corpses cannot spend them
@@ -1297,6 +1299,17 @@ impl Game {
             }
             p.minions_played_total = p.minions_played_total.saturating_add(1);
             p.minions_played_turn = true;
+            // Confront the Tol'vir summons each of these back. The printed
+            // cost, not what was paid: "each 1-Cost minion you've played" is
+            // about the card, and a discount does not make a 4-drop one.
+            if def.cost == 1 {
+                p.cheap_minions_played.push(hc.card);
+            }
+            // Which of the three Windrunner sisters have been played, for the
+            // other two to ask about.
+            if let Some(bit) = crate::cards::windrunner_bit(hc.card) {
+                p.rangers_played |= bit;
+            }
             // "While in hand, play a Dragon to become an X/X Dragon." Every
             // copy in hand wakes, not one: the text is a standing condition on
             // the card, not a single trigger to be spent.
@@ -1468,7 +1481,15 @@ impl Game {
                 || (def.keywords.has(Keywords::REWIND)
                     && self.keeps_both_rewind_outcomes(side))
                 // A Temporary spell the empowered Well of Eternity made.
-                || hc.marks.has(Marks::CASTS_TWICE));
+                || hc.marks.has(Marks::CASTS_TWICE)
+                // Niri of the Crater: "Whenever you cast a 1-Cost spell, cast
+                // it twice." The printed cost, like her minion half.
+                || (def.cost == 1
+                    && self
+                        .player(side)
+                        .board
+                        .iter()
+                        .any(|m| m.active() && m.card.name() == "Niri of the Crater")));
 
         if let Some(mode) = chosen {
             let ctx = Ctx {
@@ -1477,6 +1498,7 @@ impl Game {
                 target,
                 source: slot,
                 outcast,
+                centre,
                 dying: None,
                 marks: hc.marks,
                 mana_spent: hc.mana_spent_while_held,
@@ -1508,6 +1530,7 @@ impl Game {
                 target,
                 source: slot,
                 outcast,
+                centre,
                 dying: None,
                 marks: hc.marks,
                 mana_spent: hc.mana_spent_while_held,
@@ -2366,6 +2389,7 @@ impl Game {
                             target: None,
                             source: Some(slot),
                             outcast: false,
+                            centre: false,
                             dying: Some(body),
                             marks: Marks::NONE,
                             mana_spent: 0,
@@ -2384,6 +2408,7 @@ impl Game {
                             target: None,
                             source: Some(slot),
                             outcast: false,
+                            centre: false,
                             dying: Some(body),
                             marks: Marks::NONE,
                             mana_spent: 0,
@@ -2487,6 +2512,7 @@ impl Game {
                     target: None,
                     source: Some(crate::events::WEAPON_SLOT),
                     outcast: false,
+                    centre: false,
                     dying: None,
                     marks: Marks::NONE,
                     mana_spent: 0,
@@ -2513,6 +2539,25 @@ impl Game {
 
     // ---------------------------------------------------------- hero power
 
+    /// What this player's Hero Power costs right now.
+    ///
+    /// Its printed cost, unless something on the board is holding the price
+    /// down: Quel'dorei Fletcher's "Your Hero Power costs (0) while your hand
+    /// has 3 or less cards". A standing rule about legality read off the
+    /// board, like Kayn Sunfury's -- it costs a `Game` nothing and it leaves
+    /// exactly when the body does.
+    pub fn hero_power_cost(&self, side: Side, hp: CardId) -> i16 {
+        let p = self.player(side);
+        if p.hand.len() <= 3
+            && p.board
+                .iter()
+                .any(|m| m.active() && m.card.name() == "Quel'dorei Fletcher")
+        {
+            return 0;
+        }
+        hp.def().cost
+    }
+
     fn use_hero_power(&mut self, target: Option<Target>, second: bool) -> bool {
         let side = self.current;
         let me = self.player(side);
@@ -2523,7 +2568,7 @@ impl Game {
         }) else {
             return false;
         };
-        let cost = hp.def().cost;
+        let cost = self.hero_power_cost(side, hp);
         let uses = if second {
             me.second_hero_power_uses
         } else {
@@ -2729,6 +2774,7 @@ impl Game {
                     target: None,
                     source: None,
                     outcast: false,
+                    centre: false,
                     dying: None,
                     marks: Marks::NONE,
                     mana_spent: 0,
@@ -2766,6 +2812,7 @@ impl Game {
                 target,
                 source: None,
                 outcast: false,
+                centre: false,
                 dying: None,
                 marks: Marks::NONE,
                 mana_spent: 0,
@@ -2797,6 +2844,7 @@ impl Game {
                             target: None,
                             source: Some(slot),
                             outcast: false,
+                            centre: false,
                             dying: None,
                             marks: Marks::NONE,
                             mana_spent: 0,
@@ -2910,6 +2958,7 @@ impl Game {
                 target,
                 source: Some(slot as u8),
                 outcast: false,
+                centre: false,
                 dying: None,
                 marks: Marks::NONE,
                 mana_spent: 0,

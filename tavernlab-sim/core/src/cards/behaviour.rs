@@ -45,6 +45,13 @@ pub struct Ctx {
     /// Whether the card was the leftmost or rightmost card in hand when it was
     /// played. A one-card hand satisfies it — the card is both ends at once.
     pub outcast: bool,
+    /// Whether the card sat in the exact middle of the hand when it was
+    /// played (Precise Shot). Read at the same moment `outcast` is, and for
+    /// the same reason -- by the time the effect runs the card has left.
+    ///
+    /// A hand with an even number of cards has no middle, so this is false
+    /// for every card in one; "EXACTLY in the center" is the card's own word.
+    pub centre: bool,
     /// The permanent this effect belongs to, as it stood immediately before
     /// firing -- its stats, buffs and `growth` counter included.
     ///
@@ -447,6 +454,8 @@ mod tokens {
     /// The carrier for Welcome Home!'s granted deathrattle -- a real card
     /// whose whole text is "Deathrattle: Summon a random 3-Cost minion."
     pub const STUBBORN_SUSPECT: CardId = token("SW_006");
+    /// Rockskipper's payout: a 1-Cost spell that deals 3 damage.
+    pub const ROCK: CardId = token("WW_001t");
     /// The Aura cycle, its summon, and the Shatter pair that flies with it.
     pub const CHRONOLOGICAL_AURA: CardId = token("TIME_700");
     pub const CHRONOLOGICAL_DRAKE: CardId = token("TIME_700t");
@@ -2070,6 +2079,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
                     target: None,
                     source: None,
                     outcast: false,
+                    centre: false,
                     dying: None,
                     marks: Marks::NONE,
                     mana_spent: 0,
@@ -2318,6 +2328,25 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         g.summon_child(c.side, c.card, 1);
     }),
     spell("Animal Companion", T::None, |g, c| {
+        // Tame Pet: "Replace your future Animal Companions with random Beasts
+        // that cost (1) more." One more than the Companions themselves, and
+        // all three of them are 3-Cost in the corpus -- so the four is the
+        // card data's, read off the tokens rather than typed in here.
+        if g.player(c.side).tamed_pet {
+            let cost = c
+                .card
+                .summonable_children()
+                .map(|t| t.def().cost)
+                .max()
+                .unwrap_or(3)
+                + 1;
+            g.summon_random_where(c.side, move |d| {
+                d.kind() == super::Kind::Minion
+                    && d.cost == cost
+                    && d.races.any(Races::BEAST)
+            });
+            return;
+        }
         g.summon_random_child(c.side, c.card);
     }),
     spell("Sanguine Infestation", T::None, |g, c| {
@@ -2832,6 +2861,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
                     target: None,
                     source: None,
                     outcast: false,
+                    centre: false,
                     dying: None,
                     marks: Marks::NONE,
                     mana_spent: 0,
@@ -9850,7 +9880,169 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             }
         }),
     ),
+
+    // -------------------------------------------------------- the Windrunners
+    // Hunter's face package: three sisters who each count the others, and the
+    // cheap bodies and burn around them.
+
+    // Each of the three repeats its Battlecry once for every sister already
+    // played -- see `windrunner_sisters`, and `Player::rangers_played` for
+    // where that is recorded.
+    battlecry("Ranger General Sylvanas", T::None, |g, c| {
+        for _ in 0..=windrunner_sisters(g, c.side, c.card) {
+            g.spell_damage_area(c.side, Area::AllEnemies, 2);
+            if g.is_over() {
+                return;
+            }
+        }
+    }),
+    battlecry("Ranger Captain Alleria", T::None, |g, c| {
+        for _ in 0..=windrunner_sisters(g, c.side, c.card) {
+            g.discover(c.side, |d| d.kind() == super::Kind::Spell);
+        }
+    }),
+    battlecry("Ranger Initiate Vereesa", T::None, |g, c| {
+        for _ in 0..=windrunner_sisters(g, c.side, c.card) {
+            g.enchant_deck_where(c.side, |d| d.kind() == super::Kind::Minion, 1, 1);
+        }
+    }),
+
+    // "Your Hero Power costs (0) while your hand has 3 or less cards." A live
+    // condition on the power's price, not an effect, so it is read where the
+    // price is asked for -- `Game::hero_power_cost`.
+    // (This row exists so the card counts as implemented; the rule itself is
+    // in the engine, the way Kayn Sunfury's is.)
+
+    spell("Sylvanas's Triumph", T::AnyCharacter, |g, c| {
+        // The flag is set by the *first* copy and read by the second, so it
+        // has to be read before this cast records itself.
+        let again = g.player(c.side).triumph_cast;
+        g.player_mut(c.side).triumph_cast = true;
+        if again {
+            g.spell_damage_area(c.side, Area::AllEnemies, 3);
+        } else if let Some(t) = c.target {
+            g.spell_damage(c.side, Some(t), 3);
+        }
+    }),
+
+    spell("Confront the Tol'vir", T::None, |g, c| {
+        for i in 0..g.player(c.side).cheap_minions_played.len() {
+            let card = g.player(c.side).cheap_minions_played[i];
+            if !g.summon(c.side, card) {
+                break;
+            }
+        }
+    }),
+
+    // "Whenever you play a 1-Cost minion, double its stats. Whenever you cast
+    // a 1-Cost spell, cast it twice." The spell half is in `play_card` with
+    // the other doubling rules; this is the minion half.
+    trigger("Niri of the Crater", |g, c| {
+        if let Event::MinionSummoned { side, card, slot } = c.event
+            && side == c.side
+            && card.def().cost == 1
+            && let Some(m) = g.player(side).board.get(slot as usize)
+        {
+            let (atk, hp) = (m.atk, m.max_hp);
+            g.buff(Target::Minion(side, slot), atk, hp);
+        }
+    }),
+
+    battlecry("Rockskipper", T::None, |g, c| {
+        g.give_token(c.side, tokens::ROCK);
+    }),
+    spell("Rock", T::AnyCharacter, |g, c| {
+        if let Some(t) = c.target {
+            g.spell_damage(c.side, Some(t), 3);
+        }
+    }),
+
+    spell("Tame Pet", T::None, |g, c| {
+        g.player_mut(c.side).tamed_pet = true;
+        g.draw_cards(c.side, 1);
+    }),
+
+    trigger("Chronoclaws", |g, c| {
+        if matches!(c.event, Event::AfterAttack { attacker: Target::Hero(s), .. } if s == c.side)
+            && let Some(card) = discard_costliest(g, c.side)
+        {
+            g.rattle_from_hand_or_deck(c.side, card);
+        }
+    }),
+
+    // "Battlecry: Choose a card in your hand to discard. Deathrattle: Get it
+    // back. It costs (1) less." The engine chooses, and it chooses the card
+    // it can least use: the most expensive one, which is also the one worth
+    // most when it comes back a mana cheaper.
+    c(
+        "Gemstone Hoarder",
+        T::None,
+        None,
+        Some(|g, c| {
+            if let Some(card) = discard_costliest(g, c.side) {
+                g.player_mut(c.side).hoarded = card;
+                g.rattle_from_hand_or_deck(c.side, card);
+            }
+        }),
+        Some(|g, c| {
+            let card = g.player(c.side).hoarded;
+            if card == CardId(0) {
+                return;
+            }
+            g.player_mut(c.side).hoarded = CardId(0);
+            let mut hc = HandCard::new(card);
+            hc.cost_delta -= 1;
+            hc.marks.insert(Marks::NOT_FROM_DECK);
+            g.give_hand_card(c.side, hc);
+        }),
+        None, None, None, None, None, None,
+    ),
+
+    // "Deal 3 damage. If this is EXACTLY in the center of your hand, deal 5
+    // instead." Where it sat is read before it left; see `Ctx::centre`.
+    spell("Precise Shot", T::AnyCharacter, |g, c| {
+        if let Some(t) = c.target {
+            g.spell_damage(c.side, Some(t), if c.centre { 5 } else { 3 });
+        }
+    }),
+
+    // "Deathrattle: Deal 3 damage to all other characters. (Also triggers in
+    // hand or deck.)" The parenthetical is the whole trick, and it is a rule
+    // about where a deathrattle may fire from rather than about this card --
+    // see `RATTLES_ANYWHERE`.
+    deathrattle("IMPFERNAL!", |g, c| {
+        let me = c.source.map(|s| Target::Minion(c.side, s));
+        for i in 0..2 {
+            let side = Side::from_index(i);
+            g.deal_damage(Target::Hero(side), 3);
+            for slot in (0..g.player(side).board.len()).rev() {
+                let t = Target::Minion(side, slot as u8);
+                if Some(t) != me {
+                    g.deal_damage(t, 3);
+                }
+            }
+        }
+    }),
 ];
+
+/// Discard this player's most expensive card, and say which it was.
+///
+/// Two cards do this -- Chronoclaws every swing, Gemstone Hoarder once -- and
+/// both print "your highest Cost card" or leave the choice to the player. The
+/// most expensive is the one a Face deck can least use, and for the Hoarder
+/// it is also the one worth most coming back a mana cheaper.
+fn discard_costliest(g: &mut Game, side: Side) -> Option<CardId> {
+    let at = g
+        .player(side)
+        .hand
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, hc)| hc.card.def().cost)
+        .map(|(i, _)| i)?;
+    let card = g.player(side).hand[at].card;
+    g.player_mut(side).hand.remove(at);
+    Some(card)
+}
 
 /// Lady Azshara's Choose One: empower one of her Locations, destroy the other.
 ///
@@ -10468,6 +10660,79 @@ pub fn combines(left: CardId, right: CardId) -> Option<CardId> {
 /// `AWAKENS` and `SHATTERS` above.
 const REBORN_KEEPS_ALL: [CardId; 1] = [token("127060-sinful-steed")];
 
+/// Cards whose Deathrattle also fires when they are lost from hand or deck.
+///
+/// "(Also triggers in hand or deck.)" -- a rule about *where* a Deathrattle
+/// may fire from, printed on the card but belonging to the discard and mill
+/// paths rather than to the effect. A side list, like `AWAKENS` and
+/// `SHATTERS`: the effect itself is an ordinary `deathrattle` row.
+const RATTLES_ANYWHERE: [CardId; 1] = [token("JAIL_398")];
+
+pub fn rattles_from_hand_or_deck(card: CardId) -> bool {
+    let mut i = 0;
+    while i < RATTLES_ANYWHERE.len() {
+        if RATTLES_ANYWHERE[i].0 == card.0 {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Cards whose whole rules text is a standing rule the engine reads for
+/// itself, so there is no hook to hang a behaviour on.
+///
+/// Kayn Sunfury has its own list because what it changes is Taunt; these are
+/// the rest. Quel'dorei Fletcher's "Your Hero Power costs (0) while your hand
+/// has 3 or less cards" lives in `Game::hero_power_cost`, and Niri of the
+/// Crater's spell half lives beside the other doubling rules in `play_card`.
+const RULES_IN_THE_ENGINE: [CardId; 2] = [
+    token("TIME_606"), // Quel'dorei Fletcher
+    token("TLC_836"),  // Niri of the Crater
+];
+
+fn rule_lives_in_the_engine(card: CardId) -> bool {
+    let mut i = 0;
+    while i < RULES_IN_THE_ENGINE.len() {
+        if RULES_IN_THE_ENGINE[i].0 == card.0 {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// The three Windrunner sisters, in the order `Player::rangers_played` holds
+/// them.
+///
+/// Each of the three is written around the other two, and each has to know
+/// whether its sisters have been played. Which cards they are is a fact about
+/// identity, so it lives here rather than in the accounting that records it.
+const WINDRUNNERS: [CardId; 3] = [
+    token("TIME_609"),   // Ranger General Sylvanas
+    token("TIME_609t1"), // Ranger Captain Alleria
+    token("TIME_609t2"), // Ranger Initiate Vereesa
+];
+
+/// The bit `card` sets in `Player::rangers_played`, if it is one of them.
+pub fn windrunner_bit(card: CardId) -> Option<u8> {
+    let mut i = 0;
+    while i < WINDRUNNERS.len() {
+        if WINDRUNNERS[i].0 == card.0 {
+            return Some(1 << i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// How many of `card`'s two sisters have already been played -- the number
+/// each of the three repeats its Battlecry for.
+pub fn windrunner_sisters(g: &Game, side: Side, card: CardId) -> u32 {
+    let mine = windrunner_bit(card).unwrap_or(0);
+    (g.player(side).rangers_played & !mine).count_ones()
+}
+
 /// Minions whose controller's attacks ignore Taunt while they are in play.
 ///
 /// "All friendly attacks ignore Taunt" is a standing rule about legality, not
@@ -10598,6 +10863,7 @@ pub fn is_implemented(card: CardId) -> bool {
         || shatters_into(card).is_some()
         || reborn_keeps_enchantments(card)
         || lets_attacks_ignore_taunt(card)
+        || rule_lives_in_the_engine(card)
     {
         return true;
     }
@@ -10828,13 +11094,26 @@ mod tests {
     fn a_minion_never_declares_a_cast_effect() {
         for b in BEHAVIOURS {
             let card = by_name(b.name).unwrap();
-            if card.def().kind() == super::super::Kind::Minion {
-                assert!(
-                    b.spell.is_none(),
-                    "{} is a minion with a cast effect",
-                    b.name
-                );
+            if card.def().kind() != super::super::Kind::Minion {
+                continue;
             }
+            // A name can belong to both, and this table is keyed by name. The
+            // Rock that Rockskipper hands over is a 1-Cost spell; an old
+            // Wild token called Rock is a 1-Cost Taunt minion, and `by_name`
+            // finds that one first. The row's cast effect belongs to the
+            // spell and is never reached from the minion, which does not
+            // cast. So what this is really asking is whether *no* printing of
+            // the name is a spell.
+            if super::super::all().any(|c| {
+                c.name() == b.name && c.def().kind() == super::super::Kind::Spell
+            }) {
+                continue;
+            }
+            assert!(
+                b.spell.is_none(),
+                "{} is a minion with a cast effect",
+                b.name
+            );
         }
     }
 
