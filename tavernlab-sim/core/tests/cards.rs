@@ -11329,3 +11329,172 @@ fn chef_nethrek_stays_quiet_when_one_card_costs_more_than_three() {
         "the condition is over the whole starting list, opening hand included"
     );
 }
+
+// ------------------------------------------------------------------ the Kabal
+//
+// A sham trial and the plants that make the case. The package turns on one
+// token: an Imp-formant goes into the *enemy's* deck and pays out to whoever
+// put it there.
+
+#[test]
+fn an_imp_formant_drawn_by_the_enemy_is_summoned_for_me() {
+    let mut f = Fix::new();
+    let imp = by_name("Imp-formant").expect("the corpus has the token");
+    f.g.players[1].deck.push(DeckCard::started(imp));
+    assert_eq!(f.g.players[1].hand.len(), 0);
+
+    f.g.draw(FOE, 1);
+    assert_eq!(f.g.players[1].hand.len(), 0, "it never reaches their hand");
+    assert_eq!(f.g.players[1].board.len(), 0, "nor their board");
+    assert_eq!(f.g.players[0].board.len(), 1, "it is summoned for me");
+    let m = f.mine(0);
+    assert_eq!(m.card, imp);
+    assert_eq!((m.atk, m.health()), (3, 3));
+    assert!(m.has(Keywords::LIFESTEAL), "printed on the token");
+}
+
+#[test]
+fn harsh_sentence_taxes_their_next_turn_and_plants_two() {
+    let mut f = Fix::new();
+    let imp = by_name("Imp-formant").unwrap();
+    f.play("Harsh Sentence", None);
+
+    assert_eq!(
+        f.g.players[1].deck.iter().filter(|d| d.card == imp).count(),
+        2,
+        "two into the enemy deck"
+    );
+    assert_eq!(f.g.players[1].minion_tax, 2);
+    assert_eq!(f.g.players[0].minion_tax, 0, "mine are not taxed");
+
+    // On their turn a minion costs two more; a spell does not.
+    let yeti = by_name("Chillwind Yeti").unwrap(); // (4)
+    let fireball = by_name("Fireball").unwrap(); // (4)
+    f.g.players[1].hand.push(HandCard::new(yeti));
+    f.g.players[1].hand.push(HandCard::new(fireball));
+    assert_eq!(f.g.card_cost(FOE, 0), 6);
+    assert_eq!(f.g.card_cost(FOE, 1), 4, "only minions");
+
+    // And it is gone once that turn of theirs is over.
+    pass(&mut f.g); // mine ends
+    pass(&mut f.g); // theirs ends
+    assert_eq!(f.g.players[1].minion_tax, 0);
+    assert_eq!(f.g.card_cost(FOE, 0), 4);
+}
+
+#[test]
+fn corrupt_constable_moves_an_imp_formant_to_the_top_and_buffs_it() {
+    let mut f = Fix::new();
+    let imp = by_name("Imp-formant").unwrap();
+    let wisp = by_name("Wisp").unwrap();
+    // Their deck, bottom to top: Imp-formant then two Wisps on top of it.
+    f.g.players[1].deck.push(DeckCard::started(imp));
+    f.g.players[1].deck.push(DeckCard::started(wisp));
+    f.g.players[1].deck.push(DeckCard::started(wisp));
+
+    f.play("Corrupt Constable", None);
+    let top = *f.g.players[1].deck.last().expect("their deck is not empty");
+    assert_eq!(top.card, imp, "moved to the top, which is what they draw next");
+    assert_eq!((top.atk, top.hp), (2, 2), "+2/+2 written on that copy");
+    assert_eq!(f.g.players[1].deck.len(), 3, "moved, not copied");
+
+    // And it arrives on my board at that size -- beside the Constable, whose
+    // own 3/5 body is already in slot zero.
+    f.g.draw(FOE, 1);
+    assert_eq!(f.mine(1).card, imp);
+    assert_eq!((f.mine(1).atk, f.mine(1).health()), (5, 5));
+}
+
+#[test]
+fn corrupt_constable_with_no_imp_formant_planted_just_lands() {
+    let mut f = Fix::new();
+    let wisp = by_name("Wisp").unwrap();
+    for _ in 0..3 {
+        f.g.players[1].deck.push(DeckCard::started(wisp));
+    }
+    f.play("Corrupt Constable", None);
+    assert_eq!(f.g.players[0].board.len(), 1, "the body still comes down");
+    assert_eq!(f.g.players[1].deck.len(), 3, "and their deck is untouched");
+}
+
+#[test]
+fn frame_job_destroys_two_and_reorders_their_deck() {
+    let mut f = Fix::new().board(FOE, &["Wisp", "Wisp", "Boulderfist Ogre"]);
+    let fireball = by_name("Fireball").unwrap();
+    let ogre = by_name("Boulderfist Ogre").unwrap();
+    // A spell on top, a minion under it: the minion is what may be moved.
+    f.g.players[1].deck.push(DeckCard::started(ogre));
+    f.g.players[1].deck.push(DeckCard::started(fireball));
+
+    f.play("Frame Job", None);
+    assert_eq!(f.their_board(), 1, "two of the three are destroyed");
+    assert_eq!(
+        f.g.players[1].deck.last().map(|d| d.card),
+        Some(ogre),
+        "the minion is moved to the top of their own deck, over the spell"
+    );
+    assert_eq!(f.g.players[1].deck.len(), 2, "moved, not taken");
+}
+
+#[test]
+fn detained_for_destruction_makes_every_minion_trade() {
+    // Three a side, all 1/1: every one of the six has something to hit, and
+    // nothing survives being hit by a 1/1 with one health.
+    let mut f = Fix::new()
+        .board(ME, &["Wisp", "Wisp", "Wisp"])
+        .board(FOE, &["Wisp", "Wisp", "Wisp"]);
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Detained for Destruction").unwrap()));
+    f.g.cast_token(ME, by_name("Detained for Destruction").unwrap());
+    assert_eq!(
+        f.g.players[0].board.len() + f.g.players[1].board.len(),
+        0,
+        "six 0/1 Wisps forced into each other leave nobody standing"
+    );
+}
+
+#[test]
+fn a_lone_minion_has_nothing_to_be_forced_into() {
+    let mut f = Fix::new().board(ME, &["Boulderfist Ogre"]);
+    f.g.cast_token(ME, by_name("Detained for Destruction").unwrap());
+    assert_eq!(f.g.players[0].board.len(), 1, "\"another minion\" is nobody");
+    assert_eq!(f.mine(0).damage, 0);
+}
+
+#[test]
+fn godfather_kazakus_queues_two_effects_for_the_fourth_turn() {
+    use tavernlab_core::state::PendingKind;
+
+    let mut f = Fix::new().deck(&["Wisp", "Wisp", "Wisp", "Wisp", "Wisp", "Wisp"]);
+    f.play("Godfather Kazakus", None);
+    assert_eq!(f.g.players[0].board.len(), 1, "the 3/3 body lands");
+
+    let pending: Vec<_> = f.g.players[0].pending.iter().copied().collect();
+    assert_eq!(pending.len(), 2, "two effects of the nine");
+    for p in &pending {
+        assert_eq!(p.kind, PendingKind::CastLater);
+        assert_eq!(p.turns_left, 4, "the Unending Trial, which is the free one");
+        assert!(
+            tavernlab_core::cards::behaviour_of(p.card)
+                .and_then(|b| b.spell)
+                .is_some(),
+            "{} is one of the trial's effects and is implemented",
+            p.card.name()
+        );
+    }
+
+    // Nothing on the first three of my turns, and both on the fourth.
+    for turn in 1..=3 {
+        pass(&mut f.g);
+        pass(&mut f.g);
+        assert_eq!(
+            f.g.players[0].pending.len(),
+            2,
+            "still waiting after turn {turn}"
+        );
+    }
+    pass(&mut f.g);
+    pass(&mut f.g);
+    assert!(f.g.players[0].pending.is_empty(), "the trial has finished");
+}

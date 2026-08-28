@@ -275,6 +275,9 @@ impl Game {
         if hc.card.def().kind() == Kind::Minion && hc.card.def().races.any(Races::BEAST) {
             cost -= self.player(side).next_beast_discount;
         }
+        if hc.card.def().kind() == Kind::Minion {
+            cost += self.player(side).minion_tax;
+        }
         // Mug's Magic (Mug'Zee's Passive Hero Power): the first minion each
         // turn costs 2 less, from turn 3 on. Checked by name rather than a
         // stored flag, the same way `hero_power_target` reads the equipped
@@ -417,6 +420,9 @@ impl Game {
                     self.hero_attack_bonus(side, entry.amount);
                 }
 
+                PendingKind::CastLater => {
+                    self.cast_token(side, entry.card);
+                }
                 PendingKind::SetMana => {
                     let p = self.player_mut(side);
                     p.crystals = entry.amount.min(crate::state::MAX_MANA);
@@ -466,6 +472,8 @@ impl Game {
         p.played_races_turn = Races::NONE;
         p.next_spell_discount = 0;
         p.next_beast_discount = 0;
+        // "Enemy minions cost (2) more next turn": the turn it taxed is over.
+        p.minion_tax = 0;
         p.played_minion_last_turn = p.minions_played_turn;
         p.minions_played_turn = false;
         // "It is Temporary": unplayed by the end of this turn, it is gone.
@@ -2311,6 +2319,14 @@ impl Game {
     /// the corpus prints it.
     fn act_from_draw(&mut self, side: Side, dc: crate::state::DeckCard) {
         let card = dc.card;
+        // "Summoned When Drawn (for your opponent)": the Imp-formant pays out
+        // to whoever put it in this deck, which is the side that is not
+        // drawing it.
+        let side = if crate::cards::drawn_acts_for_opponent(card) {
+            side.other()
+        } else {
+            side
+        };
         if card.def().kind() == Kind::Minion {
             self.summon_with(side, card, dc.atk as i16, dc.hp as i16);
             self.sweep_deaths();
@@ -2332,6 +2348,32 @@ impl Game {
             );
             self.sweep_deaths();
         }
+    }
+
+    /// Resolve a token's own spell for `side`, with no card and no cost.
+    ///
+    /// The trial's effects are spells nobody plays: they are chosen from a
+    /// menu and fire on their own several turns later, so they need the
+    /// spell hook without the hand, the mana or the "you cast a spell"
+    /// bookkeeping a real play carries.
+    pub fn cast_token(&mut self, side: Side, card: CardId) {
+        let Some(f) = behaviour_of(card).and_then(|b| b.spell) else {
+            return;
+        };
+        f(
+            self,
+            &Ctx {
+                card,
+                side,
+                target: None,
+                source: None,
+                outcast: false,
+                dying: None,
+                marks: Marks::NONE,
+                mana_spent: 0,
+            },
+        );
+        self.sweep_deaths();
     }
 
     /// Imbue this player's Hero Power.

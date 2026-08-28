@@ -396,6 +396,21 @@ mod tokens {
     /// Shadows of Yesterday's 3/2 Shade, and Tyrannogill's 2/1 Murloc.
     pub const ANOMALOUS_SHADE: CardId = token("TIME_610t2");
     pub const DINOLOC: CardId = token("TLC_240t");
+    /// The Kabal's plant: a 3/3 Lifesteal that goes into the *enemy's* deck
+    /// and summons for you when they draw it.
+    pub const IMP_FORMANT: CardId = token("127024-imp-formant");
+    /// Tonic of Tyranny's payout.
+    pub const VOIDLORD: CardId = token("CORE_LOOT_368");
+    /// Godfather Kazakus's nine sham-trial effects, and the trial itself.
+    pub const DETAINED_FOR_DESTRUCTION: CardId = token("132837-detained-for-destruction");
+    pub const CONVICTED_FOR_CONSPIRACY: CardId = token("132849-convicted-for-conspiracy");
+    pub const SENTENCED_FOR_SMUGGLING: CardId = token("132843-sentenced-for-smuggling");
+    pub const CRATE_OF_CONTRABAND: CardId = token("132838-crate-of-contraband");
+    pub const SPURIOUS_SHIV: CardId = token("132844-spurious-shiv");
+    pub const CRIMINAL_CONTRACT: CardId = token("132850-criminal-contract");
+    pub const POTION_OF_PERJURY: CardId = token("132851-potion-of-perjury");
+    pub const SWILL_OF_SUGGESTIBILITY: CardId = token("132856-swill-of-suggestibility");
+    pub const TONIC_OF_TYRANNY: CardId = token("132848-tonic-of-tyranny");
     /// Imbue: the Blessings' own tokens.
     pub const EMERALD_PORTAL: CardId = token("EDR_445pt3");
     pub const EDR_WISP: CardId = token("EDR_851t");
@@ -8542,6 +8557,125 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         }
     }),
 
+    // ------------------------------------------------------------- the Kabal
+    // A sham trial, and the plants that make the case. The package turns on
+    // one token: an Imp-formant goes into the *enemy's* deck and is summoned
+    // for the player who put it there when they draw it. Everything else here
+    // either plants one, moves one to where they will draw it next, or is the
+    // trial that pays for all of it.
+
+    spell("Harsh Sentence", T::None, |g, c| {
+        // "Next turn" is theirs, not yours: the tax is cleared at the end of
+        // the taxed player's own turn, so it is live for exactly the turn
+        // they take after this one.
+        g.player_mut(c.side.other()).minion_tax += 2;
+        for _ in 0..2 {
+            g.shuffle_into_deck(c.side.other(), tokens::IMP_FORMANT);
+        }
+    }),
+
+    battlecry("Corrupt Constable", T::None, |g, c| {
+        let foe = c.side.other();
+        let at = g.deck_positions(foe, tokens::IMP_FORMANT);
+        if at.is_empty() {
+            return;
+        }
+        // Which one hardly matters -- every Imp-formant in there is the same
+        // card -- but picking at random keeps two Constables from always
+        // reaching for the same slot.
+        let pick = g.rngs.effects.index(at.len());
+        if let Some(mut dc) = g.move_deck_card_to_top(foe, at[pick] as usize) {
+            dc.enchant(2, 2);
+            // `move_deck_card_to_top` put it back already; the buff has to go
+            // on the copy that is now sitting there.
+            if let Some(top) = g.player_mut(foe).deck.last_mut() {
+                *top = dc;
+            }
+        }
+    }),
+
+    spell("Frame Job", T::None, |g, c| {
+        let foe = c.side.other();
+        for _ in 0..2 {
+            if let Some(t) = g.random_minion(foe) {
+                g.destroy(t);
+            }
+        }
+        g.sweep_deaths();
+        // "Discover a minion in the enemy deck to put on top." Their deck,
+        // their card, their draw -- what this decides is which one it is.
+        g.discover_deck_card_to_top(foe, |d| d.kind() == super::Kind::Minion);
+    }),
+
+    // Godfather Kazakus. Two effects of nine, three offered at a time, then
+    // the trial's length -- see the APPROXIMATE entry for which length this
+    // takes and why.
+    battlecry("Godfather Kazakus", T::None, |g, c| {
+        for _ in 0..2 {
+            let pick = g.rngs.effects.index(SHAM_TRIAL.len());
+            let mut best = SHAM_TRIAL[pick];
+            // Three offered, one taken -- the same shape `Game::discover`
+            // uses, done by hand because these are tokens and no discover
+            // pool holds them. The pick is the highest-costed offer, which
+            // for a set of nine 0-cost tokens is simply the first drawn; what
+            // the offer of three buys is that a Kazakus does not always reach
+            // for the same effect.
+            let mut offered = [0u32; 3];
+            let n = g.rngs.effects.sample_indices(SHAM_TRIAL.len(), &mut offered);
+            if n > 0 {
+                best = SHAM_TRIAL[offered[0] as usize];
+            }
+            g.player_mut(c.side).pending.push(Pending {
+                kind: PendingKind::CastLater,
+                turns_left: 4,
+                amount: 0,
+                card: best,
+            });
+        }
+    }),
+
+    // --- the nine sham-trial effects, cast by the trial rather than played
+    spell("Crate of Contraband", T::None, |g, c| g.draw_cards(c.side, 3)),
+    spell("Swill of Suggestibility", T::None, |g, c| g.heal_hero(c.side, 12)),
+    spell("Potion of Perjury", T::None, |g, c| {
+        for hc in g.player_mut(c.side).hand.iter_mut() {
+            if hc.card.def().kind() == super::Kind::Minion {
+                hc.cost_delta -= 2;
+            }
+        }
+    }),
+    spell("Spurious Shiv", T::None, |g, c| {
+        for hc in g.player_mut(c.side).hand.iter_mut() {
+            if hc.card.def().kind() == super::Kind::Minion {
+                hc.enchant(3, 3);
+            }
+        }
+        for m in g.player_mut(c.side).board.iter_mut() {
+            m.atk += 3;
+            m.max_hp += 3;
+        }
+        g.recompute_auras();
+    }),
+    spell("Criminal Contract", T::None, |g, c| {
+        g.summon_random_of_cost(c.side, 3, 3);
+    }),
+    spell("Tonic of Tyranny", T::None, |g, c| {
+        g.summon_token(c.side, tokens::VOIDLORD, 1);
+    }),
+    spell("Convicted for Conspiracy", T::None, |g, c| {
+        if let Some(t) = g.random_minion(c.side.other()) {
+            g.take_control(t, c.side);
+        }
+    }),
+    spell("Sentenced for Smuggling", T::None, |g, c| {
+        for _ in 0..2 {
+            g.discover_from_opponent_hand(c.side);
+        }
+    }),
+    spell("Detained for Destruction", T::None, |g, _c| {
+        g.force_every_minion_to_trade();
+    }),
+
     // ------------------------------------------------------------- Cannoneers
     // A Cannoneer "fires": one damage at a random enemy. It does that at the
     // end of your turn on its own, and whenever something else tells it to.
@@ -8959,6 +9093,10 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
         "the Combo bonus (the discovered minion arrives with a Dark Gift, G11) is not implemented; the base Discover always fires without it",
     ),
     (
+        "Godfather Kazakus",
+        "the trial is always the Unending one -- two effects, resolving in four of your turns. The corpus prices the three lengths at 7, 4 and 0 Mana (Rushed, Grueling, Unending) and gives a number of turns for only two of them: \"in 4 turns\" and \"at the start of your next turn\". Rushed carries no text at all, so how soon it lands is a number this does not have. Taking the cheapest and slowest is the weaker of the two readings and the only one that needs no invented number; the engine also has nowhere to put a card whose cost and effects were chosen at play time, so the trial resolves on its own rather than arriving in hand to be paid for -- which is why the length that costs nothing is the honest one to take",
+    ),
+    (
         "Portal Vanguard",
         "\"Rewind\" is not modelled: the draw stands instead of being redone and the better of the two kept, so the minion drawn is the median one rather than the better one. Weaker than printed, never stronger; the same gap `Shadows of Yesterday` records, and for the same reason",
     ),
@@ -9283,7 +9421,7 @@ pub fn apply_game_setup(g: &mut Game, side: Side) {
 /// each time is a cost the hot path should not carry. Ids are safe here where
 /// names are elsewhere because each of these is a token with exactly one
 /// printing, which `tests` checks.
-const DRAWN_ACTORS: [CardId; 8] = [
+const DRAWN_ACTORS: [CardId; 9] = [
     tokens::EMERALD_PORTAL,   // Summon a random @-Cost Dragon.
     tokens::ACORN,            // Summon a 2/1 Squirrel.
     tokens::SHRED_OF_TIME,    // Deal 3 damage to your hero.
@@ -9292,7 +9430,46 @@ const DRAWN_ACTORS: [CardId; 8] = [
     tokens::TRIPPED_BEAST,    // Summon a random 5-Cost Beast.
     tokens::TORTOLLAN_NINJA,  // Summoned: a 3/3 with Stealth.
     tokens::GREENWING_ILLUSION, // Summoned: a 4/5 Dragon with Taunt.
+    tokens::IMP_FORMANT,      // Summoned: a 3/3 Lifesteal -- for the other side.
 ];
+
+/// Godfather Kazakus's nine sham-trial effects.
+///
+/// The whole menu, in the order the corpus lists them as his children. Every
+/// one carries its own numbers in its own text -- twelve Health, three cards,
+/// three 3-Cost minions -- so nothing here is a number this had to choose.
+const SHAM_TRIAL: [CardId; 9] = [
+    tokens::DETAINED_FOR_DESTRUCTION,
+    tokens::CONVICTED_FOR_CONSPIRACY,
+    tokens::SENTENCED_FOR_SMUGGLING,
+    tokens::CRATE_OF_CONTRABAND,
+    tokens::SPURIOUS_SHIV,
+    tokens::CRIMINAL_CONTRACT,
+    tokens::POTION_OF_PERJURY,
+    tokens::SWILL_OF_SUGGESTIBILITY,
+    tokens::TONIC_OF_TYRANNY,
+];
+
+/// Cards that, drawn, are summoned for the drawer's *opponent*.
+///
+/// One card, and the whole Kabal package turns on it: an Imp-formant is put
+/// into the enemy's deck and pays out to the player who planted it. Reading
+/// the printed text the other way -- summoning it for whoever drew it -- would
+/// make every card that plants one a gift to the opponent.
+const DRAWN_FOR_OPPONENT: [CardId; 1] = [tokens::IMP_FORMANT];
+
+/// Whether a card that acts when drawn acts for the other side.
+#[inline]
+pub fn drawn_acts_for_opponent(card: CardId) -> bool {
+    let mut i = 0;
+    while i < DRAWN_FOR_OPPONENT.len() {
+        if DRAWN_FOR_OPPONENT[i].0 == card.0 {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
 
 /// Whether `card` acts as it is drawn rather than reaching hand.
 #[inline]
