@@ -280,3 +280,77 @@ D 09:00:04.4 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName
         "but it does not go face until the turn after: {out}"
     );
 }
+
+/// A read is a fraction of what was played, and it says so.
+///
+/// From a real session: before the opponent had played a single card the
+/// report said `Herald Warlock 100%`, and after one card that no list held it
+/// said `Herald Warlock 0%` — a deck name with the confidence stripped off
+/// but the name left standing. `Read::frac` is 1.0 on no evidence by design,
+/// for the web UI's neutral prior; printing it as a percentage is what was
+/// wrong.
+#[test]
+fn the_opponent_read_does_not_name_a_deck_it_has_no_evidence_for() {
+    const STARTED: &str = "\
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=2
+";
+    let bare = run("read-none", &format!("{LOG}{STARTED}"), &["--me", "Me#1"]);
+    assert!(
+        bare.contains("ще нічого не зіграно"),
+        "no card played, so no read: {bare}"
+    );
+    assert!(!bare.contains("100%"), "and no percentage either: {bare}");
+
+    // One card, and it is not in any Warrior list in the gauntlet.
+    const ODD: &str = "\
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=2
+D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=6 local=False [entityName=Wisp id=20 zone=HAND zonePos=1 cardId=CS2_231 player=2] zone from OPPOSING HAND -> OPPOSING PLAY
+";
+    let odd = run("read-miss", &format!("{LOG}{ODD}"), &["--me", "Me#1"]);
+    assert!(
+        odd.contains("жодна колода гаунтлета не пояснює зіграного"),
+        "nothing matched, so no deck is named: {odd}"
+    );
+}
+
+/// A dead hero reads as zero, and the report says the game is over.
+///
+/// The killing blow's `DAMAGE` tag is the whole hit rather than the part that
+/// fit, so the raw subtraction goes negative — a real log printed
+/// `ваш герой -3`.
+#[test]
+fn a_dead_hero_is_zero_and_the_game_is_called_over() {
+    const LETHAL: &str = "\
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=12
+D 09:00:02.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=64 tag=DAMAGE value=33
+D 09:00:03.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=PLAYSTATE value=LOST
+";
+    let out = run("dead", &format!("{LOG}{LETHAL}"), &["--me", "Me#1"]);
+    assert!(out.contains("ваш герой 0,"), "not -3: {out}");
+    assert!(out.contains("гру завершено"), "{out}");
+    assert!(!out.contains("ХІД"), "and a finished game gets no plan: {out}");
+}
+
+/// The Coin is not advice when there is nothing left to spend it on.
+///
+/// The engine's agent plays it whenever it is legal, which is right for a
+/// game it is playing out and wrong as the last line of a plan.
+#[test]
+fn a_coin_with_nothing_after_it_is_not_suggested() {
+    const NOW: &str = "\
+D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES value=0
+D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES_USED value=0
+D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=1
+D 09:00:04.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=CURRENT_PLAYER value=1
+D 09:00:04.2 [Zone] ZoneChangeList.ProcessChanges() - id=8 local=False [entityName=The Coin id=33 zone=DECK zonePos=0 cardId=GAME_005 player=1] zone from  -> FRIENDLY HAND
+";
+    let out = run("coin", &format!("{LOG}{NOW}"), &["--me", "Me#1"]);
+    assert!(
+        out.contains("рука: Chillwind Yeti, Fireball, The Coin"),
+        "the Coin is in hand: {out}"
+    );
+    assert!(
+        !out.contains("зіграти The Coin"),
+        "the one crystal it makes buys nothing here, so neither does it: {out}"
+    );
+}

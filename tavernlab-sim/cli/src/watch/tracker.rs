@@ -137,8 +137,14 @@ impl Default for Hero {
 }
 
 impl Hero {
+    /// Health, floored at zero.
+    ///
+    /// The killing blow's `DAMAGE` tag is the whole hit, not the part that
+    /// fit, so a dead hero's raw number goes below zero -- a real log showed
+    /// `ваш герой -3`. Zero is what "dead" means here; the game being over is
+    /// said separately.
     pub fn health(&self) -> i16 {
-        self.max_hp - self.damage
+        (self.max_hp - self.damage).max(0)
     }
 
     fn apply(&mut self, what: EntityTag) {

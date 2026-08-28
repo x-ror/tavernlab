@@ -2484,6 +2484,17 @@ fn hero_power_target(hp: CardId) -> HpTarget {
     }
 }
 
+/// Whether a Hero Power that takes a free target harms it.
+///
+/// Two do: `Fireblast` harms, `Lesser Heal` helps, and both may be pointed at
+/// any character on either side. Nothing else here can pick the wrong side to
+/// aim at, which is why this is a pair of names rather than a table. The
+/// policy needs it because "any character" is the same target list for both
+/// and the sides mean opposite things.
+pub fn hero_power_harms(hp: CardId) -> bool {
+    hp.info().name == "Fireblast"
+}
+
 /// The Blessing a class Imbues into, or `None` for a class the corpus carries
 /// no Blessing for.
 ///
