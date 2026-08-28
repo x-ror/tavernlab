@@ -133,6 +133,10 @@ pub struct Permanent {
     /// name or id -- which could not tell two copies of the same card
     /// apart -- only a scan for this flag.
     pub stolen_from: Option<Side>,
+    /// A deathrattle granted to this minion on top of its own, as the card
+    /// that carries it -- "Give your minions \"Deathrattle: ...\"". `CardId(0)`
+    /// means none, the same sentinel a vacated inline slot holds.
+    pub granted_rattle: CardId,
 }
 
 impl Default for CardId {
@@ -167,6 +171,7 @@ impl Permanent {
             spell_damage: d.spell_damage,
             growth: 0,
             stolen_from: None,
+            granted_rattle: CardId(0),
         };
         if p.dormant > 0 {
             p.flags.insert(Flags::DORMANT);
@@ -260,6 +265,7 @@ impl Permanent {
         }
         let d = self.card.def();
         self.keywords = Keywords::NONE;
+        self.granted_rattle = CardId(0);
         self.atk = d.atk;
         self.temp_atk = 0;
         // Aura bookkeeping resets too; the next recomputation will re-apply
@@ -833,9 +839,13 @@ mod tests {
         // The number that justifies the whole design. If this grows past a few
         // kilobytes, search stops being cheap and the reason for Rust is gone.
         let n = size_of::<Game>();
+        // The line moved once, from 2 KB, when per-copy enchantments in hand
+        // and granted deathrattles were added: both are per-card state with
+        // nowhere else to live. `tavernsim bench` was unchanged across the
+        // move, which is the number this assertion is really protecting.
         assert!(
-            n < 2048,
-            "Game is {n} bytes; it is meant to stay under 2 KB"
+            n < 2560,
+            "Game is {n} bytes; it is meant to stay well under 3 KB"
         );
     }
 

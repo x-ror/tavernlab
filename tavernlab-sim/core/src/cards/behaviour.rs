@@ -474,6 +474,13 @@ mod tokens {
     pub const ACCELERATED_WHELP: CardId = token("CATA_210t");
     /// Imp Gang Stooge's "8/8 Demon with Taunt and Lifesteal".
     pub const GRANDMOTHER_IMP: CardId = token("JAIL_399t1");
+    /// Granted deathrattles: the bodies the granting cards promise.
+    pub const STEGODON: CardId = token("UNG_810");
+    pub const PLANT: CardId = token("UNG_999t2t1");
+    /// Ancient Raptor's third mode grants this, rather than granting itself:
+    /// a minion's own deathrattle row fires on its death too, so a minion
+    /// that granted itself would pay out twice.
+    pub const LIVING_SPORES: CardId = token("UNG_999t2");
     /// Neutral backlog: Wicked Blightspawn's Dagger, Steamfin Thief's
     /// Murlocs and Bronze Keeper's Dragon.
     pub const WICKED_KNIFE: CardId = token("CS2_082");
@@ -4841,6 +4848,121 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         if g.player(side).overload_now > 0 { (1, 0) } else { (0, 0) }
     }),
 
+    // ----------------------------------------- granted deathrattles
+    // Each of these grants *itself* as the rattle: the card's own row carries
+    // the effect, and `Permanent::granted_rattle` points back at it.
+    c(
+        "Spikeridged Steed",
+        T::FriendlyMinion,
+        Some(|g, c| {
+            let Some(t) = c.target else { return };
+            g.buff(t, 2, 6);
+            g.grant(t, Keywords::TAUNT);
+            if let Target::Minion(s, i) = t
+                && let Some(m) = g.player_mut(s).board.get_mut(i as usize)
+            {
+                m.granted_rattle = c.card;
+            }
+        }),
+        None,
+        Some(|g, c| {
+            g.summon_token(c.side, tokens::STEGODON, 1);
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    c(
+        "Talanji's Last Stand",
+        T::None,
+        Some(|g, c| {
+            let card = c.card;
+            for m in g.player_mut(c.side).board.iter_mut() {
+                m.granted_rattle = card;
+            }
+        }),
+        None,
+        Some(|g, c| {
+            g.summon_random_of_cost(c.side, 4, 1);
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    c(
+        "Ulfar",
+        T::None,
+        None,
+        Some(|g, c| {
+            let card = c.card;
+            let me = c.source;
+            for (i, m) in g.player_mut(c.side).board.iter_mut().enumerate() {
+                if Some(i as u8) != me {
+                    m.granted_rattle = card;
+                }
+            }
+        }),
+        Some(|g, c| {
+            // This row is the granted rattle, and a minion's own row fires on
+            // its own death as well -- so Ulfar dying must not pay itself out.
+            // The Ctx tells the two apart: `dying` is the host, and for the
+            // granted case the host is never Ulfar.
+            if c.dying.is_some_and(|m| m.card == c.card) {
+                return;
+            }
+            // "with this minion's Cost" -- the host's, which is why the Ctx
+            // carries the host body rather than Ulfar's.
+            let cost = c.dying.map_or(0, |m| m.card.def().cost);
+            g.summon_random_of_cost(c.side, cost, 1);
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    deathrattle("Living Spores", |g, c| {
+        g.summon_token(c.side, tokens::PLANT, 2);
+    }),
+    c(
+        "Ancient Raptor",
+        T::None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(&[
+            m(T::None, |g, c| {
+                if let Some(src) = c.source {
+                    g.buff(Target::Minion(c.side, src), 3, 0);
+                }
+            }),
+            m(T::None, |g, c| {
+                if let Some(src) = c.source {
+                    g.grant(Target::Minion(c.side, src), Keywords::DIVINE_SHIELD);
+                }
+            }),
+            m(T::None, |g, c| {
+                if let Some(src) = c.source
+                    && let Some(body) = g.player_mut(c.side).board.get_mut(src as usize)
+                {
+                    body.granted_rattle = tokens::LIVING_SPORES;
+                }
+            }),
+        ]),
+        None,
+        None,
+    ),
+
     // -------------------------------- enchantments on cards in hand
     battlecry("Grimestreet Outfitter", T::None, |g, c| {
         for h in g.player_mut(c.side).hand.iter_mut() {
@@ -7734,6 +7856,21 @@ fn index() -> &'static [u16] {
     })
 }
 
+/// Cards whose `deathrattle` slot holds a rattle they *grant* to something
+/// else rather than one they have themselves.
+///
+/// Two invariants below would otherwise reject them: a spell must have a cast
+/// effect, and a declared deathrattle must match the printed keyword. Neither
+/// holds for a carrier -- Spikeridged Steed is a spell whose rattle belongs to
+/// whatever it buffed, and Living Spores is a bare enchantment that is never
+/// played at all. See `Permanent::granted_rattle`.
+pub const GRANTED_RATTLES: &[&str] = &[
+    "Spikeridged Steed",
+    "Talanji's Last Stand",
+    "Ulfar",
+    "Living Spores",
+];
+
 /// Turn a minion into a random one of `cost` (Dangerous Variant, Unknown
 /// Voyager).
 fn transform_into_cost(g: &mut Game, t: Target, cost: i16) {
@@ -7910,7 +8047,11 @@ mod tests {
                 continue;
             }
             // A Choose One card's behaviour lives in its modes, so it has no
-            // cast effect of its own either.
+            // cast effect of its own either; nor does a bare enchantment that
+            // only exists to be granted.
+            if GRANTED_RATTLES.contains(&b.name) && b.spell.is_none() {
+                continue;
+            }
             assert_eq!(
                 b.spell.is_some(),
                 !is_secret && b.choose.is_none(),
@@ -8008,7 +8149,7 @@ mod tests {
     fn declared_deathrattles_match_the_printed_keyword() {
         for b in BEHAVIOURS {
             let card = by_name(b.name).unwrap();
-            if b.deathrattle.is_some() {
+            if b.deathrattle.is_some() && !GRANTED_RATTLES.contains(&b.name) {
                 assert!(
                     card.def().keywords.has(Keywords::DEATHRATTLE),
                     "{} has a deathrattle the card text does not mention",

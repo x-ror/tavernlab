@@ -9311,3 +9311,93 @@ fn a_weapon_enchanted_in_hand_equips_bigger() {
     }));
     assert_eq!(f.g.players[0].weapon.map(|w| (w.atk, w.durability)), Some((5, 2)));
 }
+
+// -------------------------------------------------- granted deathrattles
+
+#[test]
+fn spikeridged_steed_leaves_a_stegodon_behind() {
+    let mut f = Fix::new().board(ME, &["Wisp"]);
+    f.play("Spikeridged Steed", my_minion(0));
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (3, 7));
+    assert!(f.mine(0).has(Keywords::TAUNT));
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.mine(0).card.name(), "Stegodon");
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (2, 6));
+}
+
+#[test]
+fn talanjis_last_stand_pays_for_every_body_you_lose() {
+    let mut f = Fix::new().board(ME, &["Wisp", "Wisp"]);
+    f.play("Talanji's Last Stand", None);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.players[0].board[1].damage = f.g.players[0].board[1].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 2);
+    assert!(f.g.players[0].board.iter().all(|m| m.card.def().cost == 4));
+}
+
+#[test]
+fn ulfar_pays_out_at_the_dead_minions_own_cost() {
+    let mut f = Fix::new().board(ME, &["Boulderfist Ogre"]); // costs 6
+    f.play("Ulfar", None);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    let replacement = f.g.players[0]
+        .board
+        .iter()
+        .find(|m| m.card.name() != "Ulfar")
+        .expect("something replaced it");
+    assert_eq!(replacement.card.def().cost, 6);
+}
+
+#[test]
+fn ulfar_does_not_grant_itself_the_rattle() {
+    let mut f = Fix::new();
+    f.play("Ulfar", None);
+    assert_eq!(f.mine(0).granted_rattle, tavernlab_core::cards::CardId(0));
+}
+
+#[test]
+fn ancient_raptors_three_modes() {
+    let mut f = Fix::new();
+    f.play_mode("Ancient Raptor", 0, None);
+    assert_eq!(f.mine(0).atk, 5);
+
+    let mut f = Fix::new();
+    f.play_mode("Ancient Raptor", 1, None);
+    assert!(f.mine(0).has(Keywords::DIVINE_SHIELD));
+
+    let mut f = Fix::new();
+    f.play_mode("Ancient Raptor", 2, None);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 2);
+    assert!(
+        f.g.players[0]
+            .board
+            .iter()
+            .all(|m| m.card.name() == "Plant")
+    );
+}
+
+#[test]
+fn a_granted_rattle_runs_alongside_the_minions_own() {
+    let mut f = Fix::new().board(ME, &["Cairne Bloodhoof"]);
+    f.play("Talanji's Last Stand", None);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    let names: Vec<&str> = f.g.players[0].board.iter().map(|m| m.card.name()).collect();
+    assert!(names.contains(&"Baine Bloodhoof"), "{names:?}");
+    assert_eq!(names.len(), 2, "and the granted 4-drop: {names:?}");
+}
+
+#[test]
+fn silence_takes_a_granted_rattle_with_it() {
+    let mut f = Fix::new().board(ME, &["Wisp"]);
+    f.play("Talanji's Last Stand", None);
+    f.g.silence(Target::Minion(ME, 0));
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 0);
+}

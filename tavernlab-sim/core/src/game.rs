@@ -1797,6 +1797,33 @@ impl Game {
             // than in the vacated slot — a documented simplification, and the
             // only place board position is not preserved exactly.
             for (side, card, slot, body) in dying.iter().copied() {
+                // A granted deathrattle runs alongside the minion's own, after
+                // it: "Give your minions \"Deathrattle: …\"" adds, never
+                // replaces.
+                if body.granted_rattle != CardId(0)
+                    && let Some(f) =
+                        behaviour_of(body.granted_rattle).and_then(|b| b.deathrattle)
+                {
+                    // `dying` is the *host's* body, not the granting card's:
+                    // "Summon a minion with this minion's Cost" is a question
+                    // about who died, not about what wrote the rattle.
+                    f(
+                        self,
+                        &Ctx {
+                            card: body.granted_rattle,
+                            side,
+                            target: None,
+                            source: Some(slot),
+                            outcast: false,
+                            dying: Some(body),
+                            marks: Marks::NONE,
+                            mana_spent: 0,
+                        },
+                    );
+                    if self.is_over() {
+                        return;
+                    }
+                }
                 if let Some(f) = behaviour_of(card).and_then(|b| b.deathrattle) {
                     f(
                         self,
