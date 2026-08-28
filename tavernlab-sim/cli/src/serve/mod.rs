@@ -21,7 +21,7 @@ mod api;
 mod http;
 mod jobs;
 pub mod paths;
-mod state;
+pub mod state;
 
 use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};

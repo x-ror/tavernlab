@@ -426,3 +426,130 @@ mod tests {
         assert_eq!(class_by_name("not a class"), None);
     }
 }
+
+
+/// How well one gauntlet deck matches what an opponent has actually played.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Read {
+    pub deck: String,
+    /// Cards seen that this list holds.
+    pub hits: usize,
+    pub seen: usize,
+    /// `hits / seen`, and 1.0 before anything has been seen.
+    pub frac: f64,
+    /// The biggest cards of that list still unseen -- empty until the read is
+    /// more likely than not, because naming eight threats from a list that
+    /// matched one card in ten is a guess dressed as a warning.
+    pub threats: Vec<CardId>,
+}
+
+/// Which decks of `class` in `field` the cards in `seen` look like, best
+/// match first.
+///
+/// The whole read: no weighting by how distinctive a card is, no prior on
+/// what is popular. A card either appears in the list or it does not, and
+/// the fraction says how much of what was played this list explains.
+pub fn read_opponent(field: &[MetaDeck], class: Class, seen: &[CardId]) -> Vec<Read> {
+    let mut out: Vec<Read> = field
+        .iter()
+        .filter(|d| d.class == class)
+        .map(|deck| {
+            let hits = seen
+                .iter()
+                .filter(|c| deck.cards.iter().any(|(n, _)| n == c.name()))
+                .count();
+            let frac = if seen.is_empty() {
+                1.0
+            } else {
+                hits as f64 / seen.len() as f64
+            };
+            let mut threats: Vec<CardId> = Vec::new();
+            if frac >= 0.5 {
+                threats = deck
+                    .cards
+                    .iter()
+                    .filter(|(n, _)| !seen.iter().any(|c| c.name() == n))
+                    .filter_map(|(n, _)| by_name(n))
+                    .collect();
+                threats.sort_by(|a, b| {
+                    b.def()
+                        .cost
+                        .cmp(&a.def().cost)
+                        .then(a.name().cmp(b.name()))
+                });
+                threats.truncate(8);
+            }
+            Read {
+                deck: deck.name.clone(),
+                hits,
+                seen: seen.len(),
+                frac,
+                threats,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.frac
+            .partial_cmp(&a.frac)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.deck.cmp(&b.deck))
+    });
+    out
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::*;
+    use crate::cards::by_name;
+
+    fn deck(name: &str, cards: &[&str]) -> MetaDeck {
+        let list: Vec<(String, u32)> = cards.iter().map(|n| ((*n).to_string(), 1)).collect();
+        MetaDeck::new(name, Class::Mage, Style::Midrange, &list, &[])
+    }
+
+    #[test]
+    fn the_list_that_explains_more_of_what_was_played_comes_first() {
+        let field = vec![
+            deck("All of it", &["Fireball", "Frostbolt", "Chillwind Yeti"]),
+            deck("Half of it", &["Fireball", "Wisp"]),
+        ];
+        let seen = vec![by_name("Fireball").unwrap(), by_name("Frostbolt").unwrap()];
+        let reads = read_opponent(&field, Class::Mage, &seen);
+        assert_eq!(reads[0].deck, "All of it");
+        assert_eq!(reads[0].hits, 2);
+        assert_eq!(reads[1].frac, 0.5);
+    }
+
+    #[test]
+    fn a_weak_read_names_no_threats() {
+        let field = vec![deck("Barely", &["Fireball", "Deathwing", "Wisp", "Frostbolt"])];
+        let seen = vec![
+            by_name("Fireball").unwrap(),
+            by_name("Boulderfist Ogre").unwrap(),
+            by_name("Bloodfen Raptor").unwrap(),
+        ];
+        let reads = read_opponent(&field, Class::Mage, &seen);
+        assert!(reads[0].frac < 0.5);
+        assert!(
+            reads[0].threats.is_empty(),
+            "a one-in-three match warns about nothing"
+        );
+    }
+
+    #[test]
+    fn a_strong_read_names_the_biggest_cards_still_unseen() {
+        let field = vec![deck("Big", &["Fireball", "Deathwing", "Wisp"])];
+        let seen = vec![by_name("Fireball").unwrap()];
+        let reads = read_opponent(&field, Class::Mage, &seen);
+        assert_eq!(reads[0].frac, 1.0);
+        assert_eq!(reads[0].threats[0].name(), "Deathwing", "costliest first");
+    }
+
+    #[test]
+    fn nothing_seen_yet_is_not_a_read_against_anyone() {
+        let field = vec![deck("A", &["Fireball"]), deck("B", &["Wisp"])];
+        let reads = read_opponent(&field, Class::Mage, &[]);
+        assert_eq!(reads.len(), 2);
+        assert!(reads.iter().all(|r| r.frac == 1.0 && r.seen == 0));
+    }
+}

@@ -28,6 +28,9 @@ use tavernlab_json::Json;
 
 use super::jobs::Jobs;
 
+/// Appearances below which a card's mulligan delta is noise, not a number.
+pub const MULLIGAN_MIN_N: u32 = 30;
+
 /// Settings the app actually has. A key outside this list is refused rather
 /// than stored: an unknown setting that silently persists is a setting
 /// nobody can find again.
@@ -131,6 +134,79 @@ impl App {
             .expect("gauntlet lock")
             .push((format.to_string(), Arc::clone(&decks)));
         decks
+    }
+
+    /// Keep-or-throw for an opening hand, against one class in the field.
+    ///
+    /// The same measurement the Mulligan tab prints, in one call so a caller
+    /// outside the HTTP layer -- `tavernsim watch` -- reaches it without
+    /// going through a request. Below `MULLIGAN_MIN_N` appearances there is
+    /// no measurement, and the answer says so rather than dressing a cost
+    /// heuristic up as one.
+    pub fn mulligan_advice(
+        &self,
+        format: &str,
+        code: &str,
+        opp_class: tavernlab_core::cards::Class,
+        hand: &[CardId],
+    ) -> Result<Vec<String>, String> {
+        let resolved =
+            tavernlab_core::deckstring::resolve(code).map_err(|e| e.to_string())?;
+        if !resolved.unimplemented.is_empty() {
+            return Err(format!(
+                "симулятор не грає цими картами: {}",
+                resolved.unimplemented.join(", ")
+            ));
+        }
+        let field = self.gauntlet(format);
+        let Some(opp) = field
+            .iter()
+            .find(|d| d.class == opp_class && d.playable())
+        else {
+            return Err(format!(
+                "у гаунтлеті {format} немає колоди класу {}, яку симулятор може виставити",
+                tavernlab_core::gauntlet::class_name(opp_class)
+            ));
+        };
+        let key = tavernlab_core::deckstring::extract(code)
+            .unwrap_or(code.trim())
+            .to_string();
+        let style = self
+            .settings()
+            .get("style")
+            .map(|s| style_by_name(s))
+            .unwrap_or(Style::Midrange);
+        let telemetry = self.telemetry(&key, &resolved.ids, resolved.class, style, &field);
+        let Some((_, matchup)) = telemetry.matchups.iter().find(|(n, _)| *n == opp.name) else {
+            return Err("телеметрія не має запису для цього суперника".into());
+        };
+        let base = matchup.base();
+        let mut out = vec![format!(
+            "проти «{}» — база {:.0}% на {} іграх",
+            opp.name,
+            base * 100.0,
+            matchup.games
+        )];
+        for card in hand {
+            let stat = matchup.stat(*card).unwrap_or_default();
+            let delta = stat.opening_delta(base, MULLIGAN_MIN_N);
+            let cost = card.def().cost;
+            let keep = match delta {
+                Some(d) => d > -0.01,
+                None => cost <= 3,
+            };
+            let note = match delta {
+                Some(d) => format!("{:+.1} в.п. на {} іграх", d * 100.0, stat.open_n),
+                None => "мало даних, лишається крива".to_string(),
+            };
+            out.push(format!(
+                "{} ({}) {:24} {note}",
+                if keep { "ЛИШИТИ" } else { "СКИНУТИ" },
+                cost,
+                card.name()
+            ));
+        }
+        Ok(out)
     }
 
     pub fn gauntlet_path(&self, format: &str) -> PathBuf {

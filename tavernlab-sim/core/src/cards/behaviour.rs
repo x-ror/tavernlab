@@ -9101,14 +9101,14 @@ pub fn apply_game_setup(g: &mut Game, side: Side) {
 /// names are elsewhere because each of these is a token with exactly one
 /// printing, which `tests` checks.
 const DRAWN_ACTORS: [CardId; 8] = [
-    token("EDR_445pt3"), // Emerald Portal:          Summon a random @-Cost Dragon.
-    token("SW_439t"),    // Acorn:                   Summon a 2/1 Squirrel.
-    token("TIME_025t"),  // Shred of Time:           Deal 3 damage to your hero.
-    token("JAIL_386t"),  // Found Gear!:             Gain 2 Armor.
-    token("JAIL_881t"),  // Tripped Arcane Tripwire: Deal 4 damage split among all enemies.
-    token("JAIL_879t"),  // Tripped Beast Tripwire:  Summon a random 5-Cost Beast.
-    token("TLC_513t2"),  // Tortollan Ninja:         summoned, a 3/3 with Stealth.
-    token("EDR_260t"),   // Illusion:                summoned, a 4/5 Dragon with Taunt.
+    tokens::EMERALD_PORTAL,   // Summon a random @-Cost Dragon.
+    tokens::ACORN,            // Summon a 2/1 Squirrel.
+    tokens::SHRED_OF_TIME,    // Deal 3 damage to your hero.
+    tokens::FOUND_GEAR,       // Gain 2 Armor.
+    tokens::TRIPPED_ARCANE,   // Deal 4 damage split among all enemies.
+    tokens::TRIPPED_BEAST,    // Summon a random 5-Cost Beast.
+    tokens::TORTOLLAN_NINJA,  // Summoned: a 3/3 with Stealth.
+    tokens::GREENWING_ILLUSION, // Summoned: a 4/5 Dragon with Taunt.
 ];
 
 /// Whether `card` acts as it is drawn rather than reaching hand.

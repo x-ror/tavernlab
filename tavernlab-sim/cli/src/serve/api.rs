@@ -705,13 +705,15 @@ pub fn predict(app: &App, req: &Request) -> Response {
         );
     }
 
-    let mut seen: Vec<String> = Vec::new();
+    let mut seen: Vec<CardId> = Vec::new();
     for name in strings(&payload, "seen") {
         match find_card(&name) {
-            Some(c) => seen.push(c.name().to_string()),
+            Some(c) => seen.push(c),
             None => return Response::error(400, &format!("unknown card: {name}")),
         }
     }
+    // The same read `tavernsim watch` prints, so the two never drift apart.
+    let reads = gauntlet::read_opponent(&field, class, &seen);
 
     Response::json(
         200,
@@ -720,37 +722,24 @@ pub fn predict(app: &App, req: &Request) -> Response {
                 o.str_field("format", format_name);
                 o.field("decks", |v| {
                     v.arr(|a| {
-                        for deck in &decks {
-                            let hits = seen
-                                .iter()
-                                .filter(|s| deck.cards.iter().any(|(n, _)| n == *s))
-                                .count();
-                            let frac = if seen.is_empty() {
-                                1.0
-                            } else {
-                                hits as f64 / seen.len() as f64
-                            };
+                        for read in &reads {
                             a.item(|v| {
                                 v.obj(|o| {
-                                    o.str_field("deck", &deck.name);
-                                    o.int_field("hits", hits as i64);
-                                    o.int_field("seen", seen.len() as i64);
-                                    o.field("frac", |v| v.round(frac, 2));
+                                    o.str_field("deck", &read.deck);
+                                    o.int_field("hits", read.hits as i64);
+                                    o.int_field("seen", read.seen as i64);
+                                    o.field("frac", |v| v.round(read.frac, 2));
                                     o.field("threats", |v| {
                                         v.arr(|a| {
-                                            // Only once the read is more
-                                            // likely than not: naming eight
-                                            // threats from a deck that
-                                            // matched one card in ten is a
-                                            // guess dressed as a warning.
-                                            if frac < 0.5 {
-                                                return;
-                                            }
-                                            for (card, cost) in threats(deck, &seen) {
+                                            for card in &read.threats {
+                                                let card = *card;
                                                 a.item(|v| {
                                                     v.obj(|o| {
                                                         o.str_field("card", card.name());
-                                                        o.int_field("cost", cost as i64);
+                                                        o.int_field(
+                                                            "cost",
+                                                            card.def().cost as i64,
+                                                        );
                                                         o.str_field(
                                                             "text",
                                                             &short(card.info().text),
@@ -771,18 +760,6 @@ pub fn predict(app: &App, req: &Request) -> Response {
 }
 
 /// The most expensive cards in the deck that have not been seen yet.
-fn threats(deck: &MetaDeck, seen: &[String]) -> Vec<(CardId, i16)> {
-    let mut out: Vec<(CardId, i16)> = deck
-        .cards
-        .iter()
-        .filter(|(n, _)| !seen.iter().any(|s| s == n))
-        .filter_map(|(n, _)| by_name(n).map(|c| (c, c.def().cost)))
-        .collect();
-    out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.name().cmp(b.0.name())));
-    out.truncate(8);
-    out
-}
-
 fn short(text: &str) -> String {
     let clean = text.replace('\n', " ");
     if clean.chars().count() <= 90 {

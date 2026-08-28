@@ -25,6 +25,8 @@ use tavernlab_core::state::{Game, Outcome, Side};
 use tavernlab_json::Json;
 
 mod serve;
+#[path = "watch/mod.rs"]
+mod watch_mod;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -62,11 +64,12 @@ fn main() {
             _ => Formats::STANDARD,
         }),
         "gauntlet" => gauntlet(args.get(1).map(String::as_str)),
+        "watch" => watch(&args[1..]),
         "backlog" => backlog(args.get(1).map(String::as_str)),
         other => {
             eprintln!("unknown command {other:?}");
             eprintln!(
-                "usage: tavernsim [serve|bench|matrix|demo|coverage|gauntlet|backlog|art-urls] [args]"
+                "usage: tavernsim [serve|watch|bench|matrix|demo|coverage|gauntlet|backlog|art-urls] [args]"
             );
             std::process::exit(2);
         }
@@ -514,6 +517,72 @@ fn backlog(class_name: Option<&str>) {
 /// actual decklists in `path` (default: the repo's own `data/gauntlet_standard.json`)
 /// against the implemented table, one slot at a time, and prints what is
 /// still missing so the next card to port is obvious.
+/// `tavernsim watch` — read the game's own log and advise.
+fn watch(args: &[String]) {
+    let mut a = watch_mod::Args {
+        logs_dir: None,
+        log_file: None,
+        deck: String::new(),
+        me: None,
+        once: false,
+    };
+    let mut format = "standard".to_string();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--logs" => {
+                a.logs_dir = args.get(i + 1).map(std::path::PathBuf::from);
+                i += 1;
+            }
+            "--log" => {
+                a.log_file = args.get(i + 1).map(std::path::PathBuf::from);
+                i += 1;
+            }
+            "--deck" => {
+                a.deck = args.get(i + 1).cloned().unwrap_or_default();
+                i += 1;
+            }
+            "--format" => {
+                format = args.get(i + 1).cloned().unwrap_or_else(|| "standard".into());
+                i += 1;
+            }
+            "--me" => {
+                a.me = args.get(i + 1).cloned();
+                i += 1;
+            }
+            "--once" => a.once = true,
+            other => {
+                eprintln!("unknown option {other:?}");
+                eprintln!(
+                    "usage: tavernsim watch [--logs DIR] [--log FILE] \
+                     [--me BATTLETAG] [--deck CODE] [--format standard|wild] [--once]"
+                );
+                std::process::exit(2);
+            }
+        }
+        i += 1;
+    }
+    // The deck code is personal, so it is taken from the environment as
+    // readily as from the command line: a shell history is a worse place for
+    // it than a shell profile.
+    if a.deck.is_empty()
+        && let Ok(code) = std::env::var("HS_DECK")
+    {
+        a.deck = code;
+    }
+    if a.me.is_none()
+        && let Ok(tag) = std::env::var("HS_ME")
+    {
+        a.me = Some(tag);
+    }
+    let Some(root) = serve::paths::repo_root() else {
+        eprintln!("cannot find the data directory (expected data/gauntlet_standard.json)");
+        std::process::exit(1);
+    };
+    let app = serve::state::App::new(root, serve::paths::data_home(), default_threads());
+    std::process::exit(watch_mod::run(&app, &format, a));
+}
+
 fn gauntlet(path: Option<&str>) {
     use tavernlab_core::cards::by_name;
     use tavernlab_core::deck::resolve_slots;
