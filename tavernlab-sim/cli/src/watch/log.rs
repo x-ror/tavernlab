@@ -29,7 +29,53 @@ pub enum Event {
     CurrentPlayer { player_name: String, current: bool },
     /// The game ended for one player.
     Result { player_name: String, won: bool },
+    /// A tag changed on one entity -- a minion or a hero, not a player.
+    ///
+    /// Only the handful of tags the advice actually needs; everything else
+    /// is dropped in `parse` rather than carried here, because `TAG_CHANGE`
+    /// is most of what `Power.log` is and a session runs to hundreds of
+    /// thousands of lines.
+    Tag { entity: u32, what: EntityTag },
 }
+
+/// The tags worth reading off an entity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EntityTag {
+    /// Current Attack, buffs and auras included.
+    Atk(i16),
+    /// Current maximum Health, buffs included.
+    Health(i16),
+    /// Damage taken. Health is `Health - Damage`.
+    Damage(i16),
+    /// A hero's Armor.
+    Armor(i16),
+    /// How many times it has attacked this turn.
+    Attacks(u8),
+    /// A keyword granted or taken away, by the log's own name for it. A
+    /// `&'static str` from the table below rather than the parsed slice, so
+    /// reading a tag never allocates.
+    Keyword(&'static str, bool),
+}
+
+/// The keyword tags this reads, spelled as the log spells them.
+///
+/// A tag not on this list is dropped, which keeps a keyword the engine has
+/// no model for from arriving as a silent half-truth.
+const KEYWORD_TAGS: &[&str] = &[
+    "TAUNT",
+    "DIVINE_SHIELD",
+    "STEALTH",
+    "CHARGE",
+    "RUSH",
+    "WINDFURY",
+    "LIFESTEAL",
+    "POISONOUS",
+    "REBORN",
+    "CANT_BE_TARGETED_BY_SPELLS",
+    "CANT_ATTACK",
+    "IMMUNE",
+    "FROZEN",
+];
 
 /// One card moving between zones -- the richest line either file writes.
 #[derive(Clone, Debug, PartialEq)]
@@ -184,34 +230,148 @@ pub fn parse(line: &str) -> Option<Event> {
         return Some(Event::Reveal { entity, card_id });
     }
 
-    let (name, tag, value) = tag_change(line)?;
+    let (who, tag, value) = tag_change(line)?;
+
+    // Dispatch on the tag, not on how the entity was written.
+    //
+    // The log spells `Entity=` three ways -- a battletag, a bare number, or
+    // a bracketed descriptor -- and it does not keep one shape per kind of
+    // tag. Reading the shape first meant a player written as a descriptor
+    // lost its mana lines, which is what a real log did with `--me` supplied
+    // and correct. So: player tags take the name out of whichever shape
+    // arrived, entity tags take the id, and each says which it wants.
     match tag {
-        "TURN" => value.parse().ok().map(Event::Turn),
-        "RESOURCES" => Some(Event::Resources {
-            player_name: name.to_string(),
-            total: value.parse().ok()?,
-            used: -1,
-        }),
-        "RESOURCES_USED" => Some(Event::Resources {
-            player_name: name.to_string(),
-            total: -1,
-            used: value.parse().ok()?,
-        }),
-        "CURRENT_PLAYER" => Some(Event::CurrentPlayer {
-            player_name: name.to_string(),
-            current: value == "1",
-        }),
-        "PLAYSTATE" if value == "WON" || value == "LOST" => Some(Event::Result {
-            player_name: name.to_string(),
-            won: value == "WON",
-        }),
-        _ => None,
+        "TURN" => return value.parse().ok().map(Event::Turn),
+        "RESOURCES" => {
+            return Some(Event::Resources {
+                player_name: player_name(who)?.to_string(),
+                total: value.parse().ok()?,
+                used: -1,
+            });
+        }
+        "RESOURCES_USED" => {
+            return Some(Event::Resources {
+                player_name: player_name(who)?.to_string(),
+                total: -1,
+                used: value.parse().ok()?,
+            });
+        }
+        "CURRENT_PLAYER" => {
+            return Some(Event::CurrentPlayer {
+                player_name: player_name(who)?.to_string(),
+                current: value == "1",
+            });
+        }
+        "PLAYSTATE" if value == "WON" || value == "LOST" => {
+            return Some(Event::Result {
+                player_name: player_name(who)?.to_string(),
+                won: value == "WON",
+            });
+        }
+        _ => {}
     }
+
+    let entity = entity_id(who)?;
+    let n = value.parse::<i32>().ok();
+    let what = match tag {
+        "ATK" => EntityTag::Atk(n? as i16),
+        "HEALTH" => EntityTag::Health(n? as i16),
+        "DAMAGE" => EntityTag::Damage(n? as i16),
+        "ARMOR" => EntityTag::Armor(n? as i16),
+        "NUM_ATTACKS_THIS_TURN" => EntityTag::Attacks(n?.clamp(0, 255) as u8),
+        other => {
+            // Mega-Windfury writes `value=3`, so "on" is anything but zero
+            // rather than exactly one.
+            let known = KEYWORD_TAGS.iter().find(|k| **k == other)?;
+            EntityTag::Keyword(known, n? != 0)
+        }
+    };
+    Some(Event::Tag { entity, what })
+}
+
+/// The player's name out of an `Entity=` field, however it was written.
+///
+/// A bare number is an entity nobody has named yet and cannot be attributed
+/// to a player, so it is dropped rather than guessed at.
+fn player_name(who: &str) -> Option<&str> {
+    if who.starts_with('[') {
+        return entity_name(who);
+    }
+    if who.is_empty() || who.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(who)
+}
+
+/// The entity id out of an `Entity=` field, if it carries one.
+fn entity_id(who: &str) -> Option<u32> {
+    if who.starts_with('[') {
+        return field(who, " id=")?.parse().ok();
+    }
+    who.parse().ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_entity_tag_is_read_off_the_bracketed_descriptor() {
+        let line = "D 09:12:33.1 [Power] GameState.DebugPrintPower() - \
+             TAG_CHANGE Entity=[entityName=Chillwind Yeti id=42 zone=PLAY \
+             zonePos=1 cardId=CS2_182 player=1] tag=DAMAGE value=3";
+        assert_eq!(
+            parse(line),
+            Some(Event::Tag { entity: 42, what: EntityTag::Damage(3) })
+        );
+    }
+
+    #[test]
+    fn a_granted_keyword_is_read_and_an_unknown_tag_is_not() {
+        let rush = "D 09:12:33.1 [Power] GameState.DebugPrintPower() - \
+             TAG_CHANGE Entity=[entityName=Anomalous Shade id=51 zone=PLAY \
+             zonePos=1 cardId=TIME_610t2 player=1] tag=RUSH value=1";
+        assert_eq!(
+            parse(rush),
+            Some(Event::Tag { entity: 51, what: EntityTag::Keyword("RUSH", true) })
+        );
+        // Mega-Windfury writes 3, and it is still Windfury.
+        let mega = rush.replace("tag=RUSH value=1", "tag=WINDFURY value=3");
+        assert_eq!(
+            parse(&mega),
+            Some(Event::Tag { entity: 51, what: EntityTag::Keyword("WINDFURY", true) })
+        );
+        // A tag with no model here is dropped rather than half-read.
+        let other = rush.replace("tag=RUSH value=1", "tag=ZONE_POSITION value=2");
+        assert_eq!(parse(&other), None);
+    }
+
+    #[test]
+    fn an_entity_named_by_a_bare_number_is_read_too() {
+        let line = "D 09:12:33.1 [Power] GameState.DebugPrintPower() - \
+             TAG_CHANGE Entity=76 tag=ATK value=5";
+        assert_eq!(
+            parse(line),
+            Some(Event::Tag { entity: 76, what: EntityTag::Atk(5) })
+        );
+    }
+
+    #[test]
+    fn a_player_written_as_a_descriptor_still_gives_its_mana() {
+        // The shape that lost every mana line when the reader dispatched on
+        // how the entity was written instead of on the tag.
+        let line = "D 09:12:33.1 [Power] GameState.DebugPrintPower() - \
+             TAG_CHANGE Entity=[entityName=xror id=2 zone=PLAY zonePos=0 \
+             cardId= player=1] tag=RESOURCES value=7";
+        assert_eq!(
+            parse(line),
+            Some(Event::Resources {
+                player_name: "xror".into(),
+                total: 7,
+                used: -1,
+            })
+        );
+    }
 
     // Every line below is the shape the game actually writes, kept verbatim
     // from what the project's earlier reader was built against. If Blizzard

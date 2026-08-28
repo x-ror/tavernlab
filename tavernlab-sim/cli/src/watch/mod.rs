@@ -22,7 +22,7 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use tavernlab_core::agent::{Scripted, Style};
-use tavernlab_core::cards::{CardId, Class};
+use tavernlab_core::cards::{CardId, Class, Keywords};
 use tavernlab_core::game::{Action, Agent, hero_power_for};
 use tavernlab_core::state::{Game, HandCard, Permanent};
 
@@ -126,6 +126,22 @@ fn replay(tr: &mut Tracker, files: &[PathBuf], offsets: &mut Vec<u64>) -> std::i
 
 // ------------------------------------------------------------------ advice
 
+/// Keywords worth naming in the printed position, and how to spell them.
+const KEYWORD_LABELS: &[(&Keywords, &str)] = &[
+    (&Keywords::TAUNT, "Taunt"),
+    (&Keywords::DIVINE_SHIELD, "Divine Shield"),
+    (&Keywords::STEALTH, "Stealth"),
+    (&Keywords::CHARGE, "Charge"),
+    (&Keywords::RUSH, "Rush"),
+    (&Keywords::WINDFURY, "Windfury"),
+    (&Keywords::LIFESTEAL, "Lifesteal"),
+    (&Keywords::POISONOUS, "Poisonous"),
+    (&Keywords::REBORN, "Reborn"),
+    (&Keywords::ELUSIVE, "Elusive"),
+    (&Keywords::IMMUNE, "Immune"),
+    (&Keywords::CANT_ATTACK, "Can't Attack"),
+];
+
 fn class_name(c: Class) -> &'static str {
     tavernlab_core::gauntlet::class_name(c)
 }
@@ -150,6 +166,10 @@ fn plan(tr: &Tracker) -> Vec<String> {
     };
     g.players[0].hero_power = hp0;
     g.players[1].hero_power = hp1;
+    for i in 0..2 {
+        g.players[i].hero_hp = tr.heroes[i].health();
+        g.players[i].armor = tr.heroes[i].armor;
+    }
     // Without a battletag the log's mana lines cannot be attributed, so the
     // plan is drawn at the turn's worth of crystals rather than at a made-up
     // number: it will suggest more than you can pay for, and says so.
@@ -167,6 +187,19 @@ fn plan(tr: &Tracker) -> Vec<String> {
             // has been there since an earlier turn is the one that clears it.
             if b.turn < tr.turn {
                 m.flags.remove(tavernlab_core::state::Flags::JUST_SUMMONED);
+            }
+            // What the log said about this body, over what the card prints:
+            // a buffed minion, the damage already on it, the keywords it was
+            // given, and how many swings it has already had. Silence means
+            // the printed card, which is what `Body` falls back to.
+            let d = b.card.def();
+            m.atk = b.atk.unwrap_or(d.atk);
+            m.max_hp = b.hp.unwrap_or(d.hp);
+            m.damage = b.damage;
+            m.keywords = b.keywords;
+            m.attacks_done = b.attacks;
+            if b.frozen {
+                m.flags.insert(tavernlab_core::state::Flags::FROZEN);
             }
             g.players[side].board.push(m);
         }
@@ -373,11 +406,26 @@ fn report(app: &App, format: &str, tr: &Tracker, deck: &str) {
     println!("\n  ПОЗИЦІЯ (те, що вдалося прочитати з логу)");
     match (tr.mana_left(), tr.crystals) {
         (Some(left), Some(total)) => println!("    мана {left}/{total}"),
-        _ => println!(
-            "    мана невідома — вкажіть --me <бойовий тег> або HS_ME, \
-             інакше рядки RESOURCES нема до кого віднести"
-        ),
+        _ => {
+            println!(
+                "    мана невідома — вкажіть --me <бойовий тег> або HS_ME, \
+                 інакше рядки RESOURCES нема до кого віднести"
+            );
+            // The client does not always spell a battletag the way the
+            // launcher shows it, and guessing is the one thing this must not
+            // do -- so print what it actually wrote and let the user pick.
+            if !tr.names.is_empty() {
+                println!("      у лозі трапилися імена: {}", tr.names.join(", "));
+            }
+        }
     }
+    println!(
+        "    ваш герой {}{}, ворожий {}{}",
+        tr.heroes[0].health(),
+        armour(tr.heroes[0].armor),
+        tr.heroes[1].health(),
+        armour(tr.heroes[1].armor),
+    );
     print_side("    ваша дошка", &tr.board[0]);
     print_side("    ворожа дошка", &tr.board[1]);
     let hand: Vec<&str> = tr.hand.iter().map(|b| b.card.name()).collect();
@@ -398,12 +446,30 @@ fn report(app: &App, format: &str, tr: &Tracker, deck: &str) {
     }
 }
 
+fn armour(n: i16) -> String {
+    if n > 0 { format!(" (+{n} броні)") } else { String::new() }
+}
+
 fn print_side(label: &str, board: &[tracker::Body]) {
     let names: Vec<String> = board
         .iter()
         .map(|b| {
-            let d = b.card.def();
-            format!("{} {}/{}", b.card.name(), d.atk, d.hp)
+            let (atk, health) = b.stats();
+            let mut s = format!("{} {atk}/{health}", b.card.name());
+            // Only what the log granted on top of the card, so the line stays
+            // readable: a printed Taunt is not news, one that was given is.
+            let mut extra = b.keywords;
+            extra.remove(b.card.def().keywords);
+            for (k, label) in KEYWORD_LABELS {
+                if extra.has(**k) {
+                    s.push(' ');
+                    s.push_str(label);
+                }
+            }
+            if b.frozen {
+                s.push_str(" Frozen");
+            }
+            s
         })
         .collect();
     println!(
