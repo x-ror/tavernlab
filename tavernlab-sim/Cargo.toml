@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["json", "core", "cli", "xtask"]
+members = ["json", "sqlite", "core", "cli", "xtask"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 tavernlab-core = { path = "core" }
 tavernlab-json = { path = "json" }
+tavernlab-sqlite = { path = "sqlite" }
 
 [profile.release]
 opt-level = 3

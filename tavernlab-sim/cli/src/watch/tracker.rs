@@ -192,6 +192,10 @@ pub struct Tracker {
     pub crystals: Option<i16>,
     pub spent: i16,
     pub over: bool,
+    /// Whether I won, once a `PLAYSTATE` line said so about a player the
+    /// battletag could be matched to. `None` on a game the log never
+    /// resolved, and on one where `--me` was never supplied.
+    pub won: Option<bool>,
     /// True once the mulligan is done and the game proper has started.
     pub started: bool,
 }
@@ -223,6 +227,17 @@ impl Tracker {
 
     pub fn my_class(&self) -> Option<Class> {
         self.classes[0]
+    }
+
+    /// Whether I was on the draw, which the log says by dealing me the Coin.
+    ///
+    /// `None` before the opening hand is complete: an empty opening hand is
+    /// not "no Coin", it is "not dealt yet".
+    pub fn had_coin(&self) -> Option<bool> {
+        if self.opening.is_empty() {
+            return None;
+        }
+        Some(self.opening.iter().any(|c| c.name() == "The Coin"))
     }
 
     pub fn mana_left(&self) -> Option<i16> {
@@ -261,8 +276,15 @@ impl Tracker {
                 }
                 self.turn = t;
             }
-            Event::Result { player_name, .. } => {
+            Event::Result { player_name, won } => {
                 self.note_name(&player_name);
+                // The line names one player. Mine says it straight; theirs
+                // says the opposite, and only once a name has been matched --
+                // without `--me` neither is attributable and the game is
+                // recorded as unresolved rather than as a guess.
+                if self.me_name.is_some() {
+                    self.won = Some(if self.is_me(&player_name) { won } else { !won });
+                }
                 self.over = true;
             }
             Event::CurrentPlayer {

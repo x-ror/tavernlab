@@ -14,11 +14,16 @@ name = "tavernlab-json"
 version = "0.1.0"
 
 [[package]]
+name = "tavernlab-sqlite"
+version = "0.1.0"
+
+[[package]]
 name = "tavernsim"
 version = "0.1.0"
 dependencies = [
  "tavernlab-core",
  "tavernlab-json",
+ "tavernlab-sqlite",
 ]
 
 [[package]]

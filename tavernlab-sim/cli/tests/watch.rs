@@ -354,3 +354,36 @@ D 09:00:04.2 [Zone] ZoneChangeList.ProcessChanges() - id=8 local=False [entityNa
         "the one crystal it makes buys nothing here, so neither does it: {out}"
     );
 }
+
+/// A minion the log has taken to zero health is off the board already.
+///
+/// The `DAMAGE` line and the line that moves the body out of play arrive in
+/// different poll batches, up to seven hundred milliseconds apart. In between,
+/// a real session showed `Accelerated Whelp 4/0` standing in the position —
+/// and the plan was drawn over a board with a corpse on it.
+#[test]
+fn a_body_at_zero_health_is_not_in_the_position() {
+    const NOW: &str = "\
+D 09:00:03.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=5
+D 09:00:03.1 [Zone] ZoneChangeList.ProcessChanges() - id=7 local=False [entityName=Chillwind Yeti id=10 zone=HAND zonePos=1 cardId=CS2_182 player=1] zone from FRIENDLY HAND -> FRIENDLY PLAY
+D 09:00:03.2 [Zone] ZoneChangeList.ProcessChanges() - id=8 local=False [entityName=Bloodfen Raptor id=11 zone=HAND zonePos=1 cardId=CS2_172 player=2] zone from OPPOSING HAND -> OPPOSING PLAY
+D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES value=7
+D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES_USED value=7
+D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7
+D 09:00:04.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=CURRENT_PLAYER value=1
+D 09:00:04.2 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=Bloodfen Raptor id=11 zone=PLAY zonePos=1 cardId=CS2_172 player=2] tag=DAMAGE value=2
+";
+    let out = run("dead-body", &format!("{LOG}{NOW}"), &["--me", "Me#1"]);
+    assert!(
+        out.contains("ворожа дошка: порожня"),
+        "a 3/2 with two damage on it is dead, whatever the zone line has not said yet: {out}"
+    );
+    assert!(
+        out.contains("ваша дошка: Chillwind Yeti"),
+        "and the live one is still there: {out}"
+    );
+    assert!(
+        !out.contains("→ ворожий Bloodfen Raptor"),
+        "so nothing is told to trade with it: {out}"
+    );
+}

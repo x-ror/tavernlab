@@ -25,6 +25,7 @@ use tavernlab_core::state::{Game, Outcome, Side};
 use tavernlab_json::Json;
 
 mod decks;
+mod history;
 mod serve;
 #[path = "watch/mod.rs"]
 mod watch_mod;
@@ -68,10 +69,11 @@ fn main() {
         "decks" => decks::run(args.get(1).map(String::as_str)),
         "watch" => watch(&args[1..]),
         "backlog" => backlog(args.get(1).map(String::as_str)),
+        "history" => show_history(args.get(1).map(String::as_str)),
         other => {
             eprintln!("unknown command {other:?}");
             eprintln!(
-                "usage: tavernsim [serve|watch|bench|matrix|demo|coverage|gauntlet|decks|backlog|art-urls] [args]"
+                "usage: tavernsim [serve|watch|history|bench|matrix|demo|coverage|gauntlet|decks|backlog|art-urls] [args]"
             );
             std::process::exit(2);
         }
@@ -524,6 +526,7 @@ fn watch(args: &[String]) {
     let mut a = watch_mod::Args {
         logs_dir: None,
         log_file: None,
+        history: None,
         deck: String::new(),
         me: None,
         once: false,
@@ -552,12 +555,18 @@ fn watch(args: &[String]) {
                 a.me = args.get(i + 1).cloned();
                 i += 1;
             }
+            "--history" => {
+                a.history = args.get(i + 1).map(std::path::PathBuf::from);
+                i += 1;
+            }
+            "--no-history" => a.history = Some(std::path::PathBuf::new()),
             "--once" => a.once = true,
             other => {
                 eprintln!("unknown option {other:?}");
                 eprintln!(
                     "usage: tavernsim watch [--logs DIR] [--log FILE] \
-                     [--me BATTLETAG] [--deck CODE] [--format standard|wild] [--once]"
+                     [--me BATTLETAG] [--deck CODE] [--format standard|wild] \
+                     [--history FILE | --no-history] [--once]"
                 );
                 std::process::exit(2);
             }
@@ -583,6 +592,172 @@ fn watch(args: &[String]) {
     };
     let app = serve::state::App::new(root, serve::paths::data_home(), default_threads());
     std::process::exit(watch_mod::run(&app, &format, a));
+}
+
+/// `tavernsim history` — the games `watch` has recorded.
+///
+/// The same file the web UI reads, printed. It is an ordinary SQLite database
+/// and the path is shown, so anything this does not answer is one `sqlite3`
+/// away.
+fn show_history(path: Option<&str>) {
+    let path = path
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(history::default_path);
+    let games = match history::read(&path) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+    println!("{}", path.display());
+    if games.is_empty() {
+        println!(
+            "\nІсторія порожня. Її наповнює `tavernsim watch`: кожен \
+             завершений бій лягає сюди."
+        );
+        return;
+    }
+
+    let s = history::summarise(&games);
+    println!(
+        "\n{} {}, з них завершених {}",
+        s.games,
+        games_word(s.games as i64),
+        s.resolved
+    );
+    if s.resolved >= 5 {
+        println!(
+            "перемог {} — {:.0}%",
+            s.wins,
+            s.wins as f64 / s.resolved as f64 * 100.0
+        );
+    } else {
+        // Under the floor there is a count and no rate, the same rule the
+        // rest of this program prints under.
+        println!("перемог {} (замало боїв для вінрейту)", s.wins);
+    }
+
+    let section = |title: &str, rows: &[history::Tally]| {
+        if rows.is_empty() {
+            return;
+        }
+        println!("\n{title}");
+        for t in rows.iter().take(12) {
+            match t.rate() {
+                Some(r) => println!(
+                    "  {:<28} {:>3} {:<5} {:>3.0}%",
+                    t.key,
+                    t.games,
+                    games_word(t.games as i64),
+                    r * 100.0
+                ),
+                None => println!(
+                    "  {:<28} {:>3} {:<5}    —",
+                    t.key,
+                    t.games,
+                    games_word(t.games as i64)
+                ),
+            }
+        }
+    };
+    section("проти класу", &s.by_opponent);
+    section("вашим класом", &s.by_my_class);
+    section("проти колоди (за читанням гаунтлета)", &s.by_opponent_deck);
+
+    println!("\nостанні бої");
+    for g in games.iter().rev().take(20) {
+        let outcome = match g.won {
+            Some(true) => "перемога",
+            Some(false) => "поразка",
+            None => "не завершено",
+        };
+        let deck = if g.opponent_deck.is_empty() {
+            String::new()
+        } else {
+            format!("  {} ({} з {})", g.opponent_deck, g.opponent_hits, g.opponent_seen)
+        };
+        println!(
+            "  {}  {} проти {:<14} {:<13} {:>2} ходів{}",
+            stamp(g.played_at),
+            g.my_class,
+            g.opponent_class,
+            outcome,
+            g.turns,
+            deck
+        );
+    }
+}
+
+/// "бій", "бої", "боїв" — Ukrainian counts three ways, and `2 боїв` reads as
+/// a bug in the program rather than in the grammar.
+pub fn games_word(n: i64) -> &'static str {
+    let (tens, ones) = (n.abs() % 100, n.abs() % 10);
+    if (11..=14).contains(&tens) {
+        return "боїв";
+    }
+    match ones {
+        1 => "бій",
+        2..=4 => "бої",
+        _ => "боїв",
+    }
+}
+
+/// Unix seconds as `YYYY-MM-DD HH:MM`, in UTC.
+///
+/// UTC because that is the only zone the standard library can name without a
+/// timezone database, and a wrong local time would be worse than an honest
+/// one. The civil-date arithmetic is Howard Hinnant's `civil_from_days`, which
+/// is exact for every day this will ever be handed.
+fn stamp(unix: i64) -> String {
+    let days = unix.div_euclid(86_400);
+    let secs = unix.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}",
+        secs / 3600,
+        secs % 3600 / 60
+    )
+}
+
+#[cfg(test)]
+mod stamp_tests {
+    use super::{games_word, stamp};
+
+    #[test]
+    fn ukrainian_counts_three_ways() {
+        assert_eq!(games_word(1), "бій");
+        assert_eq!(games_word(2), "бої");
+        assert_eq!(games_word(5), "боїв");
+        assert_eq!(games_word(11), "боїв", "eleven is not one");
+        assert_eq!(games_word(12), "боїв");
+        assert_eq!(games_word(21), "бій");
+        assert_eq!(games_word(22), "бої");
+        assert_eq!(games_word(111), "боїв");
+        assert_eq!(games_word(0), "боїв");
+    }
+
+    #[test]
+    fn the_civil_date_is_right_at_the_awkward_days() {
+        // The epoch, a leap day, the century that is not a leap year, the one
+        // that is, and a second before midnight.
+        assert_eq!(stamp(0), "1970-01-01 00:00");
+        assert_eq!(stamp(951_782_400), "2000-02-29 00:00");
+        assert_eq!(stamp(4_107_542_400), "2100-03-01 00:00");
+        assert_eq!(stamp(1_709_164_800), "2024-02-29 00:00");
+        assert_eq!(stamp(1_756_425_599), "2025-08-28 23:59");
+        // Before the epoch, which a clock skewed backwards can produce.
+        assert_eq!(stamp(-1), "1969-12-31 23:59");
+    }
 }
 
 fn gauntlet(path: Option<&str>) {

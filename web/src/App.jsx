@@ -4,14 +4,18 @@ import { I18nProvider, pickLang, useT } from './i18n'
 import DeckBadge from './components/DeckBadge'
 import LangPicker from './components/LangPicker'
 import DeckLab from './routes/DeckLab'
+import History from './routes/History'
 import Meta from './routes/Meta'
 import Settings from './routes/Settings'
 
-/* Three sections, and they are the three questions the simulator can
- * answer: what is my deck worth, what is the field worth, and where does
- * this thing keep my data. The game-review half of the app went with the
- * Python engine that produced it — see the README. */
-const SECTIONS = ['deck', 'meta', 'settings']
+/* Four sections. Three are questions the simulator answers — what is my
+ * deck worth, what is the field worth, where does this thing keep my
+ * data — and the fourth is the one thing here that is not a simulation
+ * at all: the games you actually played, as `tavernsim watch` read them
+ * out of the client's own log. Keeping it a section of its own is the
+ * point, because a measured win rate and a played one must never be
+ * mistaken for each other. */
+const SECTIONS = ['deck', 'meta', 'history', 'settings']
 
 export default function App() {
   return (
@@ -87,6 +91,7 @@ function Shell() {
             <TabList>
               <Item key="deck">{t('ui.nav.deck')}</Item>
               <Item key="meta">{t('ui.nav.tiers')}</Item>
+              <Item key="history">{t('ui.nav.history')}</Item>
               <Item key="settings">{t('ui.nav.settings')}</Item>
             </TabList>
           </Tabs>
@@ -96,6 +101,7 @@ function Shell() {
       <View paddingX="size-350" paddingY="size-400" maxWidth="1240px" marginX="auto">
         {section === 'deck' && <DeckLab tab={parts[1] || 'rating'} sub={parts[2]} />}
         {section === 'meta' && <Meta />}
+        {section === 'history' && <History />}
         {section === 'settings' && <Settings />}
       </View>
     </div>

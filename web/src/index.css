@@ -514,3 +514,54 @@ body {
   --spectrum-accent-background-color-down: #6d5412 !important;
   --spectrum-accent-background-color-key-focus: #a7841c !important;
 }
+
+/* ------------------------------------------------------------------ table
+ *
+ * A plain record: rows of what happened, with nothing between them but a
+ * hairline. Everywhere else in this app a number is a measurement the
+ * engine produced, so those screens earn their charts; the history is a
+ * list, and a list should look like one.
+ */
+.tl-table {
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.tl-table th {
+  text-align: left;
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--tl-muted);
+  font-weight: 600;
+  padding: 0 12px 8px 0;
+  border-bottom: 1px solid var(--tl-line);
+  white-space: nowrap;
+}
+
+.tl-table td {
+  padding: 7px 12px 7px 0;
+  border-bottom: 1px solid var(--tl-line-soft);
+  vertical-align: middle;
+}
+
+.tl-table tr:last-child td {
+  border-bottom: none;
+}
+
+.tl-table th:last-child,
+.tl-table td:last-child {
+  padding-right: 0;
+}
+
+/* A path or a command the player is meant to be able to copy by eye. */
+.tl-code {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.84rem;
+  color: var(--tl-text);
+  background: var(--tl-bg-2);
+  border: 1px solid var(--tl-line-soft);
+  border-radius: 6px;
+  padding: 4px 8px;
+}

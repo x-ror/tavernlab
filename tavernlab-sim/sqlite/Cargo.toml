@@ -1,0 +1,10 @@
+[package]
+name = "tavernlab-sqlite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lib]
+doctest = false

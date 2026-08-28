@@ -26,6 +26,7 @@ use tavernlab_core::cards::{CardId, Class, Keywords};
 use tavernlab_core::game::{Action, Agent, hero_power_for};
 use tavernlab_core::state::{Game, HandCard, Permanent};
 
+use crate::history;
 use crate::serve::state::App;
 use tracker::Tracker;
 
@@ -81,7 +82,45 @@ fn newest_logs(dir: &Path) -> Option<(PathBuf, Option<PathBuf>)> {
 /// then lays every zone move of every game in the session on top of the last
 /// one — finished games' boards piling up on the current one, and their
 /// heroes deciding the classes. That is what the first real log showed.
-fn replay(tr: &mut Tracker, files: &[PathBuf], offsets: &mut Vec<u64>) -> std::io::Result<usize> {
+/// What one pass over the new lines produced.
+pub struct Batch {
+    pub lines: usize,
+    /// Games that ended inside this batch, each with the moment it ended.
+    ///
+    /// A whole session's worth on the first pass, because the first pass reads
+    /// the file from the start -- which is how a log the watcher has never
+    /// seen becomes history rather than being skipped.
+    pub finished: Vec<(i64, Tracker)>,
+}
+
+/// When a line was written, in Unix seconds.
+///
+/// The log stamps its lines with a time of day and no date, and no timezone
+/// this program can resolve without a database it does not carry. What it can
+/// do is measure: the newest line in the batch was written when the file was
+/// last written, and every earlier line is its own distance back from that.
+/// Both times of day come from the log's own clock, so their difference is a
+/// true elapsed duration whatever timezone wrote it.
+///
+/// Being derived from the log rather than from the clock is also what makes
+/// re-reading a log idempotent -- the same line yields the same second, so
+/// `history::append` recognises the game it already has.
+fn stamp_to_unix(stamp: u64, newest: u64, mtime: i64) -> i64 {
+    let back = newest.saturating_sub(stamp) / 1_000_000_000;
+    mtime - back as i64
+}
+
+fn newest_mtime(files: &[PathBuf]) -> i64 {
+    files
+        .iter()
+        .filter_map(|p| std::fs::metadata(p).ok()?.modified().ok())
+        .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .max()
+        .unwrap_or(0)
+}
+
+fn replay(tr: &mut Tracker, files: &[PathBuf], offsets: &mut Vec<u64>) -> std::io::Result<Batch> {
     offsets.resize(files.len(), 0);
     // `(stamp, file, seq)` keeps a stable order: lines that share a stamp, or
     // carry none, stay in the order their own file had them.
@@ -116,12 +155,19 @@ fn replay(tr: &mut Tracker, files: &[PathBuf], offsets: &mut Vec<u64>) -> std::i
     }
     let lines = batch.len();
     batch.sort_by(|a, b| a.0.cmp(&b.0));
-    for (_, line) in &batch {
-        if let Some(ev) = log::parse(line) {
-            tr.feed(ev);
+    let newest = batch.last().map(|((t, _, _), _)| *t).unwrap_or(0);
+    let mtime = newest_mtime(files);
+
+    let mut finished = Vec::new();
+    for ((stamp, _, _), line) in &batch {
+        let Some(ev) = log::parse(line) else { continue };
+        let was_over = tr.over;
+        tr.feed(ev);
+        if tr.over && !was_over {
+            finished.push((stamp_to_unix(*stamp, newest, mtime), tr.clone()));
         }
     }
-    Ok(lines)
+    Ok(Batch { lines, finished })
 }
 
 // ------------------------------------------------------------------ advice
@@ -177,7 +223,11 @@ fn plan(tr: &Tracker) -> Vec<String> {
     g.players[0].mana = tr.mana_left().unwrap_or(g.players[0].crystals);
     g.turn = tr.turn;
     for side in 0..2 {
-        for b in tr.board[side].iter() {
+        // A body the log has taken to zero health is dead; the line that
+        // moves it out of play arrives in a later batch, up to a poll behind.
+        // Leaving it in means the plan is drawn over a board with a corpse on
+        // it -- a real session showed `Accelerated Whelp 4/0` still standing.
+        for b in tr.board[side].iter().filter(|b| b.stats().1 > 0) {
             let mut m = Permanent::summon(b.card);
             // Summoning sickness is kept for whatever landed this turn. It is
             // not a detail: without it the plan tells you to swing with the
@@ -403,6 +453,9 @@ fn mulligan(app: &App, format: &str, tr: &Tracker, deck: &str) -> Vec<String> {
 
 pub struct Args {
     pub logs_dir: Option<PathBuf>,
+    /// Where to keep the history. Defaults to `history.sqlite` in the data
+    /// home, beside the settings.
+    pub history: Option<PathBuf>,
     pub log_file: Option<PathBuf>,
     pub deck: String,
     /// Battletag, `Name#12345`. The log names both players and never says
@@ -494,6 +547,9 @@ fn armour(n: i16) -> String {
 fn print_side(label: &str, board: &[tracker::Body]) {
     let names: Vec<String> = board
         .iter()
+        // Same rule as the plan: a body at zero health is already dead, and
+        // showing it would make the advice look like it ignored a minion.
+        .filter(|b| b.stats().1 > 0)
         .map(|b| {
             let (atk, health) = b.stats();
             let mut s = format!("{} {atk}/{health}", b.card.name());
@@ -551,10 +607,17 @@ pub fn run(app: &App, format: &str, args: Args) -> i32 {
 
     let mut tr = Tracker::new(args.me.clone());
     let mut offsets = Vec::new();
-    if let Err(e) = replay(&mut tr, &files, &mut offsets) {
-        eprintln!("не вдалося прочитати лог: {e}");
-        return 2;
-    }
+    let first = match replay(&mut tr, &files, &mut offsets) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("не вдалося прочитати лог: {e}");
+            return 2;
+        }
+    };
+    // Whatever the log still holds becomes history on the first pass. It is
+    // the same work the watcher would do a game at a time; doing it once at
+    // the start is what makes pointing this at an old session an import.
+    record(app, format, &args, &first);
     report(app, format, &tr, &args.deck);
     if args.once {
         return 0;
@@ -564,18 +627,77 @@ pub fn run(app: &App, format: &str, args: Args) -> i32 {
     let mut last = (tr.turn, tr.my_turn, tr.hand.len(), tr.board[1].len());
     loop {
         std::thread::sleep(std::time::Duration::from_millis(700));
-        match replay(&mut tr, &files, &mut offsets) {
-            Ok(0) => continue,
-            Ok(_) => {}
+        let batch = match replay(&mut tr, &files, &mut offsets) {
+            Ok(b) if b.lines == 0 => continue,
+            Ok(b) => b,
             Err(e) => {
                 eprintln!("лог зник: {e}");
                 return 2;
             }
-        }
+        };
+        record(app, format, &args, &batch);
         let now = (tr.turn, tr.my_turn, tr.hand.len(), tr.board[1].len());
         if now != last {
             last = now;
             report(app, format, &tr, &args.deck);
         }
+    }
+}
+
+/// Turn one finished game into the row the history keeps.
+fn recorded(app: &App, format: &str, deck: &str, at: i64, tr: &Tracker) -> Option<history::Game> {
+    let (mine, theirs) = (tr.my_class()?, tr.opponent_class()?);
+    // The best read at the moment the game ended, and the count behind it.
+    // Empty when nothing matched: a deck name with no evidence is exactly
+    // what the report refuses to print, and the history keeps the same rule.
+    let seen: Vec<CardId> = tr.played[1].clone();
+    let field = app.gauntlet(format);
+    let best = tavernlab_core::gauntlet::read_opponent(&field, theirs, &seen)
+        .into_iter()
+        .find(|r| r.hits > 0);
+    Some(history::Game {
+        played_at: at,
+        my_class: class_name(mine).to_string(),
+        opponent_class: class_name(theirs).to_string(),
+        won: tr.won,
+        turns: tr.turn as i64,
+        coin: tr.had_coin(),
+        deck_code: deck.to_string(),
+        opponent_deck: best.as_ref().map(|r| r.deck.clone()).unwrap_or_default(),
+        opponent_hits: best.as_ref().map_or(0, |r| r.hits as i64),
+        opponent_seen: seen.len() as i64,
+        opening: tr.opening.iter().map(|c| c.name().to_string()).collect(),
+        opponent_cards: seen.iter().map(|c| c.name().to_string()).collect(),
+    })
+}
+
+/// Write whatever games this batch finished into the history file.
+///
+/// Failing to write is reported and not fatal. The watcher's job is the advice
+/// on screen; a read-only data directory should cost you the record, not the
+/// session.
+fn record(app: &App, format: &str, args: &Args, batch: &Batch) {
+    let games: Vec<history::Game> = batch
+        .finished
+        .iter()
+        .filter_map(|(at, tr)| recorded(app, format, &args.deck, *at, tr))
+        .collect();
+    if games.is_empty() {
+        return;
+    }
+    let path = match &args.history {
+        // `--no-history` passes an empty path: play without keeping a record.
+        Some(p) if p.as_os_str().is_empty() => return,
+        Some(p) => p.clone(),
+        None => history::default_path(),
+    };
+    match history::append(&path, &games) {
+        Ok(0) => {}
+        Ok(n) => println!(
+            "\n  записано в історію: {n} {} ({})",
+            crate::games_word(n as i64),
+            path.display()
+        ),
+        Err(e) => eprintln!("не вдалося записати історію: {e}"),
     }
 }
