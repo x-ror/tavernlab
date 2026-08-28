@@ -11708,3 +11708,145 @@ fn a_full_hand_burns_the_whole_card() {
         "nothing split its way in"
     );
 }
+
+// ----------------------------------------------------------- the Lotus rackets
+//
+// Two cards count what you played for exactly two Mana; the third is a 4/4
+// for two that leaves after one swing.
+
+#[test]
+fn the_two_mana_count_is_what_was_paid_not_what_was_printed() {
+    let mut f = Fix::new();
+    assert_eq!(f.g.players[0].cards_played_for_two, 0);
+    f.play("Bloodfen Raptor", None); // (2)
+    assert_eq!(f.g.players[0].cards_played_for_two, 1);
+    f.play("Wisp", None); // (0)
+    assert_eq!(f.g.players[0].cards_played_for_two, 1, "zero is not two");
+    f.play("Chillwind Yeti", None); // (4)
+    assert_eq!(f.g.players[0].cards_played_for_two, 1);
+
+    // A four-drop discounted to two was played for two.
+    let yeti = by_name("Chillwind Yeti").unwrap();
+    let mut hc = HandCard::new(yeti);
+    hc.cost_delta = -2;
+    f.g.players[0].hand.push(hc);
+    let at = f.g.players[0].hand.len() as u8 - 1;
+    assert_eq!(f.g.card_cost(ME, at as usize), 2);
+    assert!(f.g.apply(Action::Play {
+        hand: at,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(f.g.players[0].cards_played_for_two, 2);
+}
+
+/// Damage dealt to the enemy side, however it was spread.
+///
+/// "A random enemy" is the hero as readily as a minion, so counting the shots
+/// means counting both -- an assertion on the minion alone passes or fails on
+/// the roll.
+fn dealt_to_them(f: &Fix) -> i16 {
+    let hero = 30 - f.g.players[1].hero_hp;
+    let board: i16 = f.g.players[1].board.iter().map(|m| m.damage).sum();
+    hero + board
+}
+
+#[test]
+fn lotus_troublemaker_shoots_once_more_for_every_two_drop() {
+    // "Shoot 1 time!", and one more per 2-Mana card played.
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.play("Lotus Troublemaker", None);
+    assert_eq!(dealt_to_them(&f), 1, "one shot with nothing played before");
+
+    // The wiki's own example: after two 2-Mana cards, three shots.
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Bloodfen Raptor", None); // (2)
+    f.play("Bloodfen Raptor", None); // (2)
+    f.play("Lotus Troublemaker", None);
+    assert_eq!(dealt_to_them(&f), 3);
+}
+
+#[test]
+fn a_troublemaker_that_was_not_in_the_deck_shoots_once() {
+    // "While in hand or deck": a copy conjured mid-game was in neither while
+    // those cards were played, and there is no per-copy counter to give it
+    // one — so it shoots the printed once rather than a borrowed three.
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Bloodfen Raptor", None);
+    f.play("Bloodfen Raptor", None);
+    let card = by_name("Lotus Troublemaker").unwrap();
+    let mut hc = HandCard::new(card);
+    hc.marks.insert(tavernlab_core::state::Marks::NOT_FROM_DECK);
+    f.g.players[0].hand.push(hc);
+    let at = f.g.players[0].hand.len() as u8 - 1;
+    assert!(f.g.apply(Action::Play {
+        hand: at,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(dealt_to_them(&f), 1, "one shot, not three");
+}
+
+#[test]
+fn jade_guardians_gets_two_eight_drops_cheaper_by_the_count() {
+    let mut f = Fix::new();
+    f.play("Bloodfen Raptor", None); // (2)
+    f.play("Bloodfen Raptor", None); // (2)
+    f.play("Bloodfen Raptor", None); // (2)
+    // Six mana went on the Raptors; the spell costs five.
+    f.g.players[0].mana = 10;
+    let before = f.g.players[0].hand.len();
+    f.play("Jade Guardians", None);
+
+    let got: Vec<HandCard> = f.g.players[0].hand.iter().skip(before).copied().collect();
+    assert_eq!(got.len(), 2);
+    for hc in &got {
+        assert_eq!(hc.card.def().cost, 8, "eight-drops");
+        assert_eq!(hc.card.def().kind(), Kind::Minion);
+        assert_eq!(hc.cost_delta, -3, "one less for each of the three");
+    }
+    let at = f.g.players[0].hand.len() - 1;
+    assert_eq!(f.g.card_cost(ME, at), 5, "and the discount is real");
+}
+
+#[test]
+fn escape_artist_draws_and_leaves_after_it_swings() {
+    let mut f = Fix::new().deck(&["Wisp", "Wisp"]);
+    f.g.players[0]
+        .board
+        .push({
+            let mut m = Permanent::summon(by_name("Escape Artist").unwrap());
+            m.flags.remove(Flags::JUST_SUMMONED);
+            m
+        });
+    f.g.recompute_auras();
+    assert_eq!(f.g.players[0].hand.len(), 0);
+
+    assert!(f.g.apply(Action::Attack { from: 0, target: Target::Hero(FOE) }));
+    assert_eq!(f.g.players[1].hero_hp, 26, "the 4/4 connected");
+    assert_eq!(f.g.players[0].hand.len(), 1, "and drew");
+    assert!(f.g.players[0].board.is_empty(), "then escaped the game");
+    assert_eq!(
+        f.g.players[0].deaths, 0,
+        "escaping is not dying: nothing counts it as a friendly death"
+    );
+}
+
+#[test]
+fn escape_artist_that_does_not_survive_stays_dead() {
+    // Into a body big enough to kill it: the trigger is "attacks and
+    // survives", and a corpse draws nothing.
+    let mut f = Fix::new().deck(&["Wisp"]).board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.g.players[0].board.push({
+        let mut m = Permanent::summon(by_name("Escape Artist").unwrap());
+        m.flags.remove(Flags::JUST_SUMMONED);
+        m
+    });
+    f.g.recompute_auras();
+    assert!(f.g.apply(Action::Attack { from: 0, target: Target::Minion(FOE, 0) }));
+    assert!(f.g.players[0].board.is_empty(), "the 4/4 died to a 6/7");
+    assert_eq!(f.g.players[0].hand.len(), 0, "and drew nothing");
+    assert_eq!(f.g.players[0].deaths, 1, "that one really was a death");
+}

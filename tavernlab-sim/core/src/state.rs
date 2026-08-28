@@ -785,6 +785,12 @@ pub struct Player {
     /// Ebyssian: "Your Dragons have Rush this game." A flag on the player
     /// rather than an aura, because it outlives the body that granted it.
     pub dragons_have_rush: bool,
+    /// How many cards this player has played for exactly two Mana this game.
+    ///
+    /// What was actually paid, not what was printed: a three-drop discounted
+    /// to two was played for two. Two cards read it -- one to make eight-drops
+    /// cheaper, one to shoot more often -- and both say "for 2 Mana".
+    pub cards_played_for_two: u16,
     pub played_minion_last_turn: bool,
     pub minions_played_turn: bool,
     /// Whether this player's first Dragon this turn has already had Naralex,
@@ -899,6 +905,7 @@ impl Player {
             dragon_discounted_turn: false,
             minion_tax: 0,
             dragons_have_rush: false,
+            cards_played_for_two: 0,
             played_minion_last_turn: false,
             minions_played_turn: false,
             void: Inline::new(),
