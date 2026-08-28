@@ -14,8 +14,9 @@ pub mod behaviour;
 mod table;
 
 pub use behaviour::{
-    APPROXIMATE, Aura, Behaviour, Ctx, TargetSpec, apply_game_setup, behaviour_of,
-    casts_when_drawn, is_approximate, is_implemented,
+    APPROXIMATE, Aura, Behaviour, Ctx, DARK_GIFTS, TargetSpec, apply_game_setup,
+    behaviour_of, casts_when_drawn, gift_card, gift_keywords, gift_stats,
+    is_approximate, is_implemented,
 };
 pub use table::{BY_DBF, BY_ID, BY_NAME, CHILD_IDS, CHILD_SLICES, DEFS, INFO};
 

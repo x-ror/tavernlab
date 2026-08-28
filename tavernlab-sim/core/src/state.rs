@@ -81,6 +81,14 @@ impl Flags {
     /// -- summon from deck, bounce, then trade or count it -- is narrow
     /// enough to name here rather than pay for everywhere.
     pub const NOT_FROM_DECK: Flags = Flags(1 << 10);
+    /// This body comes back from Reborn at full Health rather than at one
+    /// (the Persisting Horror Dark Gift).
+    ///
+    /// A flag rather than carrying the Gift's identity on every permanent:
+    /// Persisting Horror is the only Dark Gift whose rule outlives the play,
+    /// and a byte on `Permanent` costs a `Game` far more than a spare bit in
+    /// a word that already exists.
+    pub const REBORN_FULL: Flags = Flags(1 << 11);
 
     #[inline]
     pub const fn has(self, f: Flags) -> bool {
@@ -389,6 +397,16 @@ pub struct HandCard {
     /// of a `Game`.
     pub atk: i8,
     pub hp: i8,
+    /// Which Dark Gift this copy carries, as a 1-based index into
+    /// `cards::DARK_GIFTS`, or 0 for none.
+    ///
+    /// An index rather than a `CardId` because a `Game` has ten cards in
+    /// hand and seven on board on both sides, and two bytes each would push
+    /// it past the size the whole design rests on. The stat and cost halves
+    /// of a Gift fold into `atk`/`hp`/`cost_delta` the moment it is given;
+    /// this is what is left -- which Gift it was, for the keywords and the
+    /// rules that only apply once the body is in play.
+    pub gift: u8,
 }
 
 impl HandCard {
@@ -401,6 +419,7 @@ impl HandCard {
             mana_spent_while_held: 0,
             atk: 0,
             hp: 0,
+            gift: 0,
         }
     }
 
@@ -988,6 +1007,7 @@ mod tests {
                 mana_spent_while_held: 0,
                 atk: 0,
                 hp: 0,
+                gift: 0,
             }
         );
         assert_eq!(
