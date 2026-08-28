@@ -10955,3 +10955,143 @@ fn overgrown_horror_discounts_only_the_gifted_minions() {
     assert_eq!(f.g.card_cost(ME, gifted), 6 - 2);
     assert_eq!(f.g.card_cost(ME, plain), 4, "no Gift, no discount");
 }
+
+// ------------------------------------------------------- acting on the draw
+//
+// "Casts When Drawn" on a spell, "Summoned When Drawn" on a minion. The card
+// never reaches hand; it resolves on the way out of the deck, and the draw
+// still counts as a draw.
+
+#[test]
+fn an_acorn_never_reaches_hand_and_leaves_a_squirrel() {
+    let mut f = Fix::new().board(ME, &["Vibrant Squirrel"]);
+    f.g.deal_damage(Target::Minion(ME, 0), 1);
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].deck.len(), 4, "four Acorns");
+    assert!(f.g.players[0].deck.iter().all(|d| d.name() == "Acorn"));
+
+    f.g.draw(ME, 1);
+    assert!(f.g.players[0].hand.is_empty(), "it never reaches hand");
+    assert_eq!(f.g.players[0].deck.len(), 3, "and it is gone from the deck");
+    assert_eq!(f.g.players[0].board.len(), 1);
+    assert_eq!(f.mine(0).card.name(), "Satisfied Squirrel");
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (2, 1));
+}
+
+#[test]
+fn a_summoned_when_drawn_minion_arrives_on_the_board() {
+    let mut f = Fix::new();
+    f.play("Interrogation", None);
+    assert_eq!(f.g.players[0].deck.len(), 3);
+    f.g.draw(ME, 1);
+    assert!(f.g.players[0].hand.is_empty());
+    assert_eq!(f.mine(0).card.name(), "Tortollan Ninja");
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (3, 3));
+    assert!(f.mine(0).has(Keywords::STEALTH), "as printed");
+}
+
+#[test]
+fn a_shred_of_time_hurts_the_hero_that_drew_it() {
+    let mut f = Fix::new();
+    f.play("Twilight Timehopper", None);
+    assert_eq!(f.g.players[0].deck.len(), 2);
+    let before = f.g.players[0].hero_hp;
+    f.g.draw(ME, 1);
+    assert_eq!(f.g.players[0].hero_hp, before - 3);
+    assert!(f.g.players[0].hand.is_empty());
+}
+
+#[test]
+fn a_tripwire_does_its_own_effect_again_on_the_draw() {
+    // An empty enemy board, so every point of the split lands on the hero
+    // and nothing can die and take its own damage count off the board.
+    let mut f = Fix::new();
+    f.play("Arcane Tripwire", None);
+    assert_eq!(f.g.players[1].hero_hp, 26, "four damage split among all enemies");
+    assert_eq!(f.g.players[0].deck.len(), 2);
+
+    f.g.draw(ME, 1);
+    assert_eq!(f.g.players[1].hero_hp, 22, "and again on the draw");
+    assert!(f.g.players[0].hand.is_empty());
+}
+
+#[test]
+fn scramble_for_gear_pays_once_now_and_once_per_draw() {
+    let mut f = Fix::new();
+    f.play("Scramble for Gear", None);
+    assert_eq!(f.g.players[0].armor, 2);
+    assert_eq!(f.g.players[0].deck.len(), 5);
+    f.g.draw(ME, 2);
+    assert_eq!(f.g.players[0].armor, 6, "two more Gear, two Armor each");
+    assert_eq!(f.g.players[0].deck.len(), 3);
+}
+
+// --------------------------------------------------------------- Temporary
+//
+// A Temporary card is gone at the end of the turn it arrived on, unplayed.
+
+#[test]
+fn a_temporary_card_burns_at_the_end_of_the_turn() {
+    let mut f = Fix::new();
+    f.play("Frantic Forger", None);
+    let at = f.g.players[0].hand.len() - 1;
+    let hc = f.g.players[0].hand[at];
+    assert_eq!(hc.card.def().kind(), Kind::Spell);
+    assert!(hc.marks.has(tavernlab_core::state::Marks::TEMPORARY));
+
+    f.g.end_turn();
+    assert!(f.g.players[0].hand.is_empty(), "unplayed, so gone");
+}
+
+#[test]
+fn a_temporary_card_played_in_time_is_kept() {
+    // The counterpart: burning is what happens to the ones you do not play.
+    let mut f = Fix::new();
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Chillwind Yeti").unwrap()));
+    f.g.make_last_temporary(ME);
+    assert!(f.g.apply(Action::Play {
+        hand: 0,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    f.g.end_turn();
+    assert_eq!(f.g.players[0].board.len(), 1, "played, so it stayed");
+}
+
+#[test]
+fn spelunker_discounts_the_next_temporary_card_only() {
+    let mut f = Fix::new();
+    f.play("Spelunker", None);
+    assert_eq!(f.g.players[0].next_temporary_discount, 2);
+
+    f.g.give_card(ME, by_name("Boulderfist Ogre").unwrap()); // costs 6
+    f.g.make_last_temporary(ME);
+    let first = f.g.players[0].hand.len() - 1;
+    assert_eq!(f.g.card_cost(ME, first), 4);
+    assert_eq!(f.g.players[0].next_temporary_discount, 0, "spent");
+
+    f.g.give_card(ME, by_name("Boulderfist Ogre").unwrap());
+    f.g.make_last_temporary(ME);
+    let second = f.g.players[0].hand.len() - 1;
+    assert_eq!(f.g.card_cost(ME, second), 6, "the one after pays full");
+}
+
+#[test]
+fn tunnel_terror_leaves_two_temporary_two_drops() {
+    let mut f = Fix::new().board(ME, &["Tunnel Terror"]);
+    f.g.deal_damage(Target::Minion(ME, 0), 3);
+    f.g.sweep_deaths();
+    let temps: Vec<_> = f.g.players[0]
+        .hand
+        .iter()
+        .filter(|h| h.marks.has(tavernlab_core::state::Marks::TEMPORARY))
+        .collect();
+    assert_eq!(temps.len(), 2);
+    for h in temps {
+        assert_eq!(h.card.def().kind(), Kind::Minion);
+        assert_eq!(h.card.def().cost, 2);
+    }
+}
