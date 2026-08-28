@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 
 use tavernlab_json::Json;
 
+mod backfill;
 mod sets;
 mod wild;
 
@@ -231,8 +232,22 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Some("backfill") => {
+            let Some(dump) = args.next() else {
+                eprintln!("usage: cargo run -p xtask -- backfill <dump.json>");
+                eprintln!("see the module docs in xtask/src/backfill.rs for the fetch");
+                std::process::exit(2);
+            };
+            match backfill::run(&repo_root(), Path::new(&dump)) {
+                Ok(msg) => println!("{msg}"),
+                Err(e) => {
+                    eprintln!("xtask backfill: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         other => {
-            eprintln!("usage: cargo run -p xtask -- [cards|wild-gauntlet]");
+            eprintln!("usage: cargo run -p xtask -- [cards|wild-gauntlet|backfill <dump>]");
             if let Some(o) = other {
                 eprintln!("unknown command: {o}");
             }

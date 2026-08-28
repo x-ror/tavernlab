@@ -364,6 +364,10 @@ impl Marks {
     /// ("Temporary"). Per-copy, because the same card can sit in hand as a
     /// permanent copy and a temporary one at the same time.
     pub const TEMPORARY: Marks = Marks(1 << 5);
+    /// This copy carries Follow the Fuse's effect for the turn: playing it
+    /// also deals 2 damage to a random enemy. Cleared at the end of the turn
+    /// it was given, like the spell says.
+    pub const FUSED: Marks = Marks(1 << 6);
 
     #[inline]
     pub const fn has(self, m: Marks) -> bool {
@@ -372,6 +376,10 @@ impl Marks {
     #[inline]
     pub fn insert(&mut self, m: Marks) {
         self.0 |= m.0;
+    }
+    #[inline]
+    pub fn remove(&mut self, m: Marks) {
+        self.0 &= !m.0;
     }
 }
 

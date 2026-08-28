@@ -410,6 +410,10 @@ mod tokens {
     pub const TRIPPED_BEAST: CardId = token("JAIL_879t");
     pub const TORTOLLAN_NINJA: CardId = token("TLC_513t2");
     pub const GREENWING_ILLUSION: CardId = token("EDR_260t");
+    /// The 1/1 Cannoneer. Its id is a slug because the card is newer than
+    /// the CardDefs snapshot the corpus was built from -- see `xtask
+    /// backfill`, which is what put it in the table at all.
+    pub const CANNONEER: CardId = token("127012-cannoneer");
     pub const FLAME_ELEMENTAL: CardId = token("UNG_809t1");
     pub const ARCANE_MISSILES: CardId = token("EX1_277");
     pub const MUGS_MAGIC: CardId = token("JAIL_800hp1");
@@ -8475,6 +8479,79 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         g.player_mut(c.side).next_temporary_discount += 2;
     }),
 
+    // ------------------------------------------------------------- Cannoneers
+    // A Cannoneer "fires": one damage at a random enemy. It does that at the
+    // end of your turn on its own, and whenever something else tells it to.
+    // Captain Crowley doubles every shot for as long as he is on the board.
+
+    trigger("Cannoneer", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            fire_one(g, c.side);
+        }
+    }),
+    battlecry("Cannonmaster", T::None, |g, c| {
+        g.give_token(c.side, tokens::CANNONEER);
+    }),
+    battlecry("Captain Crowley", T::None, |g, c| {
+        g.summon_token(c.side, tokens::CANNONEER, 2);
+    }),
+    spell("Hook n' Heave", T::None, |g, c| {
+        g.discover(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.races.any(Races::PIRATE)
+        });
+        g.summon_token(c.side, tokens::CANNONEER, 2);
+    }),
+    spell("Land Ho!", T::None, |g, c| {
+        g.draw_cards(c.side, 2);
+        g.summon_token(c.side, tokens::CANNONEER, 2);
+    }),
+    // The weapon's own trigger, fired from `WEAPON_SLOT`.
+    trigger("Hand Cannon", |g, c| {
+        if matches!(c.event, Event::AfterAttack { attacker: Target::Hero(s), .. } if s == c.side) {
+            let n = g
+                .player(c.side)
+                .board
+                .iter()
+                .filter(|m| m.card == tokens::CANNONEER)
+                .count();
+            for _ in 0..n {
+                fire_one(g, c.side);
+            }
+        }
+    }),
+
+    // A body, and a bonus every Pirate's damage reads off the board.
+    c(
+        "Blastpowder Engineer",
+        T::None,
+        None, None, None, None, None, None, None, None, None,
+    ),
+    // "Give a playable Pirate in your hand this effect for a turn": the copy
+    // is marked, and playing it deals the same 2 damage again.
+    spell("Follow the Fuse", T::None, |g, c| {
+        if let Some(t) = g.random_enemy(c.side) {
+            g.spell_damage(c.side, Some(t), 2);
+        }
+        let pirates: Inline<u8, MAX_HAND> = g
+            .player(c.side)
+            .hand
+            .iter()
+            .enumerate()
+            .filter(|(_, hc)| {
+                let d = hc.card.def();
+                d.kind() == super::Kind::Minion && d.races.any(Races::PIRATE)
+            })
+            .map(|(i, _)| i as u8)
+            .collect();
+        if pirates.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(pirates.len());
+        if let Some(hc) = g.player_mut(c.side).hand.get_mut(pirates[pick] as usize) {
+            hc.marks.insert(Marks::FUSED);
+        }
+    }),
+
     // ------------------------------------------------------------- Dark Gifts
     // "Discover a ... with a Dark Gift": the Discover happens, then the card
     // it put in hand is given one of the ten. See `DARK_GIFTS`.
@@ -8921,6 +8998,45 @@ fn grant_rattle(g: &mut Game, t: Option<Target>, carrier: CardId) {
 
 /// Turn a minion into a random one of `cost` (Dangerous Variant, Unknown
 /// Voyager).
+/// One Cannoneer's shot: a point of damage at a random enemy, twice while
+/// Captain Crowley is out ("Your Cannoneers fire an additional shot").
+///
+/// Read off the board at the moment of firing rather than counted when a
+/// Cannoneer arrives, because Crowley can leave: the shot is his while he is
+/// there and not afterwards.
+pub fn pirate_damage_bonus(g: &Game, side: Side) -> i16 {
+    // "On your turn": the Engineer arms its owner's swings, not the swings
+    // taken on the other player's turn.
+    if g.current != side {
+        return 0;
+    }
+    g.player(side)
+        .board
+        .iter()
+        .filter(|m| m.card.name() == "Blastpowder Engineer")
+        .count() as i16
+}
+
+fn fire_one(g: &mut Game, side: Side) {
+    let shots = if g
+        .player(side)
+        .board
+        .iter()
+        .any(|m| m.card.name() == "Captain Crowley")
+    {
+        2
+    } else {
+        1
+    };
+    // A Cannoneer is a Pirate, so the Engineer arms its shot too.
+    let damage = 1 + pirate_damage_bonus(g, side);
+    for _ in 0..shots {
+        if let Some(t) = g.random_enemy(side) {
+            g.deal_damage(t, damage);
+        }
+    }
+}
+
 fn transform_into_cost(g: &mut Game, t: Target, cost: i16) {
     g.transform_into_random_of_cost(t, cost);
 }

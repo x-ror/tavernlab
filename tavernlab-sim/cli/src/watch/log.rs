@@ -47,6 +47,48 @@ pub struct ZoneMove {
     pub kind: Option<String>,
 }
 
+/// The time of day a line was written, in nanoseconds since midnight.
+///
+/// Both files are written by the same client and stamped `D HH:MM:SS.fffffff`,
+/// which is the only thing that puts them in one order. It matters: only
+/// Power.log carries `CREATE_GAME`, so reading one file and then the other
+/// replays every zone move of every game in the session *after* the last
+/// reset, and the boards of finished games pile up on the current one.
+///
+/// A session that runs across midnight would order wrongly for the lines
+/// after it. Nothing else here depends on the clock, and a log with no stamps
+/// still replays in file order.
+pub fn stamp(line: &str) -> Option<u64> {
+    let b = line.as_bytes();
+    // `D 09:12:33.1234567` — the letter, a space, then the time.
+    if b.len() < 10 || b[1] != b' ' {
+        return None;
+    }
+    let rest = &line[2..];
+    let mut it = rest.splitn(3, ':');
+    let h: u64 = it.next()?.parse().ok()?;
+    let m: u64 = it.next()?.parse().ok()?;
+    let tail = it.next()?;
+    let (sec, frac) = match tail.split_once('.') {
+        Some((s, f)) => (s, f),
+        None => (tail.split_whitespace().next()?, ""),
+    };
+    let s: u64 = sec.parse().ok()?;
+    if h > 23 || m > 59 || s > 59 {
+        return None;
+    }
+    // However many digits the client writes, scale them to nanoseconds.
+    let digits: String = frac.chars().take_while(char::is_ascii_digit).collect();
+    let mut nanos: u64 = digits.parse().unwrap_or(0);
+    for _ in digits.len()..9 {
+        nanos *= 10;
+    }
+    for _ in 9..digits.len() {
+        nanos /= 10;
+    }
+    Some(((h * 60 + m) * 60 + s) * 1_000_000_000 + nanos)
+}
+
 /// The text after `key=`, up to the next space or `]`.
 fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let at = line.find(key)? + key.len();
@@ -283,6 +325,21 @@ mod tests {
                 card_id: "CS2_029".into()
             })
         );
+    }
+
+    #[test]
+    fn a_line_carries_the_time_it_was_written() {
+        let a = stamp("D 09:12:33.1234567 [Zone] whatever").expect("a stamp");
+        let b = stamp("D 09:12:33.7654321 [Power] whatever").expect("a stamp");
+        assert!(a < b, "the same second still orders by its fraction");
+        let c = stamp("D 10:00:00.0000000 [Power] x").expect("a stamp");
+        assert!(b < c);
+        // Shorter fractions scale rather than compare as raw integers: .2 is
+        // later than .1234567, not earlier.
+        let short = stamp("D 09:12:33.2 [Zone] x").expect("a stamp");
+        assert!(short > a);
+        assert_eq!(stamp("no stamp here"), None);
+        assert_eq!(stamp(""), None);
     }
 
     #[test]
