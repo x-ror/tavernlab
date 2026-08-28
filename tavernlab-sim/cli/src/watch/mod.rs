@@ -159,7 +159,15 @@ fn plan(tr: &Tracker) -> Vec<String> {
     for side in 0..2 {
         for b in tr.board[side].iter() {
             let mut m = Permanent::summon(b.card);
-            m.flags.remove(tavernlab_core::state::Flags::JUST_SUMMONED);
+            // Summoning sickness is kept for whatever landed this turn. It is
+            // not a detail: without it the plan tells you to swing with the
+            // minion you have only just put down, and a Rush minion is told
+            // to go face on the turn it arrives, which is the one thing Rush
+            // does not do. `Permanent::summon` sets the flag, so a body that
+            // has been there since an earlier turn is the one that clears it.
+            if b.turn < tr.turn {
+                m.flags.remove(tavernlab_core::state::Flags::JUST_SUMMONED);
+            }
             g.players[side].board.push(m);
         }
     }
@@ -190,6 +198,16 @@ fn plan(tr: &Tracker) -> Vec<String> {
     }
     if out.is_empty() {
         out.push("нічого не робити цього ходу".into());
+    }
+    // Say it out loud when the mana was guessed rather than read. A plan
+    // drawn at a made-up crystal count will happily spend more than you have,
+    // and the reader has no way to tell that from a plan drawn at the real
+    // number unless this line is here.
+    if tr.crystals.is_none() {
+        out.push(format!(
+            "(мана невідома — рахував як {}; вкажіть --me <бойовий тег>, щоб було точно)",
+            g.players[0].crystals
+        ));
     }
     out
 }

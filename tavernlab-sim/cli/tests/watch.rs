@@ -175,3 +175,41 @@ D 09:30:02.0000000 [Zone] [entityName=Uther Lightbringer id=71 zone=PLAY zonePos
         "nothing of the first game is left: {out}"
     );
 }
+
+/// A minion that landed this turn is still summoning sick, and the plan has
+/// to know it.
+///
+/// From a real session: the board was four freshly summoned 3/2 Shades and
+/// the watcher told the player to swing all of them into the enemy hero. The
+/// Shades take Rush from a Bonus Effect, and Rush is the point — it trades on
+/// the turn it lands and goes face on the turn after. Neither a sick minion
+/// nor a rushed one may hit the hero the turn it arrives, so nothing that
+/// entered play on the current turn may be told to attack a face.
+#[test]
+fn a_minion_played_this_turn_is_not_told_to_attack() {
+    const EARLIER: &str = "\
+D 09:00:03.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=5
+D 09:00:03.1 [Zone] ZoneChangeList.ProcessChanges() - id=7 local=False [entityName=Chillwind Yeti id=10 zone=HAND zonePos=1 cardId=CS2_182 player=1] zone from FRIENDLY HAND -> FRIENDLY PLAY
+D 09:00:03.2 [Zone] ZoneChangeList.ProcessChanges() - id=8 local=False [entityName=Bloodfen Raptor id=21 zone=DECK zonePos=0 cardId=CS2_172 player=1] zone from FRIENDLY DECK -> FRIENDLY HAND
+";
+    const NOW: &str = "\
+D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES value=7
+D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES_USED value=0
+D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7
+D 09:00:04.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=CURRENT_PLAYER value=1
+D 09:00:04.2 [Zone] ZoneChangeList.ProcessChanges() - id=9 local=False [entityName=Bloodfen Raptor id=21 zone=HAND zonePos=1 cardId=CS2_172 player=1] zone from FRIENDLY HAND -> FRIENDLY PLAY
+";
+    let out = run("sick", &format!("{LOG}{EARLIER}{NOW}"), &["--me", "Me#1"]);
+    assert!(
+        out.contains("ваша дошка: Chillwind Yeti 4/5, Bloodfen Raptor 3/2"),
+        "both are on the board: {out}"
+    );
+    assert!(
+        !out.contains("атакувати: Bloodfen Raptor"),
+        "it landed this turn, so it cannot attack at all: {out}"
+    );
+    assert!(
+        out.contains("атакувати: Chillwind Yeti"),
+        "but the one from turn five is free to swing: {out}"
+    );
+}

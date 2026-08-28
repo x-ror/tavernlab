@@ -8479,6 +8479,69 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         g.player_mut(c.side).next_temporary_discount += 2;
     }),
 
+    // --------------------------------------------- closest to the real field
+    // Picked by `tavernsim decks`: the cards standing between the simulator
+    // and a deck people are actually playing, cheapest first.
+
+    // "Rewind" is not modelled; see the APPROXIMATE entry. The draw and the
+    // buff are exactly as printed.
+    battlecry("Portal Vanguard", T::None, |g, c| {
+        // The buff goes on the card that was just drawn, so it has to be a
+        // card that actually arrived: `draw_matching` reports the draw, not
+        // whether a full hand burned it, and buffing `last_mut()` blind would
+        // enchant a card that was already there.
+        let before = g.player(c.side).hand.len();
+        if g.draw_matching(c.side, |d| d.kind() == super::Kind::Minion)
+            && g.player(c.side).hand.len() > before
+            && let Some(hc) = g.player_mut(c.side).hand.last_mut()
+        {
+            hc.enchant(2, 2);
+        }
+    }),
+    // "Give it this effect for a turn": the Discovered minion carries Follow
+    // the Footsteps itself, so playing it Discovers another.
+    spell("Follow the Footsteps", T::None, |g, c| {
+        let stealthy =
+            |d: &super::CardDef| d.kind() == super::Kind::Minion && d.keywords.has(Keywords::STEALTH);
+        let before = g.player(c.side).hand.len();
+        if g.discover(c.side, stealthy)
+            && g.player(c.side).hand.len() > before
+            && let Some(hc) = g.player_mut(c.side).hand.last_mut()
+        {
+            hc.marks.insert(Marks::FOOTSTEPS);
+        }
+    }),
+    // "While holding this" is per copy, and the swing that sets it is the one
+    // that strips the Stealth -- see `Game::attack_with`.
+    spell("Tricks of the Trade", T::AnyCharacter, |g, c| {
+        let n = if c.marks.has(Marks::STEALTH_ATTACKED) { 3 } else { 1 };
+        g.spell_damage(c.side, c.target, n);
+    }),
+    // "Set your Mana to 10 after five turns": queued against this player's
+    // own turns, so five of theirs rather than five of either, and it lands
+    // once the five have gone by rather than on each of them -- the wiki's
+    // note is "after they end their 5th turn", which is the start of their
+    // sixth. `PendingKind::delayed` is what holds it back that long.
+    start_of_game("Chef Neth'rek", |g, c| {
+        // The whole starting list, not what is left of the deck: Start of Game
+        // runs after the mulligan, so `deck` is short the opening hand by now.
+        if g.player(c.side).deck_started_max_cost <= 3 {
+            g.player_mut(c.side).pending.push(Pending {
+                kind: PendingKind::SetMana,
+                turns_left: 6,
+                amount: 10,
+                card: c.card,
+            });
+        }
+    }),
+    spell("Heartroot Stones", T::None, |g, c| {
+        let times = if g.player(c.side).played_minion_last_turn { 1 } else { 2 };
+        for _ in 0..times {
+            g.draw_cards(c.side, 1);
+            g.gain_armor(c.side, 3);
+        }
+    }),
+
     // ------------------------------------------------------------- Cannoneers
     // A Cannoneer "fires": one damage at a random enemy. It does that at the
     // end of your turn on its own, and whenever something else tells it to.
@@ -8894,6 +8957,10 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Nightmare Fuel",
         "the Combo bonus (the discovered minion arrives with a Dark Gift, G11) is not implemented; the base Discover always fires without it",
+    ),
+    (
+        "Portal Vanguard",
+        "\"Rewind\" is not modelled: the draw stands instead of being redone and the better of the two kept, so the minion drawn is the median one rather than the better one. Weaker than printed, never stronger; the same gap `Shadows of Yesterday` records, and for the same reason",
     ),
     (
         "Shadows of Yesterday",

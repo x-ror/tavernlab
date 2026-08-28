@@ -14,6 +14,13 @@ use tavernlab_core::cards::{CardId, Class, by_id};
 pub struct Body {
     pub entity: u32,
     pub card: CardId,
+    /// The turn counter when it entered this zone.
+    ///
+    /// A minion that landed this turn is still summoning sick, and one with
+    /// Rush may trade but not go face. The advice is worthless without it:
+    /// the first real logs had the watcher telling the player to swing with
+    /// the minion they had just put down.
+    pub turn: u16,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -178,7 +185,11 @@ impl Tracker {
         match zone {
             "HAND" if i == 0 => {
                 if let Some(c) = card {
-                    self.hand.push(Body { entity, card: c });
+                    self.hand.push(Body {
+                        entity,
+                        card: c,
+                        turn: self.turn,
+                    });
                     if !self.started {
                         self.opening.push(c);
                     }
@@ -187,7 +198,11 @@ impl Tracker {
             "PLAY" => {
                 if let Some(c) = card {
                     if c.def().kind() == tavernlab_core::cards::Kind::Minion {
-                        self.board[i].push(Body { entity, card: c });
+                        self.board[i].push(Body {
+                            entity,
+                            card: c,
+                            turn: self.turn,
+                        });
                     }
                     self.played[i].push(c);
                     if c.def().class() != Class::Neutral && self.classes[i].is_none() {
