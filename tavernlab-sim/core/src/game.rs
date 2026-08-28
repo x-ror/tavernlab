@@ -10,6 +10,7 @@
 //! Poisonous, Lifesteal, Armor) are exactly the ones that get forgotten when
 //! damage is applied ad hoc at a dozen call sites.
 
+use crate::agent::position_value;
 use crate::cards::{CardId, Class, Ctx, Keywords, Kind, Races, TargetSpec, behaviour_of, by_name};
 use crate::events::Event;
 use crate::inline::Inline;
@@ -113,6 +114,7 @@ impl Game {
             trigger_depth: 0,
             countered: false,
             conditional: 0,
+            rewinding: false,
         })
     }
 
@@ -1087,7 +1089,7 @@ impl Game {
                 target,
                 position,
                 choice,
-            } => self.play_card(hand as usize, target, position, choice),
+            } => self.play_with_rewind(hand as usize, target, position, choice),
             Action::Attack { from, target } => self.attack_with(Some(from as usize), target),
             Action::HeroAttack { target } => self.attack_with(None, target),
             Action::HeroPower { target, second } => self.use_hero_power(target, second),
@@ -1099,6 +1101,81 @@ impl Game {
     }
 
     // -------------------------------------------------------- playing cards
+
+    /// Play a card, and if it has Rewind, decide whether to keep what
+    /// happened.
+    ///
+    /// Rewind is printed "May be replayed once for a potentially different
+    /// outcome", and at the table it is a prompt: the card resolves, you look
+    /// at what it did, and you either keep the timeline or roll it back and
+    /// play it again. Rolling it back reverts the whole play, not just the
+    /// effect -- so that is exactly what this does, and it is the one
+    /// mechanic in the game this engine's central design makes free. A `Game`
+    /// is a fixed-size value that copies by memcpy; taking the position
+    /// before the card is played, and putting it back, is two moves.
+    ///
+    /// The dice do not go back with it. Restoring `rngs` along with
+    /// everything else would replay the same roll and Rewind would be a very
+    /// expensive no-op, so the RNG that the first attempt advanced is carried
+    /// across the restore -- which is what makes the second attempt a
+    /// different draw.
+    ///
+    /// Which of the two to keep is a player's judgement, and the engine
+    /// answers it with `agent::position_value`. That is a crude score and it
+    /// is named there, with what it is blind to; the same trade
+    /// `Game::discover` makes when it picks a card out of three.
+    ///
+    /// One Rewind, never more. Mister Clocksworth prints "Rewind, Rewind,
+    /// Rewind" and the corpus spells its three as three separate printings
+    /// that replace each other as they are spent -- a transform, not a
+    /// counter, and not something a single keyword bit can carry. He has no
+    /// behaviour row yet; when he gets one, that is the line to write down
+    /// in `APPROXIMATE`.
+    fn play_with_rewind(
+        &mut self,
+        hand_idx: usize,
+        target: Option<Target>,
+        position: u8,
+        choice: u8,
+    ) -> bool {
+        let side = self.current;
+        let rewinds = !self.rewinding
+            && self
+                .player(side)
+                .hand
+                .get(hand_idx)
+                .is_some_and(|hc| hc.card.def().keywords.has(Keywords::REWIND));
+        if !rewinds {
+            return self.play_card(hand_idx, target, position, choice);
+        }
+
+        let before = *self;
+        self.rewinding = true;
+        let ok = self.play_card(hand_idx, target, position, choice);
+        if !ok {
+            // An illegal play is illegal on both timelines; nothing happened,
+            // so there is nothing to choose between.
+            self.rewinding = false;
+            return false;
+        }
+        let kept = *self;
+
+        // Back to before the card was played, with the dice where the first
+        // attempt left them.
+        let rngs = self.rngs;
+        *self = before;
+        self.rngs = rngs;
+        self.rewinding = true;
+        let replayed = self.play_card(hand_idx, target, position, choice);
+        // The replay is the same play from the same position and cannot
+        // legally fail once the first succeeded; if it somehow did, the first
+        // timeline is the one that happened.
+        if !replayed || position_value(&kept, side) > position_value(self, side) {
+            *self = kept;
+        }
+        self.rewinding = false;
+        true
+    }
 
     fn play_card(
         &mut self,

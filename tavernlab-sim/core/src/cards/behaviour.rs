@@ -2677,8 +2677,10 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.equip(c.side, tokens::NIGHTMARE_SLICER);
         }
     }),
-    // "Rewind" (a second, independent roll for each equip) is not modelled,
-    // matching the Python reference's own simplification.
+    // Rewind is the engine's, not this row's: the whole play is rolled back
+    // and made again, and the better of the two pairs of weapons is kept --
+    // both halves of it, since `agent::position_value` counts the one this
+    // hands the opponent against you.
     battlecry("Stadium Announcer", T::None, |g, c| {
         g.equip_random(c.side, |d| d.kind() == super::Kind::Weapon);
         g.equip_random(c.side.other(), |d| d.kind() == super::Kind::Weapon);
@@ -8543,8 +8545,9 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     // Picked by `tavernsim decks`: the cards standing between the simulator
     // and a deck people are actually playing, cheapest first.
 
-    // "Rewind" is not modelled; see the APPROXIMATE entry. The draw and the
-    // buff are exactly as printed.
+    // Rewind is the engine's, not this row's: `Game::play_with_rewind` plays
+    // the card twice from the same position and keeps the better draw. The
+    // draw and the buff here are exactly as printed.
     battlecry("Portal Vanguard", T::None, |g, c| {
         // The buff goes on the card that was just drawn, so it has to be a
         // card that actually arrived: `draw_matching` reports the draw, not
@@ -9104,8 +9107,10 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     // One of eight keywords, drawn at random -- see `Game::BONUS_EFFECTS` for
     // where that pool comes from and why it is not in the card data.
 
-    // "Rewind" is not modelled; see this card's entry in APPROXIMATE. The
-    // summon and the Bonus Effects are exactly as printed.
+    // Rewind is the engine's, not this row's: `Game::play_with_rewind` rolls
+    // the four Shades twice and keeps the better set of Bonus Effects -- as
+    // well as `agent::position_value` can tell them apart, which is where the
+    // remaining gap is now. The summon is exactly as printed.
     spell("Shadows of Yesterday", T::None, |g, c| {
         for _ in 0..4 {
             if !g.summon(c.side, tokens::ANOMALOUS_SHADE) {
@@ -9755,10 +9760,6 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
         "does not return to hand with excess damage; that needs a per-copy          variable-damage field the engine does not have",
     ),
     (
-        "Stadium Announcer",
-        "Rewind is not modelled -- both equips are single, independent rolls",
-    ),
-    (
         "Elise the Navigator",
         "crafting a custom location from the deck's cost curve needs a location-generation system the engine does not have; plays as a vanilla 3/5",
     ),
@@ -9781,14 +9782,6 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Godfather Kazakus",
         "the trial is always the Unending one -- two effects, resolving in four of your turns. The corpus prices the three lengths at 7, 4 and 0 Mana (Rushed, Grueling, Unending) and gives a number of turns for only two of them: \"in 4 turns\" and \"at the start of your next turn\". Rushed carries no text at all, so how soon it lands is a number this does not have. Taking the cheapest and slowest is the weaker of the two readings and the only one that needs no invented number; the engine also has nowhere to put a card whose cost and effects were chosen at play time, so the trial resolves on its own rather than arriving in hand to be paid for -- which is why the length that costs nothing is the honest one to take",
-    ),
-    (
-        "Portal Vanguard",
-        "\"Rewind\" is not modelled: the draw stands instead of being redone and the better of the two kept, so the minion drawn is the median one rather than the better one. Weaker than printed, never stronger; the same gap `Shadows of Yesterday` records, and for the same reason",
-    ),
-    (
-        "Shadows of Yesterday",
-        "\"Rewind\" is not modelled: the card's roll stands instead of being redone and the better of the two outcomes kept, so the four Shades carry the median set of Bonus Effects rather than the better one. Weaker than printed, never stronger. Modelling it needs a position score that can weigh all eight Bonus Effects against each other, and the one the engine has (`agent::minion_value`) is blind to three of them",
     ),
     (
         "Nespirah, Enthralled",

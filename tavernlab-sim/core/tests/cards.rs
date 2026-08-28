@@ -12508,3 +12508,133 @@ fn gnomeregan_advances_an_age_per_use_and_keeps_what_is_left() {
         "three ages, three uses, then it is gone"
     );
 }
+
+// ----------------------------------------------------------------- Rewind
+// "May be replayed once for a potentially different outcome." The card
+// resolves, and the player either keeps that timeline or rolls the whole
+// play back and plays it again. This engine can do that exactly: a `Game` is
+// a fixed-size value, so the position before the play is one copy away.
+
+/// Play `name` on a fresh game at `seed`, with or without its Rewind.
+///
+/// Setting `rewinding` before the play sends it down the plain route, which
+/// is what the same card looked like before this existed -- so the two arms
+/// of these tests differ in the keyword and nothing else.
+fn play_at(seed: u64, name: &str, rewind: bool, cls: Class) -> Game {
+    let mut g = Game::new((cls, &[]), (cls, &[]), seed).unwrap();
+    g.players[0].mana = 10;
+    g.players[0].crystals = 10;
+    g.players[0].hand.push(HandCard::new(by_name(name).unwrap()));
+    g.rewinding = !rewind;
+    assert!(g.apply(Action::Play {
+        hand: 0,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    g.rewinding = false;
+    g
+}
+
+#[test]
+fn a_rewind_takes_the_better_of_two_rolls() {
+    // Shadows of Yesterday summons four Shades that each gain two random
+    // Bonus Effects, so the roll is worth a lot and is plainly visible on the
+    // board. Averaged over many seeds, keeping the better of two rolls has to
+    // beat taking the first.
+    fn board_value(g: &Game) -> f32 {
+        tavernlab_core::agent::position_value(g, ME)
+    }
+    let plain: f32 = (0..120u64)
+        .map(|s| board_value(&play_at(s, "Shadows of Yesterday", false, Class::DeathKnight)))
+        .sum();
+    let rewound: f32 = (0..120u64)
+        .map(|s| board_value(&play_at(s, "Shadows of Yesterday", true, Class::DeathKnight)))
+        .sum();
+    assert!(
+        rewound > plain,
+        "keeping the better of two rolls should score higher over 120 seeds: \
+         {rewound:.0} against {plain:.0}"
+    );
+}
+
+#[test]
+fn a_rewind_never_leaves_both_timelines_behind() {
+    // The rolled-back timeline must leave no trace. Four Shades summoned
+    // twice, or two weapons equipped, would be the bug this looks for.
+    for seed in 0..80u64 {
+        let g = play_at(seed, "Shadows of Yesterday", true, Class::DeathKnight);
+        assert_eq!(
+            g.players[0].board.len(),
+            4,
+            "seed {seed}: four Shades, from one timeline"
+        );
+        assert_eq!(g.players[0].mana, 4, "seed {seed}: paid for once");
+        assert!(!g.rewinding, "the guard is cleared");
+    }
+}
+
+#[test]
+fn a_rewind_that_arms_the_enemy_too_weighs_their_half() {
+    // Stadium Announcer equips *both* players. The roll that hands the
+    // opponent the better weapon is the worse one, and the score has to see
+    // that or the choice is made on half the card.
+    let mut worse_for_them = 0;
+    for seed in 0..80u64 {
+        let g = play_at(seed, "Stadium Announcer", true, Class::Warrior);
+        let mine = g.players[0].weapon.map_or(0, |w| w.atk * w.durability);
+        let theirs = g.players[1].weapon.map_or(0, |w| w.atk * w.durability);
+        if mine >= theirs {
+            worse_for_them += 1;
+        }
+    }
+    assert!(
+        worse_for_them > 40,
+        "with the better of two rolls kept, our weapon should usually be the \
+         bigger one: {worse_for_them} of 80"
+    );
+}
+
+#[test]
+fn a_card_without_rewind_is_played_once_and_unchanged() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Fireball", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 1, "one Fireball, not the better of two");
+}
+
+#[test]
+fn a_rewind_inside_a_rewind_does_not_recurse() {
+    // Sands of Time Discovers a spell, and whatever it Discovers may itself
+    // have Rewind. The replay must not start replays of its own; the guard
+    // is `Game::rewinding`, and this is the shape that would spin without it.
+    for seed in 0..60u64 {
+        let g = play_at(seed, "Sands of Time", true, Class::Mage);
+        assert_eq!(g.players[0].hand.len(), 1, "seed {seed}: one card, once");
+        assert!(!g.rewinding);
+    }
+}
+
+#[test]
+fn only_a_card_that_leads_with_the_keyword_carries_it() {
+    // The corpus never tags Rewind as a mechanic, and its keyword list cannot
+    // tell a card that has Rewind from one that only talks about it. The
+    // generator reads the printed text instead; this pins what that decided.
+    for (name, want) in [
+        ("Shadows of Yesterday", true), // "Rewind Summon four 3/2 Shades."
+        ("Stadium Announcer", true),    // "Rewind Battlecry: ..."
+        ("Sands of Time", true),
+        ("Portal Vanguard", true),
+        ("Mister Clocksworth", true), // "Rewind, Rewind, Rewind Battlecry: ..."
+        ("Time Machine", false),      // "Deathrattle: Get a random Rewind card."
+        ("Morchie", false),           // "Your Rewinds keep BOTH potential outcomes."
+        ("Fireball", false),
+    ] {
+        let card = by_name(name).unwrap_or_else(|| panic!("no card {name}"));
+        assert_eq!(
+            card.def().keywords.has(Keywords::REWIND),
+            want,
+            "{name}: {}",
+            card.info().text
+        );
+    }
+}
