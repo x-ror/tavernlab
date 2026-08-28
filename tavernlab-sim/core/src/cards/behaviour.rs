@@ -423,6 +423,8 @@ mod tokens {
     pub const ECTOPLASM: CardId = token("127118-ectoplasm");
     /// What five Demon Hunter cards hand out.
     pub const VOID_SOUL: CardId = token("JAIL_732");
+    /// The Forbidden Sequence's reward.
+    pub const ORIGIN_STONE: CardId = token("TLC_460t");
     /// The Aura cycle, its summon, and the Shatter pair that flies with it.
     pub const CHRONOLOGICAL_AURA: CardId = token("TIME_700");
     pub const CHRONOLOGICAL_DRAKE: CardId = token("TIME_700t");
@@ -9628,6 +9630,117 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             grant_rattle(g, Some(t), tokens::LEPER_GNOME);
         }
     }),
+
+    // ----------------------------------------------------------- the past
+    // Mage's Quest package. Four Discovers, a Quest that counts them, and the
+    // weapon it pays out.
+    //
+    // "From the past" is a pool, not an effect: a card from a set that has
+    // rotated out of Standard. `cards::from_the_past` answers it straight
+    // from the formats each `CardDef` carries, so the pool follows the corpus
+    // through the next rotation with nothing here to change.
+
+    spell("Alter Time", T::None, |g, c| {
+        for _ in 0..2 {
+            if g.discover(c.side, |d| {
+                d.kind() == super::Kind::Spell
+                    && d.school() == super::School::Arcane
+                    && super::from_the_past(d)
+            }) && let Some(hc) = g.player_mut(c.side).hand.last_mut()
+            {
+                hc.cost_delta -= 2;
+            }
+        }
+    }),
+
+    // "Your Rewinds keep BOTH potential outcomes" is not here: it is a
+    // standing rule about how a Rewind resolves, and it lives where Rewind
+    // does -- `Game::keeps_both_rewind_outcomes`, read off the board. This
+    // row is only the Battlecry.
+    battlecry("Morchie", T::None, |g, c| {
+        g.discover(c.side, |d| d.keywords.has(Keywords::REWIND));
+    }),
+
+    // "Battlecry: Discover a spell. Choose to keep it or put it on top of
+    // your opponent's deck." The engine always keeps it; see `APPROXIMATE`.
+    battlecry("Q'onzu", T::None, |g, c| {
+        g.discover(c.side, |d| d.kind() == super::Kind::Spell);
+    }),
+
+    battlecry("Raptor Herald", T::None, |g, c| {
+        if !g.discover(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.races.any(Races::BEAST)
+        }) {
+            return;
+        }
+        // The discount goes on before the Gift: one of the eight Gifts is
+        // Sweet Dreams, which moves the card out of hand and into the deck,
+        // and after that `last_mut` is somebody else.
+        if g.kindred(c.side, Races::BEAST)
+            && let Some(hc) = g.player_mut(c.side).hand.last_mut()
+        {
+            hc.cost_delta -= 1;
+        }
+        g.gift_last_in_hand(c.side);
+    }),
+
+    spell("Wanted Poster", T::None, |g, c| {
+        if g.discover(c.side, |d| d.kind() == super::Kind::Minion && d.cost >= 5)
+            && let Some(hc) = g.player_mut(c.side).hand.last_mut()
+        {
+            // "Give it Prepare": the keyword belongs to the card and cards
+            // are immutable, so this copy carries a mark instead. See
+            // `Marks::GRANTED_PREPARE`.
+            hc.marks.insert(Marks::GRANTED_PREPARE);
+        }
+    }),
+
+    // "Quest: Discover 7 cards." Every Discover in the engine goes through
+    // one place and fires `Event::Discovered` from it, so this counts them
+    // all without knowing which card made the offer.
+    trigger("The Forbidden Sequence", |g, ctx| {
+        if let Event::Discovered { side, .. } = ctx.event
+            && side == ctx.side
+            && let Some((qcard, progress)) = g.player(ctx.side).quest
+        {
+            let progress = progress + 1;
+            if progress >= 7 {
+                g.give_token(ctx.side, tokens::ORIGIN_STONE);
+                g.player_mut(ctx.side).quest = None;
+            } else {
+                g.player_mut(ctx.side).quest = Some((qcard, progress));
+            }
+        }
+    }),
+
+    // "After you Discover a card, this plays the other options. Lose 1
+    // Durability." The options that were let go exist nowhere but the event
+    // -- a Discover throws them away the instant it picks -- which is why
+    // `Event::Discovered` carries them.
+    trigger("The Origin Stone", |g, c| {
+        let Event::Discovered { side, others } = c.event else {
+            return;
+        };
+        if side != c.side || others.iter().all(|o| *o == CardId(0)) {
+            return;
+        }
+        for card in others {
+            if card != CardId(0) {
+                g.play_loose_card(side, card);
+            }
+        }
+        // Its own durability, spent by its own trigger.
+        let spent = match g.player_mut(side).weapon.as_mut() {
+            Some(w) => {
+                w.durability -= 1;
+                w.durability <= 0
+            }
+            None => false,
+        };
+        if spent {
+            g.destroy_weapon(side);
+        }
+    }),
 ];
 
 /// Turn this Location into the next age, keeping the durability it has left.
@@ -9691,6 +9804,10 @@ pub fn is_aura(card: CardId) -> bool {
 /// coverage figure that mixes exact and approximate cards is worse than a
 /// smaller honest one.
 pub const APPROXIMATE: &[(&str, &str)] = &[
+    (
+        "Q'onzu",
+        "the Discovered spell is always kept; \"or put it on top of your opponent's deck\" is never the mode chosen. Picking between them needs a judgement about a card in *their* deck, which nothing here can weigh -- so the engine takes the half that is always available, and the card loses its use as a way to bury a spell it does not want",
+    ),
     (
         "Past Gnomeregan",
         "\"Advance to the present!\" happens on each use and the durability that is left goes with it, so the three ages are three uses of one Location rather than three each. Neither the corpus nor the wiki says when the advance happens or what it does to durability; this is the reading that cannot overrate the card",

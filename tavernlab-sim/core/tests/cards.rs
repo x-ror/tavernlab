@@ -9,7 +9,7 @@
 //! should have changed.
 
 use tavernlab_core::cards::{
-    Class, Keywords, Kind, Races, Rarity, School, behaviour_of, by_id, by_name,
+    Class, Formats, Keywords, Kind, Races, Rarity, School, behaviour_of, by_id, by_name,
 };
 use tavernlab_core::game::{Action, Agent};
 use tavernlab_core::state::{DeckCard, Flags, Game, HandCard, MAX_HAND, Permanent, Side, Target};
@@ -12637,4 +12637,192 @@ fn only_a_card_that_leads_with_the_keyword_carries_it() {
             card.info().text
         );
     }
+}
+
+// ------------------------------------------------------------- the past
+// Mage's Quest package: four Discovers, a Quest that counts them, and the
+// weapon it pays out.
+
+#[test]
+fn from_the_past_is_the_rotated_out_pool() {
+    // Not a judgement: a card is from the past when the corpus says it is
+    // Wild-legal and no longer Standard-legal.
+    let pool = tavernlab_core::cards::discover_pool(|d| {
+        d.kind() == Kind::Spell
+            && d.school() == School::Arcane
+            && tavernlab_core::cards::from_the_past(d)
+    });
+    assert!(!pool.is_empty(), "there are rotated-out Arcane spells to find");
+    for c in &pool {
+        let d = c.def();
+        assert!(d.formats.has(Formats::WILD));
+        assert!(
+            !d.formats.has(Formats::STANDARD),
+            "{} is still Standard-legal",
+            c.name()
+        );
+    }
+}
+
+#[test]
+fn alter_time_discovers_two_cheaper_arcane_spells_from_the_past() {
+    let mut f = Fix::new();
+    f.play("Alter Time", None);
+    let hand: Vec<_> = f.g.players[0].hand.iter().copied().collect();
+    assert_eq!(hand.len(), 2);
+    for hc in hand {
+        let d = hc.card.def();
+        assert_eq!(d.kind(), Kind::Spell);
+        assert_eq!(d.school(), School::Arcane);
+        assert!(tavernlab_core::cards::from_the_past(d), "{}", hc.card.name());
+        assert_eq!(hc.cost_delta, -2, "{} costs (2) less", hc.card.name());
+    }
+}
+
+#[test]
+fn wanted_poster_hands_over_a_big_minion_that_can_be_prepared() {
+    let mut f = Fix::new();
+    f.g.players[0].crystals = 10;
+    f.play("Wanted Poster", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    let hc = f.g.players[0].hand[0];
+    assert_eq!(hc.card.def().kind(), Kind::Minion);
+    assert!(hc.card.def().cost >= 5, "{} costs {}", hc.card.name(), hc.card.def().cost);
+    assert!(
+        !hc.card.def().keywords.has(Keywords::PREPARE),
+        "the card does not print Prepare; the copy was given it"
+    );
+
+    // Prepare is only offered for something you cannot afford anyway.
+    f.g.players[0].mana = 1;
+    let mut legal = tavernlab_core::inline::Inline::new();
+    f.g.legal_actions(&mut legal);
+    assert!(
+        legal.iter().any(|a| matches!(a, Action::Prepare { hand: 0 })),
+        "the granted Prepare is offered"
+    );
+    assert!(f.g.apply(Action::Prepare { hand: 0 }));
+    assert_eq!(f.g.players[0].mana, 0, "the mana went into the card");
+    assert_eq!(f.g.players[0].hand[0].cost_delta, -2, "one mana banked, plus one");
+}
+
+#[test]
+fn raptor_herald_discovers_a_beast_and_gifts_it() {
+    let mut f = Fix::new();
+    f.play("Raptor Herald", None);
+    // Sweet Dreams is the one Gift that moves the card to the deck, so the
+    // Beast is in one place or the other.
+    let held = f.g.players[0].hand.first().copied();
+    let stacked = f.g.players[0].deck.last().copied();
+    assert!(held.is_some() || stacked.is_some(), "the Beast went somewhere");
+    if let Some(hc) = held {
+        assert!(hc.card.def().races.any(Races::BEAST), "{}", hc.card.name());
+        assert_ne!(hc.gift, 0, "with a Dark Gift");
+    }
+}
+
+#[test]
+fn raptor_herald_is_a_mana_cheaper_after_a_beast() {
+    fn cost_of_discovered(kindred: bool) -> i16 {
+        let mut f = Fix::new();
+        if kindred {
+            f.g.players[0].played_races_last = Races::BEAST;
+        }
+        f.play("Raptor Herald", None);
+        let hc = f.g.players[0].hand[0];
+        // The Gift moves the printed cost too, so what is compared is the
+        // delta this card put on the copy.
+        let (_, _, gift_cost) = tavernlab_core::cards::gift_stats(hc.gift);
+        hc.cost_delta - gift_cost
+    }
+    assert_eq!(
+        cost_of_discovered(true) - cost_of_discovered(false),
+        -1,
+        "Kindred takes one mana off, and only that"
+    );
+}
+
+#[test]
+fn the_forbidden_sequence_pays_out_after_seven_discovers() {
+    let mut f = Fix::new();
+    f.g.players[0].crystals = 10;
+    f.play("The Forbidden Sequence", None);
+    assert!(f.g.players[0].quest.is_some());
+    for n in 1..=7 {
+        f.g.players[0].mana = 10;
+        f.g.discover(ME, |d| d.kind() == Kind::Spell);
+        let held = f.g.players[0]
+            .hand
+            .iter()
+            .any(|h| h.card.name() == "The Origin Stone");
+        assert_eq!(held, n == 7, "after {n} Discovers");
+    }
+    assert!(f.g.players[0].quest.is_none(), "seven paid, the slot is given up");
+}
+
+#[test]
+fn every_kind_of_discover_counts_towards_the_quest() {
+    // Seven Discover shapes reach the engine and all of them are Discovers;
+    // before this package only three of them said so.
+    let mut f = Fix::new().deck(&["Fireball", "Frostbolt", "Chillwind Yeti"]);
+    f.g.players[0].crystals = 10;
+    f.play("The Forbidden Sequence", None);
+    let before = f.g.players[0].quest.map(|(_, p)| p).unwrap();
+    f.g.discover_from_deck(ME, |d| d.kind() == Kind::Spell);
+    let after = f.g.players[0].quest.map(|(_, p)| p).unwrap();
+    assert_eq!(after, before + 1, "a Discover from the deck is a Discover");
+}
+
+#[test]
+fn the_origin_stone_plays_what_the_discover_let_go() {
+    let mut f = Fix::new();
+    f.g.players[0].crystals = 10;
+    f.g.players[0].weapon = Some(tavernlab_core::state::Weapon::equip(
+        by_name("The Origin Stone").unwrap(),
+    ));
+    let durability = f.g.players[0].weapon.unwrap().durability;
+    // Vanilla bodies only: a minion with a Battlecry of its own could
+    // Discover again from inside this one, and then what is being counted is
+    // the cascade rather than the weapon.
+    f.g.discover(ME, |d| {
+        d.kind() == Kind::Minion
+            && d.cost <= 2
+            && d.keywords.has(Keywords::TEXT_UNDERSTOOD)
+            && !d.keywords.has(Keywords::BATTLECRY)
+            && !d.keywords.has(Keywords::DEATHRATTLE)
+    });
+    assert_eq!(f.g.players[0].hand.len(), 1, "the pick went to hand");
+    assert_eq!(
+        f.g.players[0].board.len(),
+        2,
+        "and the other two were played"
+    );
+    assert_eq!(
+        f.g.players[0].weapon.unwrap().durability,
+        durability - 1,
+        "one durability for the whole Discover, not one per card"
+    );
+}
+
+#[test]
+fn morchie_keeps_both_rewind_outcomes_instead_of_choosing() {
+    // Shadows of Yesterday summons four Shades. With Morchie out the card
+    // resolves twice rather than being rolled back and re-rolled, so the
+    // board fills instead of staying at four.
+    let mut f = Fix::new();
+    f.g.players[0].crystals = 10;
+    f.g.players[0].mana = 10;
+    f.play("Shadows of Yesterday", None);
+    assert_eq!(f.g.players[0].board.len(), 4, "one timeline, four Shades");
+
+    let mut f = Fix::new().board(ME, &["Morchie"]);
+    f.g.players[0].crystals = 10;
+    f.g.players[0].mana = 10;
+    assert!(f.g.keeps_both_rewind_outcomes(ME));
+    f.play("Shadows of Yesterday", None);
+    assert_eq!(
+        f.g.players[0].board.len(),
+        7,
+        "Morchie plus both rolls, capped by the board"
+    );
 }
