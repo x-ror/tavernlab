@@ -12,7 +12,7 @@
 
 use crate::cards::{CardId, Keywords, Kind};
 use crate::inline::Inline;
-use crate::state::{Flags, Game, MAX_BOARD, Side, Target};
+use crate::state::{DeckCard, Flags, Game, MAX_BOARD, Side, Target};
 
 /// Which characters an area effect covers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -263,7 +263,11 @@ impl Game {
             && let Some(m) = self.player(s).board.get(i as usize).copied()
         {
             self.player_mut(s).board.remove(i as usize);
-            self.give_card(s, m.card);
+            let mut hc = crate::state::HandCard::new(m.card);
+            if m.flags.has(Flags::NOT_FROM_DECK) {
+                hc.marks.insert(crate::state::Marks::NOT_FROM_DECK);
+            }
+            self.give_hand_card(s, hc);
             self.board_dirty = true;
         }
     }
@@ -565,7 +569,7 @@ impl Game {
         let at = matches[pick] as usize;
         let card = self.player(side).deck[at];
         self.player_mut(side).deck.remove(at);
-        self.give_card(side, card);
+        self.give_hand_card(side, card.to_hand());
         self.fire(crate::events::Event::CardDrawn { side });
         true
     }
@@ -611,6 +615,209 @@ impl Game {
             Some(c) => self.give_card(side, c),
             None => false,
         }
+    }
+
+    /// Discover a card and put it on the bottom of the deck instead of into
+    /// hand, with `atk`/`hp` already written on it (Kaldorei Cultivator).
+    ///
+    /// The offer is made the same way [`Game::discover`] makes it -- three
+    /// candidates, the best castable one taken -- because the pick is the
+    /// same decision wherever the card ends up.
+    pub fn discover_to_deck_bottom(
+        &mut self,
+        side: Side,
+        pred: fn(&crate::cards::CardDef) -> bool,
+        atk: i16,
+        hp: i16,
+    ) -> bool {
+        self.player_mut(side).discovered_turn = true;
+        let pool = crate::cards::discover_pool(pred);
+        if pool.is_empty() {
+            return false;
+        }
+        let mut offered = [0u32; 3];
+        let n = self.rngs.effects.sample_indices(pool.len(), &mut offered);
+        let crystals = self.player(side).crystals;
+        let best = offered[..n]
+            .iter()
+            .map(|&i| pool[i as usize])
+            .max_by_key(|c| {
+                let d = c.def();
+                (d.cost <= crystals + 1, d.cost)
+            });
+        let Some(card) = best else { return false };
+        let mut dc = DeckCard::new(card);
+        dc.enchant(atk, hp);
+        self.put_deck_card_on_bottom(side, dc)
+    }
+
+    // ---------------------------------------------------- deck enchanting
+
+    /// Give `atk`/`hp` to every card in the deck for which `pred` holds.
+    /// Returns how many were buffed.
+    ///
+    /// The stats sit on the deck card and fold into the body when it is
+    /// drawn and played, or straight onto the board if something summons it
+    /// out of the deck.
+    pub fn enchant_deck_where(
+        &mut self,
+        side: Side,
+        pred: impl Fn(&crate::cards::CardDef) -> bool,
+        atk: i16,
+        hp: i16,
+    ) -> usize {
+        let mut n = 0;
+        for dc in self.player_mut(side).deck.iter_mut() {
+            if pred(dc.card.def()) {
+                dc.enchant(atk, hp);
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Give `atk`/`hp` to the topmost `n` cards matching `pred`.
+    ///
+    /// The top of the deck is the end of the array -- the end [`Game::draw`]
+    /// pops from -- so this walks backwards. Returns how many were buffed,
+    /// which is fewer than `n` when the deck runs out of matches.
+    pub fn enchant_deck_top(
+        &mut self,
+        side: Side,
+        n: usize,
+        pred: impl Fn(&crate::cards::CardDef) -> bool,
+        atk: i16,
+        hp: i16,
+    ) -> usize {
+        let mut done = 0;
+        for dc in self.player_mut(side).deck.iter_mut().rev() {
+            if done == n {
+                break;
+            }
+            if pred(dc.card.def()) {
+                dc.enchant(atk, hp);
+                done += 1;
+            }
+        }
+        done
+    }
+
+    /// Give `atk`/`hp` to every card in hand for which `pred` holds.
+    pub fn enchant_hand_where(
+        &mut self,
+        side: Side,
+        pred: impl Fn(&crate::cards::CardDef) -> bool,
+        atk: i16,
+        hp: i16,
+    ) -> usize {
+        let mut n = 0;
+        for hc in self.player_mut(side).hand.iter_mut() {
+            if pred(hc.card.def()) {
+                hc.enchant(atk, hp);
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Set what the bottom `n` cards of the deck cost, whatever they were
+    /// printed at (Krona, Keeper of Eons). The bottom is index 0.
+    pub fn set_deck_bottom_cost(&mut self, side: Side, n: usize, cost: i16) -> usize {
+        let mut done = 0;
+        for dc in self.player_mut(side).deck.iter_mut() {
+            if done == n {
+                break;
+            }
+            dc.set_cost(cost);
+            done += 1;
+        }
+        done
+    }
+
+    /// Destroy every card in `side`'s deck that was not in the list the deck
+    /// was built from (Steamcleaner). Returns how many went.
+    pub fn destroy_shuffled_in(&mut self, side: Side) -> usize {
+        let before = self.player(side).deck.len();
+        self.player_mut(side).deck.retain(|dc| dc.started_here);
+        before - self.player(side).deck.len()
+    }
+
+    /// Shuffle `n` random implemented cards matching `pred` into the deck,
+    /// running `enchant` on each before it goes in.
+    ///
+    /// The hook is how "shuffle in five minions … double their stats" gets
+    /// written without inventing a number: the doubling is read off each
+    /// card's own printed body.
+    pub fn shuffle_random_into_deck_where(
+        &mut self,
+        side: Side,
+        n: usize,
+        pred: fn(&crate::cards::CardDef) -> bool,
+        enchant: fn(&mut DeckCard),
+    ) -> usize {
+        let pool = crate::cards::discover_pool(pred);
+        if pool.is_empty() {
+            return 0;
+        }
+        let mut done = 0;
+        for _ in 0..n {
+            let pick = self.rngs.effects.index(pool.len());
+            let mut dc = DeckCard::new(pool[pick]);
+            enchant(&mut dc);
+            if !self.shuffle_deck_card(side, dc) {
+                break;
+            }
+            done += 1;
+        }
+        done
+    }
+
+    /// Reduce what every card in hand matching `pred` costs, for that copy
+    /// only. Returns how many were discounted.
+    pub fn discount_hand_where(
+        &mut self,
+        side: Side,
+        pred: impl Fn(&crate::state::HandCard) -> bool,
+        by: i16,
+    ) -> usize {
+        let mut n = 0;
+        for hc in self.player_mut(side).hand.iter_mut() {
+            if pred(hc) {
+                hc.cost_delta -= by;
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Draw a card that either did or did not start in the deck, restricted
+    /// to those matching `pred`.
+    ///
+    /// Like [`Game::draw_matching`], a miss draws nothing at all rather than
+    /// falling back to a normal draw: "draw a spell that didn't start in
+    /// your deck" with no such spell there draws none.
+    pub fn draw_by_origin(
+        &mut self,
+        side: Side,
+        started: bool,
+        pred: impl Fn(&crate::cards::CardDef) -> bool,
+    ) -> bool {
+        let mut matches: Inline<u16, { crate::state::MAX_DECK }> = Inline::new();
+        for (i, dc) in self.player(side).deck.iter().enumerate() {
+            if dc.started_here == started && pred(dc.def()) {
+                matches.push(i as u16);
+            }
+        }
+        if matches.is_empty() {
+            return false;
+        }
+        let pick = self.rngs.effects.index(matches.len());
+        let at = matches[pick] as usize;
+        let card = self.player(side).deck[at];
+        self.player_mut(side).deck.remove(at);
+        self.give_hand_card(side, card.to_hand());
+        self.fire(crate::events::Event::CardDrawn { side });
+        true
     }
 
     /// Refresh spent mana, up to the crystals owned.
@@ -854,7 +1061,7 @@ impl Game {
         let at = matches[pick] as usize;
         let card = self.player(side).deck[at];
         self.player_mut(side).deck.remove(at);
-        self.summon(side, card)
+        self.summon_with(side, card.card, card.atk as i16, card.hp as i16)
     }
 
     /// Discard a random card from hand matching `pred`. Returns whether there
@@ -914,7 +1121,7 @@ impl Game {
         let Some(at) = best else { return false };
         let card = self.player(side).deck[at];
         self.player_mut(side).deck.remove(at);
-        self.give_card(side, card)
+        self.give_hand_card(side, card.to_hand())
     }
 
     /// Discover among the opponent's remaining deck, moving the pick to
@@ -937,7 +1144,7 @@ impl Game {
             return false;
         }
         let pick = self.rngs.effects.index(matches.len());
-        let card = self.player(foe).deck[matches[pick] as usize];
+        let card = self.player(foe).deck[matches[pick] as usize].card;
         self.give_card(side, card)
     }
 
@@ -1135,7 +1342,13 @@ impl Game {
     /// draw. The deck's "top" is the end of the array (drawing pops), so the
     /// bottom is index 0.
     pub fn put_on_bottom(&mut self, side: Side, card: CardId) -> bool {
-        self.player_mut(side).deck.insert(0, card)
+        self.player_mut(side).deck.insert(0, DeckCard::new(card))
+    }
+
+    /// Put an already-built deck card at the bottom -- for a card that
+    /// arrives there with stats or a cost already on it.
+    pub fn put_deck_card_on_bottom(&mut self, side: Side, dc: DeckCard) -> bool {
+        self.player_mut(side).deck.insert(0, dc)
     }
 
     /// Shuffle `side`'s deck in place -- for a card that adds copies to it
@@ -1166,9 +1379,15 @@ impl Game {
     /// [`Game::put_on_bottom`]: "shuffle into your deck" can land anywhere,
     /// not always last.
     pub fn shuffle_into_deck(&mut self, side: Side, card: CardId) -> bool {
+        self.shuffle_deck_card(side, DeckCard::new(card))
+    }
+
+    /// Shuffle an already-built deck card in, keeping whatever is written on
+    /// it -- stats, a cost, where it came from.
+    pub fn shuffle_deck_card(&mut self, side: Side, dc: DeckCard) -> bool {
         let len = self.player(side).deck.len();
         let at = self.rngs.effects.index(len + 1);
-        self.player_mut(side).deck.insert(at, card)
+        self.player_mut(side).deck.insert(at, dc)
     }
 
     /// Shuffle a random implemented card matching `pred` into `side`'s deck.

@@ -10,7 +10,7 @@
 
 use tavernlab_core::cards::{Class, Keywords, Kind, Races, behaviour_of, by_name};
 use tavernlab_core::game::{Action, Agent};
-use tavernlab_core::state::{Flags, Game, HandCard, MAX_HAND, Permanent, Side, Target};
+use tavernlab_core::state::{DeckCard, Flags, Game, HandCard, MAX_HAND, Permanent, Side, Target};
 
 const ME: Side = Side::Player0;
 const FOE: Side = Side::Player1;
@@ -45,7 +45,7 @@ impl Fix {
     /// Put cards in the current player's deck, top last.
     fn deck(mut self, names: &[&str]) -> Fix {
         for n in names {
-            self.g.players[0].deck.push(by_name(n).unwrap());
+            self.g.players[0].deck.push(DeckCard::started(by_name(n).unwrap()));
         }
         self
     }
@@ -2134,7 +2134,7 @@ fn hardlight_protector_heals_and_gives_its_hero_a_divine_shield() {
 #[test]
 fn intertwined_fate_discovers_a_copy_from_each_deck() {
     let mut f = Fix::new().deck(&["Bloodfen Raptor"]);
-    f.g.players[1].deck.push(by_name("Chillwind Yeti").unwrap());
+    f.g.players[1].deck.push(DeckCard::started(by_name("Chillwind Yeti").unwrap()));
     f.play("Intertwined Fate", None);
     assert_eq!(f.g.players[0].hand.len(), 2, "one pick from each deck");
     assert_eq!(f.g.players[1].deck.len(), 1, "the opponent keeps their copy");
@@ -2248,7 +2248,7 @@ fn eredar_deceptor_summons_a_demon_each_time_its_controller_draws() {
 #[test]
 fn eredar_deceptor_does_not_react_to_the_opponent_drawing() {
     let mut f = Fix::new().board(ME, &["Eredar Deceptor"]);
-    f.g.players[1].deck.push(by_name("Bloodfen Raptor").unwrap());
+    f.g.players[1].deck.push(DeckCard::started(by_name("Bloodfen Raptor").unwrap()));
     f.g.draw_cards(FOE, 1);
     assert_eq!(f.g.players[0].board.len(), 1, "no reaction to the opponent's draw");
 }
@@ -2630,7 +2630,7 @@ fn chainbreaker_hogger_duplicates_other_legendaries_at_start_of_game() {
     let mut agents: [&mut dyn Agent; 2] = [&mut a, &mut b];
     g.start(Side::Player0, &mut agents);
 
-    let count = g.players[0].deck.iter().filter(|&&c| c == leg).count()
+    let count = g.players[0].deck.iter().filter(|d| d.card == leg).count()
         + g.players[0].hand.iter().filter(|hc| hc.card == leg).count();
     assert_eq!(count, 2, "the other Legendary should now appear twice total");
 }
@@ -2651,9 +2651,9 @@ fn king_llane_hides_in_the_opponents_deck_at_start_of_game() {
     let mut agents: [&mut dyn Agent; 2] = [&mut a, &mut b];
     g.start(Side::Player0, &mut agents);
 
-    let mine = g.players[0].deck.iter().filter(|&&c| c == llane).count()
+    let mine = g.players[0].deck.iter().filter(|d| d.card == llane).count()
         + g.players[0].hand.iter().filter(|hc| hc.card == llane).count();
-    let theirs = g.players[1].deck.iter().filter(|&&c| c == llane).count()
+    let theirs = g.players[1].deck.iter().filter(|d| d.card == llane).count()
         + g.players[1].hand.iter().filter(|hc| hc.card == llane).count();
     assert_eq!(mine, 0, "no longer anywhere in its owner's zones");
     assert_eq!(theirs, 1, "planted in the opponent's deck instead");
@@ -2665,7 +2665,7 @@ fn king_llane_battlecry_draws_and_shuffles_itself_back() {
     f.play("King Llane", None);
     assert_eq!(f.g.players[0].hand.len(), 1, "drew the Wisp");
     assert!(
-        f.g.players[0].deck.iter().any(|&c| c.name() == "King Llane"),
+        f.g.players[0].deck.iter().any(|c| c.name() == "King Llane"),
         "shuffled itself back into the deck it was played from"
     );
 }
@@ -2945,12 +2945,12 @@ fn warptooth_summons_itself_from_hand_after_four_friendly_damage_instances() {
 #[test]
 fn warptooth_summons_itself_from_the_deck_too() {
     let mut f = Fix::new();
-    f.g.players[0].deck.push(by_name("Warptooth").unwrap());
+    f.g.players[0].deck.push(DeckCard::started(by_name("Warptooth").unwrap()));
     for _ in 0..4 {
         f.g.deal_damage(Target::Hero(ME), 1);
     }
     assert!(
-        !f.g.players[0].deck.iter().any(|&c| c.name() == "Warptooth"),
+        !f.g.players[0].deck.iter().any(|c| c.name() == "Warptooth"),
         "left the deck"
     );
     assert!(f.g.players[0].board.iter().any(|m| m.card.name() == "Warptooth"));
@@ -3046,7 +3046,7 @@ fn tiny_pal_deals_one_to_all_enemies_after_the_hero_attacks() {
 #[test]
 fn nightmare_fuel_discovers_a_minion_copy_from_the_opponents_deck() {
     let mut f = Fix::new();
-    f.g.players[1].deck.push(by_name("Chillwind Yeti").unwrap());
+    f.g.players[1].deck.push(DeckCard::started(by_name("Chillwind Yeti").unwrap()));
     f.play("Nightmare Fuel", None);
     assert_eq!(f.g.players[0].hand.len(), 1);
     assert_eq!(f.g.players[0].hand[0].card.name(), "Chillwind Yeti");
@@ -3245,7 +3245,7 @@ fn godfrey_returns_one_overdrawn_card_per_turn_discounted() {
     f.g.players[0].godfrey_active = true;
     let yeti = by_name("Chillwind Yeti").unwrap();
     f.g.players[0].overdrawn.push(yeti);
-    f.g.players[0].deck.push(by_name("Wisp").unwrap()); // fed to the guaranteed draw
+    f.g.players[0].deck.push(DeckCard::started(by_name("Wisp").unwrap())); // fed to the guaranteed draw
     f.g.begin_turn();
     let hc = f.g.players[0]
         .hand
@@ -3394,7 +3394,7 @@ fn irida_sinseeker_draws_two_from_the_void_each_turn() {
     f.g.players[0].void.push(wisp);
     f.g.players[0].void.push(wisp);
     f.g.players[0].void.push(wisp);
-    f.g.players[0].deck.push(wisp); // fed to the guaranteed draw
+    f.g.players[0].deck.push(DeckCard::started(wisp)); // fed to the guaranteed draw
     f.g.begin_turn();
     assert_eq!(f.g.players[0].void.len(), 1, "two were taken");
     assert_eq!(
@@ -3504,10 +3504,13 @@ fn sinestra_casts_a_spell_from_another_class_twice_but_not_her_own() {
 }
 
 #[test]
-fn ultraxion_heralds_and_reduces_deathwings_cost_if_in_hand() {
+fn ultraxion_heralds_and_reduces_deathwings_cost_wherever_it_waits() {
     let mut f = Fix::new();
     let deathwing = by_name("Deathwing, Worldbreaker").unwrap();
     f.g.players[0].hand.push(HandCard::new(deathwing));
+    // Deathwing on top, so the draw below takes it.
+    f.g.players[0].deck.push(DeckCard::started(by_name("Wisp").unwrap()));
+    f.g.players[0].deck.push(DeckCard::started(deathwing));
     f.play("Ultraxion", None);
     assert_eq!(f.g.players[0].herald, 1, "Heralded once");
     let hc = f.g.players[0]
@@ -3516,6 +3519,14 @@ fn ultraxion_heralds_and_reduces_deathwings_cost_if_in_hand() {
         .find(|hc| hc.card == deathwing)
         .expect("Deathwing is still in hand");
     assert_eq!(hc.cost_delta, -1);
+    assert_eq!(f.g.players[0].deck[1].cost_delta, -1, "and the copy in the deck");
+    assert_eq!(f.g.players[0].deck[0].cost_delta, 0, "the Wisp is not Deathwing");
+
+    // The reduction survives the draw, which is the whole point of writing
+    // it on the deck card.
+    f.g.draw(ME, 1);
+    let drawn = f.g.players[0].hand.len() - 1;
+    assert_eq!(f.g.card_cost(ME, drawn), 9);
 }
 
 #[test]
@@ -3554,7 +3565,7 @@ fn broxigar_disappears_from_hand_at_start_of_game() {
     let mut agents: [&mut dyn Agent; 2] = [&mut a, &mut b];
     g.start(Side::Player0, &mut agents);
 
-    let anywhere = g.players[0].deck.iter().any(|&c| c == broxigar)
+    let anywhere = g.players[0].deck.iter().any(|d| d.card == broxigar)
         || g.players[0].hand.iter().any(|hc| hc.card == broxigar);
     assert!(!anywhere, "Broxigar disappeared from both zones");
 }
@@ -3611,7 +3622,7 @@ fn fleeing_urzul_deathrattle_rewards_its_controllers_opponent() {
         f.g.players[0]
             .deck
             .iter()
-            .filter(|&&c| c.name() == "Second Portal to Argus")
+            .filter(|c| c.name() == "Second Portal to Argus")
             .count(),
         1,
         "and had the next Portal shuffled into their own deck"
@@ -3780,7 +3791,7 @@ fn p1ck_p0k3t_draws_only_with_a_big_enough_deck() {
 
     let filler = by_name("Wisp").unwrap();
     for _ in 0..25 {
-        f.g.players[0].deck.push(filler);
+        f.g.players[0].deck.push(DeckCard::started(filler));
     }
     f.play("P1CK-P0K3T", None);
     assert_eq!(f.g.players[0].hand.len(), 1, "25+ cards: drew one");
@@ -3962,7 +3973,7 @@ fn chillfallen_baron_draws_on_both_battlecry_and_deathrattle() {
     f.play("Chillfallen Baron", None);
     assert_eq!(f.g.players[0].hand.len(), 1, "battlecry draw");
 
-    f.g.players[0].deck.push(by_name("Wisp").unwrap());
+    f.g.players[0].deck.push(DeckCard::started(by_name("Wisp").unwrap()));
     f.g.deal_damage(Target::Minion(ME, 0), 5);
     f.g.sweep_deaths();
     assert_eq!(f.g.players[0].hand.len(), 2, "deathrattle draw too");
@@ -4622,8 +4633,8 @@ fn fiendish_servant_gives_its_attack_to_a_random_friendly_minion() {
 #[test]
 fn gnomeferatu_removes_the_top_of_the_opponents_deck() {
     let mut f = Fix::new();
-    f.g.players[1].deck.push(by_name("Wisp").unwrap());
-    f.g.players[1].deck.push(by_name("Chillwind Yeti").unwrap()); // top: popped first
+    f.g.players[1].deck.push(DeckCard::started(by_name("Wisp").unwrap()));
+    f.g.players[1].deck.push(DeckCard::started(by_name("Chillwind Yeti").unwrap())); // top: popped first
     f.play("Gnomeferatu", None);
     assert_eq!(f.g.players[1].deck.len(), 1);
     assert_eq!(
@@ -5160,7 +5171,16 @@ fn enthrall_shuffles_five_legendary_dragons_into_the_deck() {
         assert_eq!(d.kind(), Kind::Minion);
         assert!(d.races.any(Races::DRAGON), "{} is not a Dragon", card.name());
         assert_eq!(d.rarity(), Rarity::Legendary, "{}", card.name());
+        assert_eq!(
+            d.cost + card.cost_delta as i16,
+            1,
+            "{} should cost (1)",
+            card.name()
+        );
     }
+    // And still costs (1) once drawn.
+    f.g.draw(ME, 1);
+    assert_eq!(f.g.card_cost(ME, 0), 1);
 }
 
 // ------------------------------------------------------------- Tradeable
@@ -5179,7 +5199,7 @@ fn a_tradeable_card_goes_back_into_the_deck_for_one_mana_and_a_draw() {
     assert_eq!(f.g.players[0].mana, 2, "a Trade costs one mana");
     assert_eq!(f.g.players[0].deck.len(), 2, "one card in, one drawn out");
     assert!(
-        f.g.players[0].deck.contains(&knight),
+        f.g.players[0].deck.iter().any(|d| d.card == knight),
         "the traded card is back in the deck"
     );
     assert_eq!(f.g.players[0].hand.len(), 1, "and a card was drawn");
@@ -5351,9 +5371,9 @@ fn menagerie_mug_buffs_three_minions_of_three_different_tribes() {
 fn omen_of_the_end_mills_only_from_an_empty_deck() {
     let mut f = Fix::new();
     for _ in 0..6 {
-        f.g.players[1].deck.push(by_name("Wisp").unwrap());
+        f.g.players[1].deck.push(DeckCard::started(by_name("Wisp").unwrap()));
     }
-    f.g.players[0].deck.push(by_name("Wisp").unwrap());
+    f.g.players[0].deck.push(DeckCard::started(by_name("Wisp").unwrap()));
     f.play("Omen of the End", None);
     assert_eq!(f.g.players[1].deck.len(), 6, "your deck is not empty yet");
 
@@ -7494,7 +7514,7 @@ fn crowd_control_hits_twice_and_is_cheaper_on_a_fat_deck() {
     f.g.players[0].hand.push(HandCard::new(by_name("Crowd Control").unwrap()));
     assert_eq!(f.g.card_cost(ME, 0), 5);
     for _ in 0..25 {
-        f.g.players[0].deck.push(by_name("Wisp").unwrap());
+        f.g.players[0].deck.push(DeckCard::started(by_name("Wisp").unwrap()));
     }
     assert_eq!(f.g.card_cost(ME, 0), 3);
 }
@@ -7510,7 +7530,7 @@ fn for_glory_is_cheaper_the_more_they_have() {
 fn scrappy_defender_reads_the_deck_as_it_shrinks() {
     let mut f = Fix::new().board(ME, &["Scrappy Defender"]); // 2/7
     for _ in 0..25 {
-        f.g.players[0].deck.push(by_name("Wisp").unwrap());
+        f.g.players[0].deck.push(DeckCard::started(by_name("Wisp").unwrap()));
     }
     f.g.recompute_auras();
     assert_eq!(f.mine(0).atk, 7);
@@ -7654,7 +7674,7 @@ fn mystic_misdirection_turns_the_attacker_into_a_sheep() {
 #[test]
 fn psychic_conjurer_copies_out_of_their_deck() {
     let mut f = Fix::new();
-    f.g.players[1].deck.push(by_name("Boulderfist Ogre").unwrap());
+    f.g.players[1].deck.push(DeckCard::started(by_name("Boulderfist Ogre").unwrap()));
     f.play("Psychic Conjurer", None);
     assert_eq!(f.g.players[0].hand.len(), 1);
     assert_eq!(f.g.players[0].hand[0].card.name(), "Boulderfist Ogre");
@@ -8195,8 +8215,8 @@ fn leokk_lifts_the_rest_of_the_board() {
 #[test]
 fn mimicry_pays_you_for_their_draw() {
     let mut f = Fix::new();
-    f.g.players[1].deck.push(by_name("Wisp").unwrap());
-    f.g.players[1].deck.push(by_name("Chillwind Yeti").unwrap());
+    f.g.players[1].deck.push(DeckCard::started(by_name("Wisp").unwrap()));
+    f.g.players[1].deck.push(DeckCard::started(by_name("Chillwind Yeti").unwrap()));
     f.play("Mimicry", None);
     assert_eq!(f.g.players[1].hand.len(), 2);
     let mut mine: Vec<&str> = f.g.players[0].hand.iter().map(|h| h.card.name()).collect();
@@ -9012,8 +9032,8 @@ fn siamat_takes_two_of_the_four() {
 #[test]
 fn warmaster_blackhorn_strips_the_cheap_from_both_decks() {
     let mut f = Fix::new().deck(&["Wisp", "Boulderfist Ogre"]);
-    f.g.players[1].deck.push(by_name("Bloodfen Raptor").unwrap());
-    f.g.players[1].deck.push(by_name("Deathwing").unwrap());
+    f.g.players[1].deck.push(DeckCard::started(by_name("Bloodfen Raptor").unwrap()));
+    f.g.players[1].deck.push(DeckCard::started(by_name("Deathwing").unwrap()));
     f.play("Warmaster Blackhorn", None);
     assert_eq!(f.g.players[0].deck.len(), 1);
     assert_eq!(f.g.players[1].deck.len(), 1);
@@ -9086,7 +9106,7 @@ fn vanessa_pays_a_battlecry_per_card() {
 #[test]
 fn keymaster_alabaster_copies_their_draws_at_one() {
     let mut f = Fix::new().board(ME, &["Keymaster Alabaster"]);
-    f.g.players[1].deck.push(by_name("Boulderfist Ogre").unwrap());
+    f.g.players[1].deck.push(DeckCard::started(by_name("Boulderfist Ogre").unwrap()));
     f.g.draw(FOE, 1);
     assert_eq!(f.g.players[0].hand.len(), 1);
     assert_eq!(f.g.players[0].hand[0].card.name(), "Boulderfist Ogre");
@@ -9847,4 +9867,410 @@ fn diabolus_rex_hits_both_ends_on_kindred() {
     assert_eq!(f.theirs(0).damage, 6);
     assert_eq!(f.theirs(1).damage, 0, "the middle is spared");
     assert_eq!(f.theirs(2).damage, 6);
+}
+
+// ------------------------------------------------------------ the deck zone
+//
+// `DeckCard` carries per-copy state: stats written on a card while it waits,
+// a cost set on it, and whether it was in the list the deck was built from.
+// The first three tests are about the zone itself; the rest are the cards
+// that read and write it.
+
+/// Put cards into a deck as if something had shuffled them in mid-game, so
+/// they are the ones that "didn't start in your deck".
+fn shuffled_in(f: &mut Fix, side: Side, names: &[&str]) {
+    for n in names {
+        let card = by_name(n).unwrap_or_else(|| panic!("no card {n}"));
+        f.g.player_mut(side).deck.push(DeckCard::new(card));
+    }
+}
+
+#[test]
+fn stats_written_on_a_deck_card_follow_it_into_hand_and_onto_the_board() {
+    let mut f = Fix::new().deck(&["Chillwind Yeti"]); // 4/5
+    f.g.players[0].deck[0].enchant(2, 3);
+    f.g.draw(ME, 1);
+    let hc = f.g.players[0].hand[0];
+    assert_eq!((hc.atk, hc.hp), (2, 3), "the enchantment came along");
+
+    let ok = f.g.apply(Action::Play {
+        hand: 0,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    });
+    assert!(ok);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (6, 8));
+}
+
+#[test]
+fn a_cost_set_in_the_deck_is_what_the_card_costs_in_hand() {
+    let mut f = Fix::new().deck(&["Deathwing"]); // costs 10
+    f.g.players[0].deck[0].set_cost(1);
+    f.g.draw(ME, 1);
+    assert_eq!(f.g.card_cost(ME, 0), 1);
+}
+
+#[test]
+fn trading_a_card_away_does_not_make_it_a_stranger_to_its_own_deck() {
+    // A Tradeable card goes back into the deck. It started there, so
+    // Steamcleaner must not sweep it up and Story of the Waygate must not
+    // discount it once it is drawn again. Trading shuffles and then draws,
+    // so the card can end up in either zone: both are checked.
+    let mut f = Fix::new().deck(&["Wisp"]);
+    let tradeable = (0..u16::MAX)
+        .map(tavernlab_core::cards::CardId)
+        .find(|c| {
+            c.def().collectible
+                && c.def().keywords.has(Keywords::TRADEABLE)
+                && behaviour_of(*c).is_some()
+        })
+        .expect("some Tradeable card is implemented");
+    f.g.players[0].hand.push(HandCard::new(tradeable));
+    f.g.players[0].mana = 10;
+    assert!(f.g.apply(Action::Trade { hand: 0 }));
+
+    let in_deck = f.g.players[0].deck.iter().find(|d| d.card == tradeable);
+    let in_hand = f.g.players[0].hand.iter().find(|h| h.card == tradeable);
+    assert!(
+        in_deck.is_some() || in_hand.is_some(),
+        "the traded card is still somewhere"
+    );
+    if let Some(d) = in_deck {
+        assert!(d.started_here, "it started in this deck and still has");
+    }
+    if let Some(h) = in_hand {
+        assert!(
+            !h.marks.has(tavernlab_core::state::Marks::NOT_FROM_DECK),
+            "drawn straight back out, still one of the deck's own"
+        );
+    }
+}
+
+#[test]
+fn a_bounced_minion_remembers_it_came_from_the_deck() {
+    let mut f = Fix::new().deck(&["Chillwind Yeti"]);
+    f.g.draw(ME, 1);
+    assert!(f.g.apply(Action::Play {
+        hand: 0,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    f.g.bounce(Target::Minion(ME, 0));
+    assert!(
+        !f.g.players[0].hand[0]
+            .marks
+            .has(tavernlab_core::state::Marks::NOT_FROM_DECK),
+        "played out of the deck, so bouncing it does not relabel it"
+    );
+
+    // A token summoned onto the board never was in the deck.
+    let mut f = Fix::new();
+    f.g.summon(ME, by_name("Chillwind Yeti").unwrap());
+    f.g.bounce(Target::Minion(ME, 0));
+    assert!(
+        f.g.players[0].hand[0]
+            .marks
+            .has(tavernlab_core::state::Marks::NOT_FROM_DECK),
+    );
+}
+
+#[test]
+fn beanstalk_brute_buffs_the_top_three_minions_skipping_spells() {
+    // Top is the end of the list: Yeti, Raptor, then past Fireball to the
+    // second Wisp. The fourth minion down is out of reach.
+    let mut f = Fix::new().deck(&[
+        "Wisp",
+        "Wisp",
+        "Fireball",
+        "Bloodfen Raptor",
+        "Chillwind Yeti",
+    ]);
+    f.play("Beanstalk Brute", None);
+    let d = &f.g.players[0].deck;
+    assert_eq!((d[0].atk, d[0].hp), (0, 0), "the fourth minion down, missed");
+    assert_eq!((d[1].atk, d[1].hp), (4, 4), "the third minion down");
+    assert_eq!((d[2].atk, d[2].hp), (0, 0), "Fireball is not a minion");
+    assert_eq!((d[3].atk, d[3].hp), (4, 4));
+    assert_eq!((d[4].atk, d[4].hp), (4, 4));
+}
+
+#[test]
+fn beanstalk_brute_stops_when_the_deck_runs_out_of_minions() {
+    let mut f = Fix::new().deck(&["Fireball", "Chillwind Yeti"]);
+    f.play("Beanstalk Brute", None);
+    assert_eq!(
+        (f.g.players[0].deck[1].atk, f.g.players[0].deck[1].hp),
+        (4, 4)
+    );
+    assert_eq!((f.g.players[0].deck[0].atk, f.g.players[0].deck[0].hp), (0, 0));
+}
+
+#[test]
+fn kaldorei_cultivator_puts_two_buffed_beasts_on_the_bottom() {
+    let mut f = Fix::new().deck(&["Wisp"]);
+    f.play("Kaldorei Cultivator", None);
+    assert_eq!(f.g.players[0].deck.len(), 3, "two went in");
+    for i in 0..2 {
+        let dc = f.g.players[0].deck[i];
+        assert!(dc.def().races.any(Races::BEAST), "{} is not a Beast", dc.name());
+        assert_eq!((dc.atk, dc.hp), (5, 5));
+        assert!(!dc.started_here, "Discovered, not built in");
+    }
+    assert_eq!(
+        f.g.players[0].deck[2].name(),
+        "Wisp",
+        "the deck's own card stayed on top"
+    );
+}
+
+#[test]
+fn seismopod_buffs_every_minion_in_hand_and_deck_but_no_spell() {
+    let mut f = Fix::new()
+        .board(ME, &["Seismopod"])
+        .deck(&["Chillwind Yeti", "Fireball"]);
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Bloodfen Raptor").unwrap()));
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Frostbolt").unwrap()));
+    f.g.deal_damage(Target::Minion(ME, 0), 9);
+    f.g.sweep_deaths();
+
+    assert_eq!(
+        (f.g.players[0].hand[0].atk, f.g.players[0].hand[0].hp),
+        (3, 3)
+    );
+    assert_eq!(
+        (f.g.players[0].hand[1].atk, f.g.players[0].hand[1].hp),
+        (0, 0),
+        "Frostbolt is not a minion"
+    );
+    assert_eq!(
+        (f.g.players[0].deck[0].atk, f.g.players[0].deck[0].hp),
+        (3, 3)
+    );
+    assert_eq!(
+        (f.g.players[0].deck[1].atk, f.g.players[0].deck[1].hp),
+        (0, 0)
+    );
+}
+
+#[test]
+fn supreme_dinomancy_finds_beasts_in_all_three_zones() {
+    let mut f = Fix::new()
+        .board(ME, &["Bloodfen Raptor", "Chillwind Yeti"]) // Beast, not a Beast
+        .deck(&["Oasis Snapjaw", "Fireball"]);
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Stonetusk Boar").unwrap()));
+    f.play("Supreme Dinomancy", None);
+
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (5, 4), "3/2 Beast");
+    assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (4, 5), "not a Beast");
+    assert_eq!(
+        (f.g.players[0].hand[0].atk, f.g.players[0].hand[0].hp),
+        (2, 2)
+    );
+    assert_eq!(
+        (f.g.players[0].deck[0].atk, f.g.players[0].deck[0].hp),
+        (2, 2)
+    );
+    assert_eq!(
+        (f.g.players[0].deck[1].atk, f.g.players[0].deck[1].hp),
+        (0, 0)
+    );
+}
+
+#[test]
+fn azsharas_triumph_shuffles_in_five_doubled_giants() {
+    let mut f = Fix::new();
+    f.play("Azshara's Triumph", None);
+    assert_eq!(f.g.players[0].deck.len(), 5);
+    for dc in f.g.players[0].deck.iter() {
+        let d = dc.def();
+        assert_eq!(d.kind(), Kind::Minion);
+        assert!(d.cost >= 8, "{} costs {}", dc.name(), d.cost);
+        assert_eq!(
+            (dc.atk, dc.hp),
+            (d.atk as i8, d.hp as i8),
+            "{} did not double",
+            dc.name()
+        );
+    }
+}
+
+#[test]
+fn city_chief_esho_pays_out_when_the_deck_is_one_tribe() {
+    let mut f = Fix::new()
+        .board(ME, &["Chillwind Yeti"])
+        .deck(&["Bloodfen Raptor", "Oasis Snapjaw", "Fireball"]);
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("City Chief Esho", None);
+
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (6, 7), "the other body");
+    assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (5, 7), "Esho itself");
+    assert_eq!(
+        (f.g.players[0].hand[0].atk, f.g.players[0].hand[0].hp),
+        (2, 2)
+    );
+    assert_eq!(
+        (f.g.players[0].deck[0].atk, f.g.players[0].deck[0].hp),
+        (2, 2)
+    );
+    assert_eq!(
+        (f.g.players[0].deck[2].atk, f.g.players[0].deck[2].hp),
+        (0, 0),
+        "Fireball is not a minion"
+    );
+}
+
+#[test]
+fn city_chief_esho_pays_nothing_on_a_mixed_deck() {
+    let mut f = Fix::new()
+        .board(ME, &["Chillwind Yeti"])
+        .deck(&["Bloodfen Raptor", "Chillwind Yeti"]); // Beast and no tribe at all
+    f.play("City Chief Esho", None);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (4, 5));
+    assert_eq!(
+        (f.g.players[0].deck[0].atk, f.g.players[0].deck[0].hp),
+        (0, 0)
+    );
+}
+
+#[test]
+fn krona_sets_the_bottom_five_to_one_mana() {
+    let mut f = Fix::new().deck(&[
+        "Deathwing",
+        "Boulderfist Ogre",
+        "Chillwind Yeti",
+        "Bloodfen Raptor",
+        "Fireball",
+        "Wisp",
+    ]);
+    f.play("Krona, Keeper of Eons", None);
+    for i in 0..5 {
+        let dc = f.g.players[0].deck[i];
+        assert_eq!(
+            dc.def().cost + dc.cost_delta as i16,
+            1,
+            "{} should cost 1",
+            dc.name()
+        );
+    }
+    let top = f.g.players[0].deck[5];
+    assert_eq!(top.cost_delta, 0, "the sixth from the bottom is untouched");
+}
+
+#[test]
+fn steamcleaner_sweeps_both_decks_of_what_was_shuffled_in() {
+    let mut f = Fix::new().deck(&["Chillwind Yeti"]);
+    shuffled_in(&mut f, ME, &["Wisp", "Fireball"]);
+    f.g.players[1]
+        .deck
+        .push(DeckCard::started(by_name("Wisp").unwrap()));
+    shuffled_in(&mut f, FOE, &["Boulderfist Ogre"]);
+
+    f.play("Steamcleaner", None);
+    assert_eq!(f.g.players[0].deck.len(), 1);
+    assert_eq!(f.g.players[0].deck[0].name(), "Chillwind Yeti");
+    assert_eq!(f.g.players[1].deck.len(), 1);
+    assert_eq!(f.g.players[1].deck[0].name(), "Wisp");
+}
+
+#[test]
+fn smuggled_shovel_draws_the_spell_that_was_not_yours() {
+    let mut f = Fix::new().deck(&["Fireball"]);
+    shuffled_in(&mut f, ME, &["Frostbolt"]);
+    f.g.equip(ME, by_name("Smuggled Shovel").unwrap());
+    // Equipping over a weapon breaks it, which fires its deathrattle.
+    f.g.equip(ME, by_name("Fiery War Axe").unwrap());
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Frostbolt");
+}
+
+#[test]
+fn dragonscale_armaments_draws_one_of_each_origin() {
+    let mut f = Fix::new().deck(&["Fireball"]);
+    shuffled_in(&mut f, ME, &["Frostbolt"]);
+    f.play("Dragonscale Armaments", None);
+    let mut names: Vec<&str> = f.g.players[0]
+        .hand
+        .iter()
+        .map(|hc| hc.card.name())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, vec!["Fireball", "Frostbolt"]);
+    assert!(f.g.players[0].deck.is_empty());
+}
+
+#[test]
+fn dreamwarden_draws_the_stranger_and_grows() {
+    let mut f = Fix::new().deck(&["Fireball"]);
+    shuffled_in(&mut f, ME, &["Wisp"]);
+    f.play("Dreamwarden", None);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (5, 6));
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Wisp");
+    assert_eq!(f.g.players[0].deck.len(), 1, "its own card stayed");
+}
+
+#[test]
+fn dreamwarden_is_a_plain_body_when_the_deck_is_all_its_own() {
+    let mut f = Fix::new().deck(&["Fireball", "Wisp"]);
+    f.play("Dreamwarden", None);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (3, 4));
+    assert!(f.g.players[0].hand.is_empty(), "nothing to draw");
+}
+
+#[test]
+fn story_of_the_waygate_discounts_only_what_you_did_not_bring() {
+    let mut f = Fix::new().deck(&["Fireball"]);
+    shuffled_in(&mut f, ME, &["Boulderfist Ogre"]);
+    f.g.draw(ME, 2);
+    f.play("Story of the Waygate", None);
+    for i in 0..2 {
+        let hc = f.g.players[0].hand[i];
+        let want = if hc.card.name() == "Boulderfist Ogre" { 5 } else { 4 };
+        assert_eq!(f.g.card_cost(ME, i), want, "{}", hc.card.name());
+    }
+}
+
+#[test]
+fn techysaurus_counts_every_card_you_did_not_bring() {
+    let mut f = Fix::new();
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Techysaurus").unwrap()));
+    assert_eq!(f.g.card_cost(ME, 0), 7);
+
+    // Two cards that arrived from outside the deck, played.
+    for _ in 0..2 {
+        f.g.give_card(ME, by_name("Wisp").unwrap());
+        let idx = f.g.players[0].hand.len() as u8 - 1;
+        assert!(f.g.apply(Action::Play {
+            hand: idx,
+            target: None,
+            position: u8::MAX,
+            choice: u8::MAX,
+        }));
+    }
+    assert_eq!(f.g.card_cost(ME, 0), 5);
+
+    // One that did come out of the deck changes nothing.
+    f.g.players[0]
+        .deck
+        .push(DeckCard::started(by_name("Wisp").unwrap()));
+    f.g.draw(ME, 1);
+    let idx = f.g.players[0].hand.len() as u8 - 1;
+    assert!(f.g.apply(Action::Play {
+        hand: idx,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(f.g.card_cost(ME, 0), 5);
 }
