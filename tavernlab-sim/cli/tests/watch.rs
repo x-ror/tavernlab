@@ -387,3 +387,71 @@ D 09:00:04.2 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName
         "so nothing is told to trade with it: {out}"
     );
 }
+
+/// Two copies of a weapon are not two plays.
+///
+/// Straight from a real plan: `зіграти Corpse Cannon` twice in one turn.
+/// Equipping the second breaks the first, and both are 1/3 -- three swings
+/// thrown away for nothing. The engine has always broken the weapon
+/// correctly; the policy simply never asked what the equip would destroy.
+#[test]
+fn a_weapon_is_not_played_twice_in_one_turn() {
+    // A hand of nothing but the two weapons, and mana for both, so that what
+    // stops the second is the rule rather than the curve.
+    const ONLY_WEAPONS: &str = "\
+D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME
+D 09:00:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=1 local=False [entityName=Jaina Proudmoore id=64 zone=PLAY zonePos=0 cardId=HERO_08 player=1] zone from  -> FRIENDLY PLAY (Hero)
+D 09:00:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=2 local=False [entityName=Garrosh Hellscream id=65 zone=PLAY zonePos=0 cardId=HERO_01 player=2] zone from  -> OPPOSING PLAY (Hero)
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7
+D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES value=8
+D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES_USED value=0
+D 09:00:01.2 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=CURRENT_PLAYER value=1
+D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=8 local=False [entityName=Corpse Cannon id=40 zone=DECK zonePos=0 cardId=JAIL_450 player=1] zone from FRIENDLY DECK -> FRIENDLY HAND
+D 09:00:02.1 [Zone] ZoneChangeList.ProcessChanges() - id=9 local=False [entityName=Corpse Cannon id=41 zone=DECK zonePos=0 cardId=JAIL_450 player=1] zone from FRIENDLY DECK -> FRIENDLY HAND
+";
+    let out = run("weapon-twice", ONLY_WEAPONS, &["--me", "Me#1"]);
+    assert!(
+        out.contains("рука: Corpse Cannon, Corpse Cannon"),
+        "both copies are in hand, and eight mana buys four of them: {out}"
+    );
+    // Not "at most once": re-equipping a fresh 1/3 over one worn down to 1/2
+    // gains a swing, and the plan is right to do it after the hero has
+    // attacked. What is never right is two equips with nothing in between --
+    // the second breaks a weapon that has not been used at all.
+    let plan: Vec<&str> = out
+        .lines()
+        .skip_while(|l| !l.contains("ХІД"))
+        .map(str::trim)
+        .collect();
+    assert!(
+        plan.iter().any(|l| *l == "зіграти Corpse Cannon"),
+        "the weapon is worth equipping once: {out}"
+    );
+    assert!(
+        !plan
+            .windows(2)
+            .any(|w| w[0] == "зіграти Corpse Cannon" && w[1] == "зіграти Corpse Cannon"),
+        "but never twice in a row, which throws the first one away: {out}"
+    );
+}
+
+/// A damaging spell goes at them, not at you.
+///
+/// The corpus gives Fireball and a heal the same target spec — any character —
+/// so with the target unscored the pick fell to enumeration order, and a real
+/// plan read `зіграти Fireball → свій герой`.
+#[test]
+fn a_damaging_spell_is_not_aimed_at_your_own_hero() {
+    const NOW: &str = "\
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7
+D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES value=8
+D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES_USED value=0
+D 09:00:01.2 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=CURRENT_PLAYER value=1
+";
+    let out = run("own-face", &format!("{LOG}{NOW}"), &["--me", "Me#1"]);
+    assert!(out.contains("зіграти Fireball → ворожий герой"), "{out}");
+    assert!(
+        !out.contains("Fireball → свій герой"),
+        "six damage to your own face is never the play: {out}"
+    );
+}
