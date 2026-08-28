@@ -399,6 +399,8 @@ mod tokens {
     /// Imbue: the Blessings' own tokens.
     pub const EMERALD_PORTAL: CardId = token("EDR_445pt3");
     pub const EDR_WISP: CardId = token("EDR_851t");
+    /// Frostburn Matriarch's 4/4 Dragon with Taunt.
+    pub const FROSTBURN_BROODLING: CardId = token("FIR_901t");
     pub const FLAME_ELEMENTAL: CardId = token("UNG_809t1");
     pub const ARCANE_MISSILES: CardId = token("EX1_277");
     pub const MUGS_MAGIC: CardId = token("JAIL_800hp1");
@@ -8370,6 +8372,103 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     // it drifts. The corpus text says only that it swaps, so where it swaps
     // to is not derivable from it; a random other class each turn is the
     // rule the game actually uses.
+    // ------------------------------------------------------------- Dark Gifts
+    // "Discover a ... with a Dark Gift": the Discover happens, then the card
+    // it put in hand is given one of the ten. See `DARK_GIFTS`.
+
+    spell("Avant-Gardening", T::None, |g, c| {
+        if g.discover(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.keywords.has(Keywords::DEATHRATTLE)
+        }) {
+            g.gift_last_in_hand(c.side);
+        }
+    }),
+    battlecry("Brutish Endmaw", T::None, |g, c| {
+        if g.discover(c.side, |d| d.kind() == super::Kind::Minion && d.cost == 1) {
+            g.gift_last_in_hand(c.side);
+        }
+    }),
+    battlecry("Creature of Madness", T::None, |g, c| {
+        if g.discover(c.side, |d| d.kind() == super::Kind::Minion && d.cost == 3) {
+            g.gift_last_in_hand(c.side);
+        }
+    }),
+    battlecry("Treacherous Tormentor", T::None, |g, c| {
+        if g.discover(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.rarity() == super::Rarity::Legendary
+        }) {
+            g.gift_last_in_hand(c.side);
+        }
+    }),
+    spell("Smoke Bomb", T::None, |g, c| {
+        if g.discover(c.side, |d| {
+            d.kind() == super::Kind::Minion
+                && (d.keywords.has(Keywords::COMBO)
+                    || d.keywords.has(Keywords::BATTLECRY)
+                    || d.keywords.has(Keywords::STEALTH))
+        }) {
+            g.gift_last_in_hand(c.side);
+        }
+    }),
+    // "It costs (2) less" is on top of whatever the Gift itself did to the
+    // cost -- Short Claws takes another two off.
+    spell("Cremate", T::None, |g, c| {
+        if g.discover(c.side, |d| d.kind() == super::Kind::Minion) {
+            g.gift_last_in_hand(c.side);
+            if let Some(hc) = g.player_mut(c.side).hand.last_mut() {
+                hc.cost_delta -= 2;
+            }
+        }
+    }),
+    // The Gift only lands if the Corpses are there to pay for it; the
+    // Discover happens either way.
+    spell("Rite of Atrocity", T::None, |g, c| {
+        if g.discover(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.races.any(Races::UNDEAD)
+        }) && g.spend_corpses(c.side, 2)
+        {
+            g.gift_last_in_hand(c.side);
+        }
+    }),
+    // "Get a copy of it": the copy carries the same Gift, since the Gift is
+    // part of the card that was Discovered.
+    battlecry("Shadowflame Stalker", T::None, |g, c| {
+        if g.discover(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.races.any(Races::DEMON)
+        }) {
+            g.gift_last_in_hand(c.side);
+            if let Some(hc) = g.player(c.side).hand.last().copied() {
+                g.player_mut(c.side).hand.push(hc);
+            }
+        }
+    }),
+
+    battlecry("Cindersword", T::None, |g, c| {
+        if g.holding_dark_gift(c.side)
+            && let Some(w) = g.player_mut(c.side).weapon.as_mut()
+        {
+            w.atk += 3;
+        }
+    }),
+    battlecry("Dragon Turtle", T::None, |g, c| {
+        if g.holding_dark_gift(c.side) {
+            g.player_mut(c.side).hero_bonus_atk += 3;
+            g.gain_armor(c.side, 6);
+        }
+    }),
+    battlecry("Frostburn Matriarch", T::None, |g, c| {
+        if g.holding_dark_gift(c.side) {
+            g.summon_token(c.side, tokens::FROSTBURN_BROODLING, 2);
+        }
+    }),
+    battlecry("Overgrown Horror", T::None, |g, c| {
+        for hc in g.player_mut(c.side).hand.iter_mut() {
+            if hc.gift != 0 && hc.card.def().kind() == super::Kind::Minion {
+                hc.cost_delta -= 2;
+            }
+        }
+    }),
+
     // ------------------------------------------------------------------ Imbue
     // "Imbue your Hero Power" installs the class's Blessing and raises a
     // count; every Blessing's number is that count. See `Game::imbue`.
@@ -8653,10 +8752,6 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
         "\"Ten copies join your deck\" is a deck-construction-time effect, outside this engine's scope -- plays with only its printed Taunt and whatever thirty cards it was actually given",
     ),
     (
-        "Azalina Soulsever",
-        "\"Your starting Health is 40\" and \"your deck is 20 cards, plus 20 copied from your enemy\" are both deck-construction/game-setup effects, outside this engine's scope; only the Battlecry (draw until your hand is full) is implemented",
-    ),
-    (
         "Devouring Plague",
         "the Lifesteal heal is always the full 4, which can overheal if the random split ran out of live enemy minions before all 4 points landed -- the one entry here besides Archmage Kalec and Cursed Catacombs that can read stronger than the card, not weaker",
     ),
@@ -8781,6 +8876,112 @@ fn cataclysm_score(g: &Game, side: Side, cata: CardId) -> i16 {
     }
 }
 
+/// The ten Dark Gifts, in the order the corpus lists them.
+///
+/// The pool needs nothing from outside the card data: a Dark Gift card names
+/// its own, and every Dark Gift card names the same ten. `Cremate` and `Rite
+/// of Atrocity` each carry exactly this list as their children, and `tests`
+/// checks that they still do -- so this tracks the corpus rather than a
+/// memory of it. Two more `EDR_100t*` tokens exist (`Inner Demons`,
+/// `Nightmare Scales`) and are deliberately absent, because no Dark Gift card
+/// lists them.
+///
+/// Each Gift's effect is its own printed text, quoted beside it.
+pub const DARK_GIFTS: [CardId; 10] = [
+    token("EDR_100t"),   // Waking Terror:     "+3 Attack and Lifesteal."
+    token("EDR_100t1"),  // Well Rested:       "+2/+2 and Elusive."
+    token("EDR_100t2"),  // Short Claws:       "Costs (2) less, but has -2 Attack."
+    token("EDR_100t3"),  // Bundled Up:        "+4 Health and Taunt."
+    token("EDR_100t5"),  // Living Nightmare:  "When you play this minion, summon a 2/2 copy of it."
+    token("EDR_100t6"),  // Sleepwalker:       "Charge"
+    token("EDR_100t7"),  // Rude Awakening:    "This minion's Battlecries trigger twice."
+    token("EDR_100t8"),  // Sweet Dreams:      "+4/+5. Place this card on top of your deck."
+    token("EDR_100t9"),  // Persisting Horror: "Reborn. Is Reborn with full Health and enchantments."
+    token("EDR_100t13"), // Harpy's Talons:    "Divine Shield, Windfury"
+];
+
+/// A Dark Gift as stored on a card: a 1-based index into [`DARK_GIFTS`].
+pub const fn gift_card(gift: u8) -> Option<CardId> {
+    if gift == 0 || gift as usize > DARK_GIFTS.len() {
+        None
+    } else {
+        Some(DARK_GIFTS[gift as usize - 1])
+    }
+}
+
+/// The stats and cost a Gift is worth, applied the moment it is given.
+///
+/// Read straight off each Gift's printed text. The keyword half is
+/// [`gift_keywords`], applied when the body reaches the board.
+pub const fn gift_stats(gift: u8) -> (i16, i16, i16) {
+    // (attack, health, cost delta)
+    match gift {
+        1 => (3, 0, 0),   // Waking Terror
+        2 => (2, 2, 0),   // Well Rested
+        3 => (-2, 0, -2), // Short Claws
+        4 => (0, 4, 0),   // Bundled Up
+        8 => (4, 5, 0),   // Sweet Dreams
+        _ => (0, 0, 0),
+    }
+}
+
+/// The keywords a Gift grants, applied when the minion reaches the board.
+pub const fn gift_keywords(gift: u8) -> Keywords {
+    match gift {
+        1 => Keywords::LIFESTEAL,
+        2 => Keywords::ELUSIVE,
+        4 => Keywords::TAUNT,
+        6 => Keywords::CHARGE,
+        9 => Keywords::REBORN,
+        10 => Keywords(Keywords::DIVINE_SHIELD.0 | Keywords::WINDFURY.0),
+        _ => Keywords::NONE,
+    }
+}
+
+/// Effects that change the game before it starts.
+///
+/// Distinct from the `start_of_game` hook, which fires after the mulligan so
+/// that an effect touching a hand is not mistaken for part of dealing one.
+/// These run *before* it, because they change what the mulligan is dealt
+/// from: a starting Health, a deck that is a different size. Reordering the
+/// existing hook to suit them would move every card already on it.
+///
+/// A name list for the same reason `CASTS_WHEN_DRAWN` is one -- the corpus
+/// carries no mechanic for "this changes how the game is set up".
+pub const GAME_SETUP: &[(&str, fn(&mut Game, Side))] = &[("Azalina Soulsever", azalina_setup)];
+
+/// "Your starting Health is 40. Your deck is 20 cards, plus 20 copied from
+/// your enemy."
+///
+/// The list is twenty by construction (`deck::DECK_SIZE_RULES`); this adds
+/// the other twenty. They are copies -- the opponent keeps every card -- and
+/// they are drawn from the opponent's list at random, since the card says
+/// which deck they come from and not which cards.
+fn azalina_setup(g: &mut Game, side: Side) {
+    g.player_mut(side).hero_hp = 40;
+    let foe = side.other();
+    let theirs: Inline<CardId, MAX_DECK> = g.player(foe).deck.iter().map(|d| d.card).collect();
+    if theirs.is_empty() {
+        return;
+    }
+    for _ in 0..20 {
+        let pick = g.rngs.effects.index(theirs.len());
+        if !g.player_mut(side).deck.push(DeckCard::new(theirs[pick])) {
+            break;
+        }
+    }
+}
+
+/// Apply every game-setup rule a player's opening list asks for.
+pub fn apply_game_setup(g: &mut Game, side: Side) {
+    let present: Inline<CardId, MAX_DECK> = g.player(side).deck.iter().map(|d| d.card).collect();
+    for (name, f) in GAME_SETUP {
+        if present.iter().any(|c| c.name() == *name) {
+            f(g, side);
+        }
+    }
+}
+
 /// Cards that resolve on the way out of the deck instead of reaching hand.
 ///
 /// A name list rather than a keyword bit: the corpus spells this as the words
@@ -8828,6 +9029,56 @@ pub fn is_implemented(card: CardId) -> bool {
 mod tests {
     use super::super::by_name;
     use super::*;
+
+    #[test]
+    fn the_dark_gift_pool_is_the_one_the_corpus_lists() {
+        // Every Dark Gift card carries the pool as its own children, so the
+        // list here is checkable against the data rather than trusted. If the
+        // corpus ever adds or drops one, this fails instead of the engine
+        // quietly rolling from a stale pool.
+        for name in ["Cremate", "Rite of Atrocity"] {
+            let card = crate::cards::by_name(name).expect("in the corpus");
+            let mut theirs: Vec<u16> = card.children().iter().map(|c| c.0).collect();
+            let mut ours: Vec<u16> = super::DARK_GIFTS.iter().map(|c| c.0).collect();
+            theirs.sort_unstable();
+            ours.sort_unstable();
+            assert_eq!(theirs, ours, "{name} lists a different pool");
+        }
+    }
+
+    #[test]
+    fn every_dark_gift_effect_matches_its_printed_text() {
+        // The stats and keywords are read off each Gift's own card text, so
+        // the text is what the table is checked against.
+        let want: [(&str, (i16, i16, i16), Keywords); 10] = [
+            ("Waking Terror", (3, 0, 0), Keywords::LIFESTEAL),
+            ("Well Rested", (2, 2, 0), Keywords::ELUSIVE),
+            ("Short Claws", (-2, 0, -2), Keywords::NONE),
+            ("Bundled Up", (0, 4, 0), Keywords::TAUNT),
+            ("Living Nightmare", (0, 0, 0), Keywords::NONE),
+            ("Sleepwalker", (0, 0, 0), Keywords::CHARGE),
+            ("Rude Awakening", (0, 0, 0), Keywords::NONE),
+            ("Sweet Dreams", (4, 5, 0), Keywords::NONE),
+            ("Persisting Horror", (0, 0, 0), Keywords::REBORN),
+            (
+                "Harpy's Talons",
+                (0, 0, 0),
+                Keywords(Keywords::DIVINE_SHIELD.0 | Keywords::WINDFURY.0),
+            ),
+        ];
+        for (i, (name, stats, kw)) in want.iter().enumerate() {
+            let gift = i as u8 + 1;
+            assert_eq!(
+                super::gift_card(gift).map(|c| c.name()),
+                Some(*name),
+                "gift {gift} is not {name}"
+            );
+            assert_eq!(super::gift_stats(gift), *stats, "{name}");
+            assert_eq!(super::gift_keywords(gift), *kw, "{name}");
+        }
+        assert_eq!(super::gift_card(0), None);
+        assert_eq!(super::gift_card(11), None);
+    }
 
     #[test]
     fn every_casts_when_drawn_card_really_prints_it() {

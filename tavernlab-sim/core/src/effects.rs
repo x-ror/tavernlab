@@ -317,6 +317,66 @@ impl Game {
         self.transform(t, pool[pick]);
     }
 
+    // ------------------------------------------------------------ Dark Gifts
+
+    /// Give the card at `hand_idx` a random Dark Gift, if it has none.
+    ///
+    /// The stat and cost halves land immediately, on the copy in hand; the
+    /// keyword half waits for the body to reach the board, and the rules that
+    /// outlive the play (Persisting Horror, Rude Awakening, Living Nightmare)
+    /// are read from `HandCard::gift` when it is played.
+    ///
+    /// Sweet Dreams is the odd one: "+4/+5. Place this card on top of your
+    /// deck." The card leaves hand for the top of the deck the moment the
+    /// Gift is given, which is the literal reading and also the conservative
+    /// one -- a turn's delay is a cost, and leaving it in hand would make the
+    /// Gift purely an upside.
+    pub fn give_dark_gift(&mut self, side: Side, hand_idx: usize) -> bool {
+        let Some(hc) = self.player(side).hand.get(hand_idx).copied() else {
+            return false;
+        };
+        if hc.gift != 0 {
+            return false;
+        }
+        let gift = self.rngs.effects.index(crate::cards::DARK_GIFTS.len()) as u8 + 1;
+        let (atk, hp, cost) = crate::cards::gift_stats(gift);
+        let Some(hc) = self.player_mut(side).hand.get_mut(hand_idx) else {
+            return false;
+        };
+        hc.gift = gift;
+        hc.enchant(atk, hp);
+        hc.cost_delta += cost;
+        // Sweet Dreams.
+        if gift == 8 {
+            let card = hc.card;
+            let mut moved = crate::state::DeckCard::new(card);
+            moved.atk = hc.atk;
+            moved.hp = hc.hp;
+            moved.cost_delta = hc.cost_delta.clamp(-128, 127) as i8;
+            self.player_mut(side).hand.remove(hand_idx);
+            self.player_mut(side).deck.push(moved);
+        }
+        true
+    }
+
+    /// Give a Dark Gift to whatever was last added to hand -- the shape every
+    /// "Discover a minion with a Dark Gift" takes.
+    pub fn gift_last_in_hand(&mut self, side: Side) -> bool {
+        let n = self.player(side).hand.len();
+        if n == 0 {
+            return false;
+        }
+        self.give_dark_gift(side, n - 1)
+    }
+
+    /// Whether this player is holding a minion that has a Dark Gift.
+    pub fn holding_dark_gift(&self, side: Side) -> bool {
+        self.player(side)
+            .hand
+            .iter()
+            .any(|hc| hc.gift != 0 && hc.card.def().kind() == Kind::Minion)
+    }
+
     /// Buff every minion in an area.
     pub fn buff_area(&mut self, side: Side, area: Area, atk: i16, hp: i16) {
         let mut hits: Inline<Target, { MAX_BOARD * 2 + 2 }> = Inline::new();

@@ -19,7 +19,6 @@
 use crate::agent::Style;
 use crate::batch::{Contender, Record, play_batch_parallel, seeds};
 use crate::cards::{CardId, Class, by_name, is_implemented};
-use crate::deck::DECK_SIZE;
 use crate::state::Side;
 
 /// One deck in the field.
@@ -38,8 +37,9 @@ pub struct MetaDeck {
     /// copies were asked for.
     pub missing: Vec<(String, u32)>,
     /// Copies in the list as the file wrote it, before a Beatrix sideboard is
-    /// folded in. A deck list is thirty cards; anything else is an incomplete
-    /// entry rather than a deck, and is not fielded.
+    /// folded in. A deck list is thirty cards unless something in it says
+    /// otherwise (`deck::legal_size`); any other count is an incomplete entry
+    /// rather than a deck, and is not fielded.
     pub listed: u32,
 }
 
@@ -113,7 +113,10 @@ impl MetaDeck {
     /// "what would it take to field this": implementing every card in a
     /// twenty-card list still leaves twenty cards.
     pub fn problem(&self) -> Option<Unfieldable> {
-        if self.listed != DECK_SIZE as u32 {
+        // Twenty is a legal list for a deck built around Azalina Soulsever;
+        // see `deck::DECK_SIZE_RULES`.
+        let want = crate::deck::legal_size_by_name(|n| self.cards.iter().any(|(c, _)| c == n));
+        if self.listed != want as u32 {
             return Some(Unfieldable::Size);
         }
         if !self.missing.is_empty() {

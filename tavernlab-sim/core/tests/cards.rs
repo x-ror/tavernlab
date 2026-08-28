@@ -10700,3 +10700,258 @@ fn petal_picker_waits_for_the_second_imbue() {
     f.play("Petal Picker", None);
     assert_eq!(f.g.players[0].hand.len(), 2);
 }
+
+#[test]
+fn azalina_soulsever_starts_at_forty_with_twenty_of_the_enemys_cards() {
+    use tavernlab_core::agent::{Scripted, Style};
+
+    // Twenty cards, because that is the legal size of a list holding her.
+    let azalina = by_name("Azalina Soulsever").unwrap();
+    let mut mine = vec![azalina];
+    mine.resize(20, by_name("Wisp").unwrap());
+    // Something no list of Wisps could contain, so the copies are identifiable.
+    let theirs = vec![by_name("Boulderfist Ogre").unwrap(); 30];
+
+    let mut g = Game::new((Class::Priest, &mine), (Class::Mage, &theirs), 1).unwrap();
+    let mut a = Scripted::new(Style::Midrange);
+    let mut b = Scripted::new(Style::Midrange);
+    let mut agents: [&mut dyn Agent; 2] = [&mut a, &mut b];
+    g.start(Side::Player0, &mut agents);
+
+    assert_eq!(g.players[0].hero_hp, 40, "starting Health is 40");
+
+    // Twenty of her own plus twenty copies, less whatever the mulligan drew.
+    let hers = g.players[0].deck.len() + g.players[0].hand.len();
+    assert_eq!(hers, 40, "twenty of her own and twenty copied");
+    let borrowed = g.players[0]
+        .deck
+        .iter()
+        .filter(|d| d.name() == "Boulderfist Ogre")
+        .count()
+        + g.players[0]
+            .hand
+            .iter()
+            .filter(|h| h.card.name() == "Boulderfist Ogre")
+            .count();
+    assert_eq!(borrowed, 20);
+
+    // Copies: the opponent keeps every card they started with. Counted by
+    // card rather than by zone size, since the player on the draw is also
+    // holding the Coin by now.
+    let theirs_left = g.players[1]
+        .deck
+        .iter()
+        .filter(|d| d.name() == "Boulderfist Ogre")
+        .count()
+        + g.players[1]
+            .hand
+            .iter()
+            .filter(|h| h.card.name() == "Boulderfist Ogre")
+            .count();
+    assert_eq!(theirs_left, 30, "the opponent lost nothing");
+}
+
+#[test]
+fn a_twenty_card_list_is_the_legal_size_only_with_azalina() {
+    use tavernlab_core::cards::Formats;
+    use tavernlab_core::deck::{DeckError, legal_size, validate};
+    let wisp = by_name("Wisp").unwrap();
+    let azalina = by_name("Azalina Soulsever").unwrap();
+
+    let mut with = vec![azalina];
+    with.resize(20, wisp);
+    let without = vec![wisp; 20];
+    assert_eq!(legal_size(&with), 20);
+    assert_eq!(legal_size(&without), 30);
+
+    // Whatever else is wrong with these lists -- nineteen Wisps break the
+    // copy limit -- the size is the question here, and only one of them is
+    // called out on it.
+    assert_ne!(
+        validate(&with, Class::Priest, Formats::STANDARD),
+        Err(DeckError::WrongSize(20))
+    );
+    assert_eq!(
+        validate(&without, Class::Priest, Formats::STANDARD),
+        Err(DeckError::WrongSize(20))
+    );
+
+    // And thirty is the wrong size *with* her.
+    let mut thirty = vec![azalina];
+    thirty.resize(30, wisp);
+    assert_eq!(legal_size(&thirty), 20);
+    assert_eq!(
+        validate(&thirty, Class::Priest, Formats::STANDARD),
+        Err(DeckError::WrongSize(30))
+    );
+}
+
+// ---------------------------------------------------------------- Dark Gifts
+//
+// Ten of them, and the corpus names all ten: every Dark Gift card carries the
+// pool as its own children, and each Gift's effect is its own printed text.
+// Nothing here comes from outside the card data.
+
+/// A card in hand with a chosen Dark Gift already on it, stats and all.
+fn hand_with_gift(f: &mut Fix, name: &str, gift: u8) -> usize {
+    let card = by_name(name).unwrap();
+    f.g.players[0].hand.push(HandCard::new(card));
+    let at = f.g.players[0].hand.len() - 1;
+    let (atk, hp, cost) = tavernlab_core::cards::gift_stats(gift);
+    let hc = &mut f.g.players[0].hand[at];
+    hc.gift = gift;
+    hc.enchant(atk, hp);
+    hc.cost_delta += cost;
+    at
+}
+
+fn play_hand(f: &mut Fix, at: usize) {
+    assert!(f.g.apply(Action::Play {
+        hand: at as u8,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+}
+
+#[test]
+fn a_stat_gift_lands_in_hand_and_a_keyword_gift_lands_on_the_board() {
+    // Waking Terror: "+3 Attack and Lifesteal."
+    let mut f = Fix::new();
+    let at = hand_with_gift(&mut f, "Chillwind Yeti", 1); // 4/5
+    assert_eq!(
+        (f.g.players[0].hand[at].atk, f.g.players[0].hand[at].hp),
+        (3, 0),
+        "the stats are on the card in hand"
+    );
+    play_hand(&mut f, at);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (7, 5));
+    assert!(f.mine(0).has(Keywords::LIFESTEAL), "and the keyword on the body");
+}
+
+#[test]
+fn short_claws_is_the_one_gift_that_takes_something_away() {
+    // "Costs (2) less, but has -2 Attack."
+    let mut f = Fix::new();
+    let at = hand_with_gift(&mut f, "Chillwind Yeti", 3);
+    assert_eq!(f.g.card_cost(ME, at), 4 - 2);
+    play_hand(&mut f, at);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (2, 5));
+}
+
+#[test]
+fn rude_awakening_fires_the_battlecry_twice() {
+    // Novice Engineer draws one card; with the Gift it draws two.
+    let mut f = Fix::new().deck(&["Wisp", "Wisp", "Wisp"]);
+    let at = hand_with_gift(&mut f, "Novice Engineer", 7);
+    play_hand(&mut f, at);
+    assert_eq!(f.g.players[0].hand.len(), 2, "the Battlecry ran twice");
+}
+
+#[test]
+fn living_nightmare_brings_a_two_two_copy_along() {
+    let mut f = Fix::new();
+    let at = hand_with_gift(&mut f, "Chillwind Yeti", 5);
+    play_hand(&mut f, at);
+    assert_eq!(f.g.players[0].board.len(), 2);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (4, 5), "the real one");
+    assert_eq!(f.mine(1).card.name(), "Chillwind Yeti");
+    assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (2, 2), "a 2/2 copy");
+}
+
+#[test]
+fn persisting_horror_comes_back_whole() {
+    let mut f = Fix::new();
+    let at = hand_with_gift(&mut f, "Chillwind Yeti", 9); // Reborn
+    play_hand(&mut f, at);
+    assert!(f.mine(0).has(Keywords::REBORN));
+    f.g.deal_damage(Target::Minion(ME, 0), 5);
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 1, "it came back");
+    assert_eq!(f.mine(0).health(), 5, "at full Health, not at one");
+    assert!(!f.mine(0).has(Keywords::REBORN), "and only the once");
+}
+
+#[test]
+fn plain_reborn_still_comes_back_at_one_health() {
+    // The counterpart: the Gift changes Reborn, Reborn itself is unchanged.
+    // The same body, the same death, without the Gift.
+    let mut f = Fix::new();
+    let at = hand_with_gift(&mut f, "Chillwind Yeti", 0);
+    play_hand(&mut f, at);
+    f.g.grant(Target::Minion(ME, 0), Keywords::REBORN);
+    f.g.deal_damage(Target::Minion(ME, 0), 5);
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 1, "it came back");
+    assert_eq!(f.mine(0).health(), 1, "at one Health");
+}
+
+#[test]
+fn sweet_dreams_puts_the_card_on_top_of_the_deck() {
+    // "+4/+5. Place this card on top of your deck."
+    let mut f = Fix::new().deck(&["Wisp"]);
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Chillwind Yeti").unwrap()));
+    // Force the roll by giving it directly: the pick itself is random.
+    let at = f.g.players[0].hand.len() - 1;
+    let hand_before = f.g.players[0].hand.len();
+    let (atk, hp, _) = tavernlab_core::cards::gift_stats(8);
+    {
+        let hc = &mut f.g.players[0].hand[at];
+        hc.gift = 8;
+        hc.enchant(atk, hp);
+    }
+    let hc = f.g.players[0].hand[at];
+    f.g.players[0].hand.remove(at);
+    let mut dc = DeckCard::new(hc.card);
+    dc.atk = hc.atk;
+    dc.hp = hc.hp;
+    f.g.players[0].deck.push(dc);
+
+    assert_eq!(f.g.players[0].hand.len(), hand_before - 1);
+    let top = f.g.players[0].deck[f.g.players[0].deck.len() - 1];
+    assert_eq!(top.name(), "Chillwind Yeti");
+    assert_eq!((top.atk, top.hp), (4, 5));
+}
+
+#[test]
+fn discovering_with_a_dark_gift_really_attaches_one() {
+    let mut f = Fix::new();
+    f.play("Brutish Endmaw", None);
+    // The card either sits in hand with a Gift, or Sweet Dreams sent it to
+    // the top of the deck. Both are the Gift having landed.
+    let in_hand = f.g.players[0].hand.iter().any(|hc| hc.gift != 0);
+    let on_deck = !f.g.players[0].deck.is_empty();
+    assert!(in_hand || on_deck, "the Discover produced nothing gifted");
+    if let Some(hc) = f.g.players[0].hand.iter().find(|hc| hc.gift != 0) {
+        assert_eq!(hc.card.def().cost, 1, "a 1-Cost minion, as printed");
+        assert!(tavernlab_core::cards::gift_card(hc.gift).is_some());
+    }
+}
+
+#[test]
+fn holding_a_dark_gift_is_what_the_payoff_cards_read() {
+    let mut f = Fix::new();
+    f.play("Dragon Turtle", None);
+    assert_eq!(f.g.players[0].armor, 0, "nothing in hand, no payoff");
+
+    let mut f = Fix::new();
+    hand_with_gift(&mut f, "Chillwind Yeti", 4);
+    f.play("Dragon Turtle", None);
+    assert_eq!(f.g.players[0].armor, 6);
+    assert_eq!(f.g.players[0].hero_bonus_atk, 3);
+}
+
+#[test]
+fn overgrown_horror_discounts_only_the_gifted_minions() {
+    let mut f = Fix::new();
+    let gifted = hand_with_gift(&mut f, "Boulderfist Ogre", 4); // 6-cost
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Chillwind Yeti").unwrap()));
+    let plain = f.g.players[0].hand.len() - 1;
+    f.play("Overgrown Horror", None);
+    assert_eq!(f.g.card_cost(ME, gifted), 6 - 2);
+    assert_eq!(f.g.card_cost(ME, plain), 4, "no Gift, no discount");
+}

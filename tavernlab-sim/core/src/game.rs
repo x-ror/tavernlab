@@ -129,6 +129,19 @@ impl Game {
             self.players[i].deck = deck;
         }
 
+        // Deck-construction rules first: they decide what the mulligan is
+        // dealt from. Both sides are set up before either draws, so a deck
+        // that copies from the opponent copies their real list and not one
+        // some other setup effect has already changed.
+        for side in [Side::Player0, Side::Player1] {
+            crate::cards::apply_game_setup(self, side);
+        }
+        for i in 0..2 {
+            let mut deck = self.players[i].deck;
+            self.rngs.library[i].shuffle(deck.as_mut_slice());
+            self.players[i].deck = deck;
+        }
+
         for (order, side) in [first, first.other()].into_iter().enumerate() {
             let n = if order == 0 { 3 } else { 4 };
             self.mulligan(side, n, agents[side.index()]);
@@ -1124,6 +1137,13 @@ impl Game {
                 if !hc.marks.has(Marks::NOT_FROM_DECK) {
                     m.flags.remove(Flags::NOT_FROM_DECK);
                 }
+                // A Dark Gift's keywords arrive with the body; its stats and
+                // cost were folded into the hand card when it was given.
+                m.keywords.insert(crate::cards::gift_keywords(hc.gift));
+                if hc.gift == 9 {
+                    // Persisting Horror: "Is Reborn with full Health".
+                    m.flags.insert(Flags::REBORN_FULL);
+                }
                 // Cleared once this card's own CardPlayed event has gone out;
                 // see `Flags::BEING_PLAYED`.
                 m.flags.insert(Flags::BEING_PLAYED);
@@ -1166,8 +1186,10 @@ impl Game {
         // minion played triggers its own Battlecry a second time. Read once,
         // before either effect below can change the board under it.
         let double_battlecry = def.kind() == Kind::Minion
-            && self.player(side).hero_power.name() == "Zee's Might"
-            && self.player(side).minions_played_total % 5 == 0;
+            && ((self.player(side).hero_power.name() == "Zee's Might"
+                && self.player(side).minions_played_total % 5 == 0)
+                // Rude Awakening: "This minion's Battlecries trigger twice."
+                || hc.gift == 7);
         // Sinestra: a spell from a class other than the caster's own casts
         // twice. Read the same way, before either effect below resolves.
         let double_spell = def.kind() == Kind::Spell
@@ -1262,6 +1284,12 @@ impl Game {
                 side,
                 card: hc.card,
             });
+        }
+        // Living Nightmare: "When you play this minion, summon a 2/2 copy of
+        // it." After the battlecry, so what arrives is a copy of the card and
+        // not of whatever the battlecry did to the board.
+        if hc.gift == 5 && def.kind() == Kind::Minion {
+            self.summon_with(side, hc.card, 2 - def.atk, 2 - def.hp);
         }
         self.fire(Event::CardPlayed {
             side,
@@ -1953,7 +1981,14 @@ impl Game {
                 }
                 let mut back = Permanent::summon(card);
                 back.keywords.remove(Keywords::REBORN);
-                back.damage = (back.max_hp - 1).max(0);
+                // Persisting Horror brings it back whole; everything else
+                // comes back at one Health.
+                back.damage = if body.flags.has(Flags::REBORN_FULL) {
+                    back.flags.insert(Flags::REBORN_FULL);
+                    0
+                } else {
+                    (back.max_hp - 1).max(0)
+                };
                 let p = self.player_mut(side);
                 p.board.push(back);
                 let slot = p.board.len() as u8 - 1;
