@@ -839,6 +839,30 @@ pub struct Player {
     /// Set by Ruby Sanctum: the next Healing effect this turn deals its
     /// damage instead of healing, and spends this.
     pub heal_as_damage: bool,
+    /// Which of the three Windrunner sisters this player has played this
+    /// game, as three bits (Sylvanas, Alleria, Vereesa in that order).
+    ///
+    /// Each of the three asks about the other two -- "if you've played
+    /// Alleria or Vereesa, repeat for each" -- so what has to be remembered
+    /// is which, not how many, and three bits say it exactly.
+    pub rangers_played: u8,
+    /// Whether Sylvanas's Triumph has been cast this game ("if you've played
+    /// another copy of this").
+    pub triumph_cast: bool,
+    /// Whether Tame Pet has replaced this player's future Animal Companions.
+    pub tamed_pet: bool,
+    /// The card Gemstone Hoarder made this player discard, for its own
+    /// Deathrattle to hand back. `CardId(0)` for none, the same sentinel a
+    /// vacated inline slot holds.
+    pub hoarded: CardId,
+    /// The 1-Cost minions this player has played this game, for Confront the
+    /// Tol'vir.
+    ///
+    /// Seven slots because seven is a whole board: the card summons each of
+    /// them and nothing can put an eighth body down, so a longer list could
+    /// never be read to the end. A game that plays more than seven records
+    /// the first seven, which is the way this can only ever read short.
+    pub cheap_minions_played: Inline<CardId, MAX_BOARD>,
     /// Mana crystals this player may hold above the usual ten.
     ///
     /// "Increase both players' maximum Mana by 5" (Ysera, Emerald Aspect) is
@@ -993,6 +1017,11 @@ impl Player {
             reborn_dead: 0,
             slimed: 0,
             heal_as_damage: false,
+            rangers_played: 0,
+            triumph_cast: false,
+            tamed_pet: false,
+            hoarded: CardId(0),
+            cheap_minions_played: Inline::new(),
             extra_crystals: 0,
             weapon: None,
             hand: Inline::new(),
@@ -1277,21 +1306,26 @@ mod tests {
         // mark, which is all the number ever meant, put `HandCard` back to
         // twelve bytes and the benchmark back to 15 643 against 15 389.
         //
-        // The line moved a second time, from 2560, for the Priest Quest
-        // package: Raith Van Geist needs to know which graveyard entries came
-        // back through Reborn (four bytes of bitmask), Slime 'em! which slice
-        // of it was slimed (one, packed five bits and three), Gravedawn
-        // Sunbloom which spell schools were cast last turn (one) and Ruby
-        // Sanctum whether a heal is turned round (one). Seven bytes a player,
-        // and a `Player` that was already flush against its eight-byte
-        // alignment, so a `Game` went 2544 -> 2560. The measurement the note
-        // above asks for: `tavernsim bench`, best of five paired runs against
-        // a worktree of the merge base on the same host, 16 972 games/s after
-        // against 16 809 before -- inside the run-to-run spread, which was
-        // 15 380 to 16 972 across the ten runs. `tavernsim matrix 400` printed
-        // byte-identical win rates for all eleven classes.
+        // The line moved a third time, from 2576, for the Face Hunter
+        // package -- the largest single step so far and the one that used up
+        // the last of the slack. Thirteen cards, and five of them remember
+        // something: which of the three Windrunner sisters have been played
+        // (three bits, because each asks about the other two), whether
+        // Sylvanas's Triumph has been cast, whether Tame Pet has replaced the
+        // Animal Companions, the card Gemstone Hoarder made you discard, and
+        // the 1-Cost minions played this game for Confront the Tol'vir. That
+        // last one is the bulk of it: seven `CardId` slots, seven because
+        // seven is a whole board and an eighth could never be summoned. A
+        // `Game` went 2560 -> 2608.
+        //
+        // The measurement, taken the way `tools/ab-bench.sh` describes --
+        // paired against a build of the merge base, both binaries in both
+        // slot positions, ten rounds of eight runs: +0.01% +/- 0.46%, on an
+        // A/A control of -0.45% +/- 0.50%. Forty-eight more bytes to copy per
+        // node cost nothing that this harness can see. `tavernsim matrix
+        // 2000` printed byte-identical win rates for all eleven classes.
         assert!(
-            n < 2576,
+            n < 2624,
             "Game is {n} bytes; it is meant to stay well under 3 KB"
         );
     }

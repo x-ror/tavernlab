@@ -750,8 +750,26 @@ impl Game {
             return false;
         }
         let pick = self.rngs.effects.index(n);
-        self.player_mut(side).hand.remove(pick);
+        let card = self.player_mut(side).hand.remove(pick).map(|hc| hc.card);
+        if let Some(card) = card {
+            self.rattle_from_hand_or_deck(side, card);
+        }
         true
+    }
+
+    /// Fire a Deathrattle for a card that was lost from hand or deck rather
+    /// than from the board.
+    ///
+    /// "(Also triggers in hand or deck.)" is printed on the card and is a
+    /// rule about where the Deathrattle may fire from, so every path that
+    /// loses a card calls this and only the cards in `RATTLES_ANYWHERE`
+    /// answer. There is no body, so the Ctx gets a freshly printed one --
+    /// the same shape `fire_deathrattle_of` uses.
+    pub fn rattle_from_hand_or_deck(&mut self, side: Side, card: CardId) {
+        if crate::cards::rattles_from_hand_or_deck(card) {
+            self.fire_deathrattle_of(side, card);
+            self.sweep_deaths();
+        }
     }
 
     /// Offer three cards from a filtered pool and take one.
@@ -1480,6 +1498,7 @@ impl Game {
                     target: None,
                     source: Some(slot),
                     outcast: false,
+                    centre: false,
                     dying: None,
                     marks: crate::state::Marks::NONE,
                     mana_spent: 0,
@@ -1513,7 +1532,7 @@ impl Game {
     pub fn summon_random_where(
         &mut self,
         side: Side,
-        pred: fn(&crate::cards::CardDef) -> bool,
+        pred: impl Fn(&crate::cards::CardDef) -> bool,
     ) -> bool {
         let pool = crate::cards::discover_pool(pred);
         if pool.is_empty() {
@@ -1699,9 +1718,10 @@ impl Game {
     pub fn mill(&mut self, side: Side, n: usize) -> usize {
         let mut gone = 0;
         for _ in 0..n {
-            if self.player_mut(side).deck.pop().is_none() {
+            let Some(dc) = self.player_mut(side).deck.pop() else {
                 break;
-            }
+            };
+            self.rattle_from_hand_or_deck(side, dc.card);
             gone += 1;
         }
         gone
@@ -1770,6 +1790,7 @@ impl Game {
                         target: None,
                         source: Some(slot as u8),
                         outcast: false,
+                        centre: false,
                         dying: Some(m),
                         marks: crate::state::Marks::NONE,
                         mana_spent: 0,
@@ -1901,6 +1922,7 @@ impl Game {
                 target: None,
                 source: None,
                 outcast: false,
+                centre: false,
                 dying: Some(crate::state::Permanent::summon(card)),
                 marks: crate::state::Marks::NONE,
                 mana_spent: 0,
