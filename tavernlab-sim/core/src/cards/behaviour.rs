@@ -4848,6 +4848,103 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         if g.player(side).overload_now > 0 { (1, 0) } else { (0, 0) }
     }),
 
+    // --------------------------------- more hand enchantments, and
+    // the two per-turn questions the engine could not answer before.
+    spell("Blood Tap", T::None, |g, c| {
+        let more = g.spend_corpses(c.side, 2);
+        for h in g.player_mut(c.side).hand.iter_mut() {
+            if h.card.def().kind() == super::Kind::Minion {
+                h.enchant(1, 1);
+                if more {
+                    h.enchant(1, 1);
+                }
+            }
+        }
+    }),
+    battlecry("Darkfallen Neophyte", T::None, |g, c| {
+        if !g.spend_corpses(c.side, 2) {
+            return;
+        }
+        for h in g.player_mut(c.side).hand.iter_mut() {
+            if h.card.def().kind() == super::Kind::Minion {
+                h.enchant(2, 0);
+            }
+        }
+    }),
+    trigger("Hourglass Attendant", |g, c| {
+        if matches!(c.event, Event::TurnEnd { side } if side == c.side) {
+            for h in g.player_mut(c.side).hand.iter_mut() {
+                if h.card.def().kind() == super::Kind::Minion {
+                    h.enchant(1, 1);
+                }
+            }
+        }
+    }),
+    trigger("Overlord Runthak", |g, c| {
+        if matches!(c.event, Event::AttackDeclared { attacker, .. } if attacker == c.me()) {
+            for h in g.player_mut(c.side).hand.iter_mut() {
+                if h.card.def().kind() == super::Kind::Minion {
+                    h.enchant(1, 1);
+                }
+            }
+        }
+    }),
+    spell("Bone Flurry", T::None, |g, c| {
+        // Printed immune to Spell Damage, so this splits raw damage.
+        let lost = g.player(c.side).friendly_deaths_turn > 0;
+        g.damage_split(c.side, Area::AllEnemies, 3);
+        if lost {
+            g.damage_split(c.side, Area::AllEnemies, 3);
+        }
+    }),
+    battlecry("Liferender", T::EnemyMinion, |g, c| {
+        if g.player(c.side).hero_health_moved_turn
+            && let Some(t) = c.target
+        {
+            g.deal_damage(t, 6);
+        }
+    }),
+    battlecry("Endtime Survivor", T::None, |g, c| {
+        if g.player(c.side).hero_damaged_turn
+            && let Some(src) = c.source
+        {
+            g.buff(Target::Minion(c.side, src), 3, 3);
+        }
+    }),
+    battlecry("Crystal Tender", T::None, |g, c| {
+        // "Empty": crystals without the mana, so this catches up on the
+        // crystal count and leaves the turn's mana where it was.
+        let theirs = g.player(c.side.other()).crystals;
+        let p = g.player_mut(c.side);
+        if theirs > p.crystals {
+            p.crystals = theirs.min(crate::state::MAX_MANA);
+        }
+    }),
+    trigger("Lorewalker Cho", |g, c| {
+        if let Event::SpellCast { side, card } = c.event {
+            // "the other player" -- whoever did not cast it, and Cho does not
+            // care whose side he is on.
+            g.give_token(side.other(), card);
+        }
+    }),
+    trigger("Chromatic Broodmother", |g, c| {
+        if matches!(c.event, Event::AttackDeclared { attacker, .. } if attacker == c.me())
+            && let Some(atk) = g.player(c.side).board.get(c.slot as usize).map(|m| m.atk)
+        {
+            g.refresh_mana(c.side, atk);
+        }
+    }),
+    spell("Photosynthesis", T::AnyCharacter, |g, c| {
+        if let Some(t) = c.target {
+            g.heal(t, 6);
+        }
+        for _ in 0..3 {
+            g.add_random_to_hand(c.side, |d| {
+                d.kind() == super::Kind::Spell && d.class() == super::Class::Druid
+            });
+        }
+    }),
+
     // ----------------------------------------- granted deathrattles
     // Each of these grants *itself* as the rattle: the card's own row carries
     // the effect, and `Permanent::granted_rattle` points back at it.

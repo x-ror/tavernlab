@@ -9401,3 +9401,124 @@ fn silence_takes_a_granted_rattle_with_it() {
     f.g.sweep_deaths();
     assert_eq!(f.g.players[0].board.len(), 0);
 }
+
+// ------------------------------- hand enchantments, second helping
+
+#[test]
+fn blood_tap_pays_double_for_two_corpses() {
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("Blood Tap", None);
+    assert_eq!((f.g.players[0].hand[0].atk, f.g.players[0].hand[0].hp), (1, 1));
+
+    let mut f = dk(2);
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("Blood Tap", None);
+    assert_eq!((f.g.players[0].hand[0].atk, f.g.players[0].hand[0].hp), (2, 2));
+}
+
+#[test]
+fn darkfallen_neophyte_needs_the_corpses() {
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("Darkfallen Neophyte", None);
+    assert_eq!(f.g.players[0].hand[0].atk, 0);
+
+    let mut f = dk(2);
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("Darkfallen Neophyte", None);
+    assert_eq!(f.g.players[0].hand[0].atk, 2);
+}
+
+#[test]
+fn hourglass_attendant_lifts_the_hand_each_turn() {
+    let mut f = Fix::new().board(ME, &["Hourglass Attendant"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.g.end_turn();
+    assert_eq!((f.g.players[0].hand[0].atk, f.g.players[0].hand[0].hp), (1, 1));
+}
+
+#[test]
+fn overlord_runthak_pays_the_hand_for_every_swing() {
+    let mut f = Fix::new().board(ME, &["Overlord Runthak"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    assert!(f.g.apply(Action::Attack { from: 0, target: Target::Hero(FOE) }));
+    assert_eq!((f.g.players[0].hand[0].atk, f.g.players[0].hand[0].hp), (1, 1));
+}
+
+#[test]
+fn bone_flurry_doubles_after_a_friendly_death() {
+    let mut f = Fix::new();
+    f.play("Bone Flurry", None);
+    assert_eq!(f.g.players[1].hero_hp, 27);
+
+    let mut f = Fix::new().board(ME, &["Wisp"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    f.play("Bone Flurry", None);
+    assert_eq!(f.g.players[1].hero_hp, 24);
+}
+
+#[test]
+fn liferender_needs_your_health_to_have_moved() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.play("Liferender", foe_minion(0));
+    assert_eq!(f.theirs(0).damage, 0);
+
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.g.damage_hero(ME, 1);
+    f.play("Liferender", foe_minion(0));
+    assert_eq!(f.theirs(0).damage, 6);
+}
+
+#[test]
+fn endtime_survivor_grows_after_you_are_hit() {
+    let mut f = Fix::new();
+    f.play("Endtime Survivor", None);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (5, 6));
+
+    let mut f = Fix::new();
+    f.g.damage_hero(ME, 1);
+    f.play("Endtime Survivor", None);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (8, 9));
+}
+
+#[test]
+fn crystal_tender_catches_your_crystals_up() {
+    let mut f = Fix::new();
+    f.g.players[0].crystals = 4;
+    f.g.players[1].crystals = 8;
+    f.play("Crystal Tender", None);
+    assert_eq!(f.g.players[0].crystals, 8);
+    assert_eq!(f.g.players[0].mana, 10 - 2, "empty crystals, so no new mana");
+}
+
+#[test]
+fn lorewalker_cho_hands_the_spell_to_the_other_side() {
+    let mut f = Fix::new().board(ME, &["Lorewalker Cho"]);
+    f.play("Fireball", Some(Target::Hero(FOE)));
+    assert_eq!(f.g.players[1].hand.len(), 1);
+    assert_eq!(f.g.players[1].hand[0].card.name(), "Fireball");
+    assert_eq!(f.g.players[0].hand.len(), 0, "never back to the caster");
+}
+
+#[test]
+fn chromatic_broodmother_refunds_mana_when_it_swings() {
+    let mut f = Fix::new().board(ME, &["Chromatic Broodmother"]); // 2 attack
+    f.g.players[0].mana = 0;
+    assert!(f.g.apply(Action::Attack { from: 0, target: Target::Hero(FOE) }));
+    assert_eq!(f.g.players[0].mana, 2);
+}
+
+#[test]
+fn photosynthesis_heals_and_pays_three_druid_spells() {
+    let mut f = Fix::new();
+    f.g.players[0].hero_hp = 20;
+    f.play("Photosynthesis", Some(Target::Hero(ME)));
+    assert_eq!(f.g.players[0].hero_hp, 26);
+    assert_eq!(f.g.players[0].hand.len(), 3);
+    for h in f.g.players[0].hand.iter() {
+        assert_eq!(h.card.def().class(), Class::Druid);
+        assert_eq!(h.card.def().kind(), Kind::Spell);
+    }
+}

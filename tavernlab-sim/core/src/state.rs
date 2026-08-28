@@ -499,6 +499,14 @@ pub struct Player {
     /// instances, not distinct characters -- the same one hit twice counts
     /// twice.
     pub friendly_damaged_turn: u8,
+    /// Whether this player's *hero* has taken damage this turn, and whether
+    /// its Health has moved at all (damage or healing). Two cards ask the two
+    /// questions separately, and `friendly_damaged_turn` answers neither: it
+    /// counts minions too. Both reset at this player's own turn start.
+    pub hero_damaged_turn: bool,
+    pub hero_health_moved_turn: bool,
+    /// Friendly minions that have died this turn.
+    pub friendly_deaths_turn: u8,
     /// The active Quest, as (card, progress). A Quest's own printed number
     /// is not stored here, since its `trigger` already knows it -- this is
     /// only ever read back by the same card that wrote it.
@@ -609,6 +617,9 @@ impl Player {
             spell_tax_pending: 0,
             pending: Inline::new(),
             friendly_damaged_turn: 0,
+            hero_damaged_turn: false,
+            hero_health_moved_turn: false,
+            friendly_deaths_turn: 0,
             quest: None,
             sidequest: None,
             weapon: None,

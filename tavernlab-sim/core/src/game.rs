@@ -304,6 +304,9 @@ impl Game {
         p.hero_power_uses = 0;
         p.second_hero_power_uses = 0;
         p.friendly_damaged_turn = 0;
+        p.hero_damaged_turn = false;
+        p.hero_health_moved_turn = false;
+        p.friendly_deaths_turn = 0;
         p.hero_attacks_done = 0;
         p.hero_bonus_atk = 0;
         p.cards_played_turn = 0;
@@ -1662,6 +1665,8 @@ impl Game {
         let absorbed = amount.min(p.armor);
         p.armor -= absorbed;
         p.hero_hp -= amount - absorbed;
+        p.hero_damaged_turn = true;
+        p.hero_health_moved_turn = true;
         self.check_over();
         self.fire(Event::Damaged {
             target: Target::Hero(side),
@@ -1682,6 +1687,7 @@ impl Game {
         // not wake "whenever a character is healed".
         let restored = p.hero_hp - before;
         if restored > 0 {
+            self.player_mut(side).hero_health_moved_turn = true;
             self.fire(Event::Healed {
                 target: Target::Hero(side),
                 amount: restored,
@@ -1788,6 +1794,7 @@ impl Game {
                 if body.is_minion() {
                     let p = self.player_mut(side);
                     p.deaths = p.deaths.saturating_add(1);
+                    p.friendly_deaths_turn = p.friendly_deaths_turn.saturating_add(1);
                     p.graveyard.push(card);
                 }
             }
