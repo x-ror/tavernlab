@@ -11498,3 +11498,213 @@ fn godfather_kazakus_queues_two_effects_for_the_fourth_turn() {
     pass(&mut f.g);
     assert!(f.g.players[0].pending.is_empty(), "the trial has finished");
 }
+
+// ---------------------------------------------------------------- dragons
+//
+// Two mechanics: three cards that wake up in hand when a Dragon is played,
+// and a spell that arrives already broken in two.
+
+#[test]
+fn a_dragon_played_wakes_what_is_waiting_in_hand() {
+    let mut f = Fix::new();
+    let striker = by_name("Stonetalon Striker").unwrap();
+    f.g.players[0].hand.push(HandCard::new(striker));
+    assert_eq!(f.g.players[0].hand[0].card.def().atk, 3, "3/3 asleep");
+    assert!(
+        !f.g.players[0].hand[0].card.def().races.any(Races::DRAGON),
+        "and not yet a Dragon"
+    );
+
+    // A Dragon lands, and the card in hand wakes.
+    f.play("Boulderfist Ogre", None); // not a Dragon
+    assert_eq!(f.g.players[0].hand[0].card, striker, "still asleep");
+    f.play("Twilight Whelp", None); // a Dragon
+    let awake = f.g.players[0].hand[0].card;
+    assert_ne!(awake, striker);
+    assert_eq!(awake.name(), "Stonetalon Striker", "the same card, awake");
+    assert_eq!((awake.def().atk, awake.def().hp), (6, 6));
+    assert_eq!(awake.def().cost, striker.def().cost, "the cost does not move");
+    assert!(awake.def().races.any(Races::DRAGON));
+    assert!(awake.def().keywords.has(Keywords::TAUNT), "and keeps its Taunt");
+}
+
+#[test]
+fn every_copy_in_hand_wakes_not_just_one() {
+    // "While in hand, play a Dragon to become…" is a standing condition on
+    // the card, not one trigger to be spent on the first copy.
+    let mut f = Fix::new();
+    let scout = by_name("Ebonscale Scout").unwrap();
+    f.g.players[0].hand.push(HandCard::new(scout));
+    f.g.players[0].hand.push(HandCard::new(scout));
+    f.play("Twilight Whelp", None);
+    for i in 0..2 {
+        assert_eq!(f.g.players[0].hand[i].card.def().atk, 8, "copy {i}");
+    }
+}
+
+#[test]
+fn ebonscale_scout_hits_for_what_it_is_worth_asleep_and_awake() {
+    // Asleep it is a 4/4, awake an 8/8, and the Battlecry reads its own
+    // Attack off the board either way.
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]); // 6/7
+    f.play("Ebonscale Scout", foe_minion(0));
+    assert_eq!(f.theirs(0).health(), 3, "four damage from the 4/4");
+
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Ebonscale Scout").unwrap()));
+    f.play("Twilight Whelp", None); // wakes it
+    let idx = f.g.players[0]
+        .hand
+        .iter()
+        .position(|hc| hc.card.name() == "Ebonscale Scout")
+        .expect("still in hand") as u8;
+    assert!(f.g.apply(Action::Play {
+        hand: idx,
+        target: foe_minion(0),
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(f.their_board(), 0, "eight damage kills a 6/7");
+}
+
+#[test]
+fn ebyssian_gives_dragons_rush_for_the_rest_of_the_game() {
+    let mut f = Fix::new();
+    f.play("Twilight Whelp", None); // a Dragon, before Ebyssian
+    f.play("Ebyssian", None);
+    let whelp = f
+        .g
+        .players[0]
+        .board
+        .iter()
+        .find(|m| m.card.name() == "Twilight Whelp")
+        .expect("on the board");
+    assert!(whelp.has(Keywords::RUSH), "the Dragons already out get it too");
+
+    // And one that arrives later, after Ebyssian itself has gone.
+    f.g.players[0].board.clear();
+    f.g.recompute_auras();
+    f.play("Twilight Whelp", None);
+    assert!(f.mine(0).has(Keywords::RUSH), "\"this game\" outlives the body");
+    // A minion that is not a Dragon is untouched.
+    f.play("Wisp", None);
+    assert!(!f.mine(1).has(Keywords::RUSH));
+}
+
+#[test]
+fn supply_run_shatters_as_it_reaches_hand() {
+    let mut f = Fix::new();
+    f.g.give_card(ME, by_name("Chillwind Yeti").unwrap());
+    f.g.give_card(ME, by_name("Supply Run").unwrap());
+
+    // One half to the leftmost slot, the other to the end.
+    let names: Vec<&str> = f.g.players[0].hand.iter().map(|hc| hc.card.name()).collect();
+    assert_eq!(names, ["Supply Run", "Chillwind Yeti", "Supply Run"]);
+    for hc in f.g.players[0].hand.iter() {
+        if hc.card.name() == "Supply Run" {
+            assert_eq!(hc.card.def().cost, 4, "both halves keep the whole cost");
+        }
+    }
+    // Two different halves, not the same card twice.
+    assert_ne!(f.g.players[0].hand[0].card, f.g.players[0].hand[2].card);
+}
+
+#[test]
+fn two_halves_recombine_once_they_are_side_by_side() {
+    let mut f = Fix::new().deck(&["Wisp", "Wisp", "Wisp", "Wisp"]);
+    f.g.give_card(ME, by_name("Chillwind Yeti").unwrap());
+    f.g.give_card(ME, by_name("Supply Run").unwrap());
+    assert_eq!(f.g.players[0].hand.len(), 3);
+
+    // Play what sits between them, and they meet.
+    let yeti = f.g.players[0]
+        .hand
+        .iter()
+        .position(|hc| hc.card.name() == "Chillwind Yeti")
+        .expect("in hand") as u8;
+    assert!(f.g.apply(Action::Play {
+        hand: yeti,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(f.g.players[0].hand.len(), 1, "one card where two halves met");
+    assert_eq!(
+        f.g.players[0].hand[0].card,
+        by_name("Supply Run").unwrap(),
+        "and it is the whole card again"
+    );
+}
+
+#[test]
+fn each_half_does_its_own_half_and_the_whole_does_both() {
+    // Left half: draw three minions, and no buff.
+    let mut f = Fix::new().deck(&["Wisp", "Wisp", "Wisp", "Fireball"]);
+    f.g.give_card(ME, by_name("Supply Run").unwrap());
+    let left = f.g.players[0].hand[0].card;
+    f.g.players[0].hand.clear();
+    f.g.players[0].hand.push(HandCard::new(by_name("Chillwind Yeti").unwrap()));
+    f.g.cast_token(ME, left);
+    assert_eq!(
+        f.g.players[0].hand.iter().filter(|h| h.card.name() == "Wisp").count(),
+        3,
+        "three minions drawn, and the Fireball left behind"
+    );
+    assert_eq!(f.g.players[0].hand[0].card.name(), "Chillwind Yeti");
+    assert_eq!((f.g.players[0].hand[0].atk, f.g.players[0].hand[0].hp), (0, 0));
+
+    // Right half: the buff, and no draw.
+    let mut f = Fix::new().deck(&["Wisp", "Wisp", "Wisp"]);
+    f.g.give_card(ME, by_name("Supply Run").unwrap());
+    let right = *f.g.players[0].hand.last().expect("two halves");
+    f.g.players[0].hand.clear();
+    f.g.players[0].hand.push(HandCard::new(by_name("Chillwind Yeti").unwrap()));
+    f.g.cast_token(ME, right.card);
+    assert_eq!(f.g.players[0].hand.len(), 1, "nothing drawn");
+    assert_eq!((f.g.players[0].hand[0].atk, f.g.players[0].hand[0].hp), (2, 2));
+
+    // The whole card, which is what a hand too full to split leaves you.
+    let mut f = Fix::new().deck(&["Wisp", "Wisp", "Wisp"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("Chillwind Yeti").unwrap()));
+    f.g.cast_token(ME, by_name("Supply Run").unwrap());
+    assert_eq!(f.g.players[0].hand.len(), 4, "the Yeti and three Wisps");
+    for hc in f.g.players[0].hand.iter() {
+        assert_eq!((hc.atk, hc.hp), (2, 2), "and every one of them buffed");
+    }
+}
+
+#[test]
+fn a_hand_with_one_slot_left_takes_only_the_left_half() {
+    let mut f = Fix::new();
+    let wisp = by_name("Wisp").unwrap();
+    for _ in 0..MAX_HAND - 1 {
+        f.g.players[0].hand.push(HandCard::new(wisp));
+    }
+    f.g.give_card(ME, by_name("Supply Run").unwrap());
+    assert_eq!(f.g.players[0].hand.len(), MAX_HAND);
+    assert_eq!(
+        f.g.players[0].hand[0].card.name(),
+        "Supply Run",
+        "the left half, and only it"
+    );
+    assert_eq!(
+        f.g.players[0].hand.iter().filter(|h| h.card.name() == "Supply Run").count(),
+        1
+    );
+}
+
+#[test]
+fn a_full_hand_burns_the_whole_card() {
+    let mut f = Fix::new();
+    let wisp = by_name("Wisp").unwrap();
+    for _ in 0..MAX_HAND {
+        f.g.players[0].hand.push(HandCard::new(wisp));
+    }
+    assert!(!f.g.give_card(ME, by_name("Supply Run").unwrap()));
+    assert!(
+        f.g.players[0].hand.iter().all(|h| h.card == wisp),
+        "nothing split its way in"
+    );
+}
