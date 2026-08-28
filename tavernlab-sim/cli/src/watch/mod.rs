@@ -73,19 +73,23 @@ fn newest_logs(dir: &Path) -> Option<(PathBuf, Option<PathBuf>)> {
     best.map(|(_, p, z)| (p, z))
 }
 
-/// Read every line of both files into one tracker.
+/// Read the new lines of both files into one tracker, in the order the client
+/// wrote them.
 ///
-/// Read together rather than merged by timestamp: the two files record
-/// different things (Zone.log the moves, Power.log the tags) and nothing
-/// here depends on their relative order.
+/// Chronological, not file by file. Only Power.log carries `CREATE_GAME`, so
+/// replaying one file and then the other puts every reset at the front and
+/// then lays every zone move of every game in the session on top of the last
+/// one — finished games' boards piling up on the current one, and their
+/// heroes deciding the classes. That is what the first real log showed.
 fn replay(tr: &mut Tracker, files: &[PathBuf], offsets: &mut Vec<u64>) -> std::io::Result<usize> {
     offsets.resize(files.len(), 0);
-    let mut lines = 0;
+    // `(stamp, file, seq)` keeps a stable order: lines that share a stamp, or
+    // carry none, stay in the order their own file had them.
+    let mut batch: Vec<((u64, usize, usize), String)> = Vec::new();
     for (i, path) in files.iter().enumerate() {
-        let Ok(file) = std::fs::File::open(path) else {
+        let Ok(mut file) = std::fs::File::open(path) else {
             continue;
         };
-        let mut file = file;
         // A truncated file means the client started a new session; start over.
         let len = file.metadata()?.len();
         if len < offsets[i] {
@@ -94,6 +98,8 @@ fn replay(tr: &mut Tracker, files: &[PathBuf], offsets: &mut Vec<u64>) -> std::i
         file.seek(SeekFrom::Start(offsets[i]))?;
         let mut reader = BufReader::new(file);
         let mut buf = String::new();
+        let mut last = 0u64;
+        let mut seq = 0usize;
         loop {
             buf.clear();
             let n = reader.read_line(&mut buf)?;
@@ -101,10 +107,18 @@ fn replay(tr: &mut Tracker, files: &[PathBuf], offsets: &mut Vec<u64>) -> std::i
                 break;
             }
             offsets[i] += n as u64;
-            lines += 1;
-            if let Some(ev) = log::parse(buf.trim_end()) {
-                tr.feed(ev);
-            }
+            let line = buf.trim_end().to_string();
+            // A line with no stamp of its own belongs to the one before it.
+            last = log::stamp(&line).unwrap_or(last);
+            batch.push(((last, i, seq), line));
+            seq += 1;
+        }
+    }
+    let lines = batch.len();
+    batch.sort_by(|a, b| a.0.cmp(&b.0));
+    for (_, line) in &batch {
+        if let Some(ev) = log::parse(line) {
+            tr.feed(ev);
         }
     }
     Ok(lines)

@@ -105,3 +105,73 @@ fn a_missing_log_says_so_instead_of_pretending() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("log.config"), "it names the fix: {err}");
 }
+
+
+/// A session directory the way the client lays one out, with the two files
+/// the watcher reads.
+fn session(tag: &str, power: &str, zone: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir()
+        .join(format!("tavernlab-watch-{}", std::process::id()))
+        .join(tag);
+    let _ = std::fs::create_dir_all(&dir);
+    // The watcher skips a Power.log too small to be real verbose logging, so
+    // the fixture has to be padded past that floor.
+    let mut padded = String::new();
+    while padded.len() < 5000 {
+        padded.push_str("D 00:00:00.0000000 [Power] padding that says nothing\n");
+    }
+    padded.push_str(power);
+    std::fs::write(dir.join("Power.log"), padded).expect("write Power.log");
+    std::fs::write(dir.join("Zone.log"), zone).expect("write Zone.log");
+    dir
+}
+
+#[test]
+fn a_finished_games_board_does_not_pile_up_on_the_next_one() {
+    // The bug the first real log showed. `CREATE_GAME` is written only to
+    // Power.log, so reading one file and then the other puts every reset at
+    // the front and lays every zone move of the whole session on top of the
+    // last game: minions on boards that are empty, and the classes of a game
+    // that finished an hour ago.
+    let power = "\
+D 09:00:00.0000000 [Power] GameState.DebugPrintPower() - CREATE_GAME
+D 09:30:00.0000000 [Power] GameState.DebugPrintPower() - CREATE_GAME
+D 09:30:05.0000000 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=2
+D 09:30:05.1000000 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=CURRENT_PLAYER value=1
+";
+    // The first game's hero and board, then the second game's hero. In file
+    // order the first game's Chillwind Yeti survives into the second.
+    let zone = "\
+D 09:00:01.0000000 [Zone] [entityName=Jaina Proudmoore id=64 zone=PLAY zonePos=0 cardId=HERO_08 player=1] zone from  -> FRIENDLY PLAY (Hero)
+D 09:00:02.0000000 [Zone] [entityName=Chillwind Yeti id=42 zone=HAND zonePos=1 cardId=CS2_182 player=1] zone from FRIENDLY HAND -> FRIENDLY PLAY
+D 09:30:01.0000000 [Zone] [entityName=Thrall id=70 zone=PLAY zonePos=0 cardId=HERO_02 player=1] zone from  -> FRIENDLY PLAY (Hero)
+D 09:30:02.0000000 [Zone] [entityName=Uther Lightbringer id=71 zone=PLAY zonePos=0 cardId=HERO_04 player=2] zone from  -> OPPOSING PLAY (Hero)
+";
+    // `--logs` is the directory *of* session directories, the way the client
+    // lays them out, so the parent is what the watcher is pointed at.
+    let dir = session("two-games", power, zone);
+    let out = Command::new(env!("CARGO_BIN_EXE_tavernsim"))
+        .arg("watch")
+        .arg("--logs")
+        .arg(dir.parent().expect("a parent"))
+        .arg("--me")
+        .arg("Me#1")
+        .arg("--once")
+        .output()
+        .expect("run tavernsim watch");
+    let out = String::from_utf8_lossy(&out.stdout).to_string()
+        + &String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.contains("SHAMAN проти PALADIN"),
+        "the classes come from the game being played, not the one before it: {out}"
+    );
+    assert!(
+        out.contains("ваша дошка: порожня"),
+        "the finished game's board must not carry over: {out}"
+    );
+    assert!(
+        !out.contains("Chillwind Yeti"),
+        "nothing of the first game is left: {out}"
+    );
+}
