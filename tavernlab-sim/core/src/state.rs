@@ -1152,6 +1152,9 @@ pub struct Game {
     /// read on the damage and healing paths so a board with none of them pays
     /// one comparison rather than a recomputation.
     pub conditional: u8,
+    /// Set while a Rewind is being resolved, so the replay cannot rewind
+    /// itself. See `Game::apply`.
+    pub rewinding: bool,
 }
 
 impl Game {

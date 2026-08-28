@@ -415,6 +415,66 @@ impl Agent for Scripted {
     }
 }
 
+/// How good a whole position is for `side`, in rough stat-points.
+///
+/// The engine needs this for exactly one thing: Rewind, which asks the player
+/// to look at what a card just did and decide whether to take it or roll
+/// again. Somebody has to answer that, and the only honest way to say what
+/// this program answers with is to write the answer down.
+///
+/// It is deliberately the same crude currency `minion_value` uses, and it is
+/// as blind as `minion_value` is -- see the note there. Two known gaps, both
+/// recorded in `APPROXIMATE` on the cards they reach:
+///
+///   * three of the eight Bonus Effects are invisible to `minion_value`, so a
+///     Rewind that only changed which Bonus Effects landed can compare two
+///     outcomes as equal when they are not;
+///   * nothing here looks at the *deck*, so a Rewind that changed what is
+///     left to draw is judged only by what is already on the table.
+///
+/// Both make the choice worse than a player's, never better, which is the
+/// direction this whole engine errs in.
+pub fn position_value(g: &Game, side: Side) -> f32 {
+    // A finished game dominates everything else: no board is worth losing on.
+    if let Some(o) = g.outcome {
+        return (score_for(o, side) - 0.5) * 1000.0;
+    }
+    let me = g.player(side);
+    let foe = g.player(side.other());
+    let mut v = 0.0;
+    for m in me.board.iter() {
+        if m.is_minion() && m.active() {
+            v += minion_value(m);
+        }
+    }
+    for m in foe.board.iter() {
+        if m.is_minion() && m.active() {
+            v -= minion_value(m);
+        }
+    }
+    // Health is worth less per point than a body is: a 4/4 on the board does
+    // more than four points of face damage would have.
+    v += (me.hero_hp + me.armor) as f32 * 0.5;
+    v -= (foe.hero_hp + foe.armor) as f32 * 0.5;
+    // A card in hand is worth about a small body, plus a quarter of what the
+    // game itself prices it at -- so a Rewind that changed *which* card was
+    // drawn is not a tie. Cost is the only measure of a card in hand this
+    // engine has that the card data actually carries.
+    for hc in me.hand.iter() {
+        v += 1.0 + (hc.card.def().cost + hc.cost_delta).max(0) as f32 * 0.25;
+    }
+    if let Some(w) = me.weapon {
+        v += (w.atk * w.durability) as f32 * 0.5;
+    }
+    // Theirs counts too: a card that arms both players (Stadium Announcer)
+    // is a worse roll when it arms them better.
+    if let Some(w) = foe.weapon {
+        v -= (w.atk * w.durability) as f32 * 0.5;
+    }
+    v += me.crystals as f32 * 0.25;
+    v
+}
+
 /// The side that won, as a score for player 0: 1.0 win, 0.5 draw, 0.0 loss.
 pub fn score_for(outcome: crate::state::Outcome, side: Side) -> f32 {
     match outcome {

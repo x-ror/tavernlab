@@ -96,6 +96,10 @@ const KEYWORDS: &[&str] = &[
     "ImmuneToSpellpower",
     "HEROPOWER_DAMAGE",
     "FINALE",
+    // Rewind is never in `mech` -- the corpus carries it only in `kw`, which
+    // also names keywords a card merely *references*, so it is read off the
+    // text below instead. It is listed here for its bit and its constant.
+    "REWIND",
 ];
 
 /// Bits the engine reads that are not generated from [`KEYWORDS`].
@@ -119,6 +123,35 @@ const MECHANIC_ALIASES: &[(&str, &str)] = &[
     ("START_OF_GAME", "START_OF_GAME_KEYWORD"),
     ("SIDEQUEST", "SIDE_QUEST"),
 ];
+
+/// Whether this card's text prints Rewind as a leading keyword.
+///
+/// Keywords are printed first and capitalised, and the rules sentence after
+/// them starts capitalised too -- "Rewind Battlecry: ...", "Rewind Deal 4
+/// damage...", and Mister Clocksworth's "Rewind, Rewind, Rewind Battlecry:".
+/// Used as an ordinary verb it is followed by a lowercase word instead:
+/// "Rewind the card's effect", "Rewind to the start of your last turn". That
+/// is the whole distinction, and it separates the seventeen cards that carry
+/// the keyword from the two that only name it.
+fn leads_with_rewind(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix("Rewind") else {
+        return false;
+    };
+    match rest.chars().next() {
+        // "Rewind, Rewind, Rewind ..."
+        Some(',') => true,
+        Some(' ') => rest[1..].chars().next().is_some_and(char::is_uppercase),
+        _ => false,
+    }
+}
+
+/// The bit [`KEYWORDS`] gave Rewind.
+fn rewind_bit() -> u32 {
+    KEYWORDS
+        .iter()
+        .position(|k| *k == "REWIND")
+        .expect("KEYWORDS lists REWIND") as u32
+}
 
 /// The corpus's name for a mechanic, as the engine spells it.
 fn alias(name: &str) -> &str {
@@ -434,6 +467,18 @@ fn generate_cards() -> Result<String, String> {
                 // runtime.
                 | if text.starts_with("Prepare") {
                     1u64 << PREPARE_BIT
+                } else {
+                    0
+                }
+                // Rewind, the same way and for a stronger reason: it is in no
+                // card's `mech` at all, and the `kw` list that does name it
+                // cannot tell a card that *has* Rewind from one that only
+                // talks about it -- Time Machine ("Get a random Rewind card")
+                // and Morchie ("Your Rewinds keep BOTH outcomes") are both in
+                // it. The printed text can: a card with the keyword leads
+                // with it. See `leads_with_rewind`.
+                | if leads_with_rewind(&text) {
+                    1u64 << rewind_bit()
                 } else {
                     0
                 },
