@@ -235,13 +235,34 @@ fn the_server_answers_every_route_the_front_end_calls() {
 fn a_deck_the_engine_cannot_field_is_refused_by_name() {
     // The rule the whole product rests on: never quietly approximate. A list
     // with an unimplemented card must come back naming it, not scored.
+    //
+    // The offending card is chosen at run time rather than frozen into a
+    // deck code. A hard-coded list stops testing anything the moment its one
+    // unimplemented card gets implemented, which is exactly what happened to
+    // the code this used to carry: the deck quietly became legal and the
+    // test passed for the wrong reason.
     let server = Server::start();
-    let code = "AAECAaoICsmeBsODB9C/B/nDB4LUB5vUB8/bB9DbB4jdB9/lBwqe1ATt5gbgnQexsAePvge1wAfJwAfJ2wfI5Qfm/QcAAA==";
+    let base = "AAECAaoICsmeBsODB9C/B/nDB4LUB5vUB8/bB9DbB4jdB9/lBwqe1ATt5gbgnQexsAePvge1wAfJwAfJ2wfI5Qfm/QcAAA==";
+    let mut deck = tavernlab_core::deckstring::decode(base).expect("the base list decodes");
+    let offender = (0..u16::MAX)
+        .map(tavernlab_core::cards::CardId)
+        .find(|c| {
+            let d = c.def();
+            d.collectible
+                && d.deckable()
+                && d.class() == tavernlab_core::cards::Class::Neutral
+                && d.formats.has(tavernlab_core::cards::Formats::STANDARD)
+                && !tavernlab_core::cards::is_implemented(*c)
+        })
+        .expect("some Standard Neutral card is still unimplemented");
+    // Neutral, so it is legal in whatever class the base list is.
+    deck.cards[0] = (offender.info().dbf, 1);
+    let code = tavernlab_core::deckstring::encode(deck.heroes[0], &deck.cards, deck.format);
 
     let (status, body) = server.post("/api/resolve", &format!("{{\"code\":\"{code}\"}}"));
     assert_eq!(status, 200);
     let doc = json(&body);
-    assert!(!doc.bool_or_false("ok"));
+    assert!(!doc.bool_or_false("ok"), "{body}");
     assert!(!doc.arr_or_empty("unimplemented").is_empty(), "{body}");
 
     let (_, body) = server.post("/api/analyze", &format!("{{\"code\":\"{code}\"}}"));

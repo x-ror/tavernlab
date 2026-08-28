@@ -10274,3 +10274,84 @@ fn techysaurus_counts_every_card_you_did_not_bring() {
     }));
     assert_eq!(f.g.card_cost(ME, 0), 5);
 }
+
+// ------------------------------------------ the last two of a real deck list
+//
+// Both came out of one user's Shaman list, which was the only thing standing
+// between it and being scored.
+
+#[test]
+fn hexmarshal_discounts_only_a_deck_that_started_without_spells() {
+    // `Fix::new()` builds its players with an empty deck list, which started
+    // without spells the same way a spell-less thirty does.
+    let mut f = Fix::new();
+    f.play("Hexmarshal", None);
+    let hc = f.g.players[0].hand[0];
+    let d = hc.card.def();
+    assert_eq!(d.kind(), Kind::Spell);
+    assert!(d.cost >= 5, "{} costs {}", hc.card.name(), d.cost);
+    assert_eq!(f.g.card_cost(ME, 0), d.cost - 5);
+
+    // A list with one spell in it loses the discount, and keeps losing it
+    // after that spell has been drawn: the question is about the list, not
+    // about what is left.
+    let mut g = Game::new(
+        (Class::Shaman, &[by_name("Fireball").unwrap()]),
+        (Class::Mage, &[]),
+        1,
+    )
+    .unwrap();
+    g.players[0].mana = 10;
+    g.players[0].crystals = 10;
+    g.draw(ME, 1);
+    let mut f = Fix { g };
+    f.play("Hexmarshal", None);
+    let idx = f.g.players[0].hand.len() - 1;
+    let d = f.g.players[0].hand[idx].card.def();
+    assert_eq!(d.kind(), Kind::Spell);
+    assert_eq!(f.g.card_cost(ME, idx), d.cost, "no discount, full price");
+}
+
+#[test]
+fn shadowed_informant_starts_on_your_class_and_swaps_off_it() {
+    let mut f = Fix::new(); // Mage
+    assert_eq!(
+        f.g.players[0].informant_class,
+        Class::Mage,
+        "it starts as the hero's own class"
+    );
+    f.play("Shadowed Informant", None);
+    assert_eq!(
+        f.g.players[0].hand[0].card.def().class(),
+        Class::Mage,
+        "played the turn it arrives, it offers your own spells"
+    );
+    assert_eq!(f.g.players[0].hand[0].card.def().kind(), Kind::Spell);
+
+    // It swaps at the end of every one of its owner's turns, and swaps to a
+    // different class rather than possibly staying put.
+    let mut f = Fix::new();
+    let mut seen = vec![Class::Mage];
+    for _ in 0..3 {
+        f.g.end_turn();
+        f.g.begin_turn();
+        let now = f.g.players[0].informant_class;
+        assert_ne!(now, *seen.last().unwrap(), "swaps to a different class");
+        assert_ne!(now, Class::Neutral, "always a playable class");
+        seen.push(now);
+    }
+}
+
+#[test]
+fn shadowed_informant_follows_the_class_it_has_swapped_to() {
+    let mut f = Fix::new();
+    f.g.end_turn();
+    f.g.begin_turn();
+    let want = f.g.players[0].informant_class;
+    assert_ne!(want, Class::Mage);
+    f.g.players[0].mana = 10;
+    f.g.players[0].crystals = 10;
+    f.play("Shadowed Informant", None);
+    let idx = f.g.players[0].hand.len() - 1;
+    assert_eq!(f.g.players[0].hand[idx].card.def().class(), want);
+}

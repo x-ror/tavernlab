@@ -8342,6 +8342,36 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     spell("Story of the Waygate", T::None, |g, c| {
         g.discount_hand_where(c.side, |hc| hc.marks.has(Marks::NOT_FROM_DECK), 1);
     }),
+    // "If your deck started with no spells": a question about the list the
+    // deck was built from, not about what is left in it, so it is answered
+    // once at construction and never moves. The discount lands on the copy
+    // just added, which is the last card in hand.
+    battlecry("Hexmarshal", T::None, |g, c| {
+        let before = g.player(c.side).hand.len();
+        if !g.add_random_to_hand_where(c.side, |d| {
+            d.kind() == super::Kind::Spell && d.cost >= 5
+        }) {
+            return;
+        }
+        if g.player(c.side).deck_started_spelless
+            && g.player(c.side).hand.len() > before
+            && let Some(hc) = g.player_mut(c.side).hand.last_mut()
+        {
+            hc.cost_delta -= 5;
+        }
+    }),
+    // "(Swaps class each turn!)" -- the class starts as your own hero's and
+    // is rerolled at the end of each of your turns, in `Game::end_turn`.
+    // Played on the turn it arrives, this Discovers your own spells; held,
+    // it drifts. The corpus text says only that it swaps, so where it swaps
+    // to is not derivable from it; a random other class each turn is the
+    // rule the game actually uses.
+    battlecry("Shadowed Informant", T::None, |g, c| {
+        let want = g.player(c.side).informant_class;
+        g.discover_where(c.side, move |d| {
+            d.kind() == super::Kind::Spell && d.class() == want
+        });
+    }),
     c(
         "Techysaurus",
         T::None,
