@@ -393,6 +393,9 @@ mod tokens {
     pub const EDR_810T: CardId = token("EDR_810t");
     pub const TLC_101T: CardId = token("TLC_101t");
     pub const TLC_903T: CardId = token("TLC_903t");
+    /// Shadows of Yesterday's 3/2 Shade, and Tyrannogill's 2/1 Murloc.
+    pub const ANOMALOUS_SHADE: CardId = token("TIME_610t2");
+    pub const DINOLOC: CardId = token("TLC_240t");
     pub const FLAME_ELEMENTAL: CardId = token("UNG_809t1");
     pub const ARCANE_MISSILES: CardId = token("EX1_277");
     pub const MUGS_MAGIC: CardId = token("JAIL_800hp1");
@@ -2995,16 +2998,14 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     spell("Nightmare Fuel", T::None, |g, c| {
         g.discover_from_opponent_deck(c.side, |d| d.kind() == super::Kind::Minion);
     }),
-    // The random Bonus Effect pool (stat buffs and keyword grants) is fixed
-    // to always +1/+1 -- the plainest entry in that pool. "Not itself": the
-    // same exclusion Warden Maiev's identical "after you play a minion"
-    // wording uses above.
+    // "Not itself": the same exclusion Warden Maiev's identical "after you
+    // play a minion" wording uses above.
     trigger("Dreambound Raptor", |g, c| {
         if let Event::MinionSummoned { side, slot, .. } = c.event
             && side == c.side
             && slot != c.slot
         {
-            g.buff(Target::Minion(side, slot), 1, 1);
+            g.give_bonus_effect(Target::Minion(side, slot));
         }
     }),
     // The current hand -- already missing this very card, removed by `play`
@@ -8366,6 +8367,67 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     // it drifts. The corpus text says only that it swaps, so where it swaps
     // to is not derivable from it; a random other class each turn is the
     // rule the game actually uses.
+    // ------------------------------------------------------------ Bonus Effects
+    // One of eight keywords, drawn at random -- see `Game::BONUS_EFFECTS` for
+    // where that pool comes from and why it is not in the card data.
+
+    // "Rewind" is not modelled; see this card's entry in APPROXIMATE. The
+    // summon and the Bonus Effects are exactly as printed.
+    spell("Shadows of Yesterday", T::None, |g, c| {
+        for _ in 0..4 {
+            if !g.summon(c.side, tokens::ANOMALOUS_SHADE) {
+                break;
+            }
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.give_bonus_effects(Target::Minion(c.side, slot), 2);
+        }
+    }),
+    spell("Story of Galvadon", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.give_bonus_effects(t, 3);
+        }
+    }),
+    deathrattle("Tyrannogill", |g, c| {
+        for _ in 0..3 {
+            if !g.summon(c.side, tokens::DINOLOC) {
+                break;
+            }
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.give_bonus_effect(Target::Minion(c.side, slot));
+        }
+    }),
+    // "And this Deathrattle": the chosen minion carries Stranglevine's own
+    // rattle onward, which is what makes the effect chain down the board.
+    deathrattle("Stranglevine", |g, c| {
+        let n = g.player(c.side).board.len();
+        if n == 0 {
+            return;
+        }
+        let pick = g.rngs.effects.index(n);
+        let t = Target::Minion(c.side, pick as u8);
+        g.give_bonus_effect(t);
+        grant_rattle(g, Some(t), c.card);
+    }),
+    // "Steal its Bonus Effects": the ones granted to it, not the ones its own
+    // card prints -- a body printed with Taunt has not been given Taunt.
+    battlecry("Violet Punisher", T::EnemyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        let stolen = g.bonus_effects_on(t);
+        if stolen.is_empty() {
+            return;
+        }
+        if let Target::Minion(s, i) = t
+            && let Some(m) = g.player_mut(s).board.get_mut(i as usize)
+        {
+            m.keywords.remove(stolen);
+        }
+        let Some(slot) = c.source else { return };
+        let me = Target::Minion(c.side, slot);
+        g.grant(me, stolen);
+        let n = stolen.0.count_ones() as i16;
+        g.buff(me, n, n);
+    }),
+
     battlecry("Shadowed Informant", T::None, |g, c| {
         let want = g.player(c.side).informant_class;
         g.discover_where(c.side, move |d| {
@@ -8458,8 +8520,8 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
         "the Combo bonus (the discovered minion arrives with a Dark Gift, G11) is not implemented; the base Discover always fires without it",
     ),
     (
-        "Dreambound Raptor",
-        "the random Bonus Effect pool is fixed to a single always +1/+1, rather than a random draw from the full set of stat and keyword grants",
+        "Shadows of Yesterday",
+        "\"Rewind\" is not modelled: the card's roll stands instead of being redone and the better of the two outcomes kept, so the four Shades carry the median set of Bonus Effects rather than the better one. Weaker than printed, never stronger. Modelling it needs a position score that can weigh all eight Bonus Effects against each other, and the one the engine has (`agent::minion_value`) is blind to three of them",
     ),
     (
         "Nespirah, Enthralled",

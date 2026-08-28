@@ -227,6 +227,82 @@ impl Game {
         }
     }
 
+    /// The eight keywords a "Bonus Effect" can be.
+    ///
+    /// The corpus does not carry this pool: it holds no enchantment cards at
+    /// all -- only heroes, hero powers, minions, spells, locations and
+    /// weapons -- so no card text names what a Bonus Effect draws from. The
+    /// list was supplied by the player who reported the gap, and every one of
+    /// the eight is a keyword the engine already models, so nothing here is
+    /// an invented effect: only the membership of the pool comes from
+    /// outside the card data.
+    pub const BONUS_EFFECTS: [Keywords; 8] = [
+        Keywords::TAUNT,
+        Keywords::WINDFURY,
+        Keywords::DIVINE_SHIELD,
+        Keywords::POISONOUS,
+        Keywords::ELUSIVE,
+        Keywords::RUSH,
+        Keywords::LIFESTEAL,
+        Keywords::REBORN,
+    ];
+
+    /// Give a minion one random Bonus Effect it does not already have.
+    ///
+    /// Drawn from the ones it lacks rather than from all eight, so "two
+    /// random Bonus Effects" really is two: a bitset cannot hold the same
+    /// keyword twice, and rolling a duplicate would quietly halve the card.
+    /// Returns false when the minion already has all eight, or is not there.
+    pub fn give_bonus_effect(&mut self, target: Target) -> bool {
+        let Target::Minion(s, i) = target else {
+            return false;
+        };
+        let Some(m) = self.player(s).board.get(i as usize) else {
+            return false;
+        };
+        let mut missing: Inline<u8, 8> = Inline::new();
+        for (k, kw) in Self::BONUS_EFFECTS.iter().enumerate() {
+            if !m.has(*kw) {
+                missing.push(k as u8);
+            }
+        }
+        if missing.is_empty() {
+            return false;
+        }
+        let pick = self.rngs.effects.index(missing.len());
+        self.grant(target, Self::BONUS_EFFECTS[missing[pick] as usize]);
+        true
+    }
+
+    /// Give a minion `n` distinct random Bonus Effects.
+    pub fn give_bonus_effects(&mut self, target: Target, n: usize) -> usize {
+        (0..n).take_while(|_| self.give_bonus_effect(target)).count()
+    }
+
+    /// Which Bonus Effects a minion is carrying -- the ones granted to it,
+    /// not the ones its own card prints.
+    ///
+    /// A body that prints Taunt has not been "given" Taunt, so stealing its
+    /// Bonus Effects must not take it (Violet Punisher). The difference is
+    /// readable straight off the card: whatever it has beyond what it was
+    /// printed with was granted.
+    pub fn bonus_effects_on(&self, target: Target) -> Keywords {
+        let Target::Minion(s, i) = target else {
+            return Keywords::NONE;
+        };
+        let Some(m) = self.player(s).board.get(i as usize) else {
+            return Keywords::NONE;
+        };
+        let printed = m.card.def().keywords;
+        let mut out = Keywords::NONE;
+        for kw in Self::BONUS_EFFECTS {
+            if m.has(kw) && !printed.has(kw) {
+                out.insert(kw);
+            }
+        }
+        out
+    }
+
     /// Buff every minion in an area.
     pub fn buff_area(&mut self, side: Side, area: Area, atk: i16, hp: i16) {
         let mut hits: Inline<Target, { MAX_BOARD * 2 + 2 }> = Inline::new();
