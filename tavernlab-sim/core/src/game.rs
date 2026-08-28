@@ -452,6 +452,20 @@ impl Game {
         if let Some(saved) = p.swapped_hand.take() {
             p.hand = saved;
         }
+        // Shadowed Informant's class swaps at the end of every one of its
+        // owner's turns -- to a different one, since "swaps" is not "may
+        // stay". It starts as the owner's own class, set in `Player::new`.
+        let was = self.player(side).informant_class;
+        let pick = self.rngs.effects.index(crate::cards::PLAYABLE_CLASSES.len() - 1);
+        if let Some(next) = crate::cards::PLAYABLE_CLASSES
+            .iter()
+            .copied()
+            .filter(|c| *c != was)
+            .nth(pick)
+        {
+            self.player_mut(side).informant_class = next;
+        }
+
         // Cursed Chains: any minion stolen from `side` returns now that
         // side's own turn has ended, wherever it currently sits on the
         // thief's board -- found by the flag on the permanent itself, not

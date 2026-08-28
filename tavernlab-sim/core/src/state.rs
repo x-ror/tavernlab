@@ -631,6 +631,19 @@ pub struct Player {
     /// they built -- generated, Discovered, shuffled in (Techysaurus).
     /// Saturating, and never reset: the card counts the whole game.
     pub cards_played_not_from_deck: u8,
+    /// Whether the list this deck was built from held no spells at all
+    /// (Hexmarshal). Read from the opening list once, in [`Player::new`],
+    /// because "started with" is a question about that list and not about
+    /// whatever is left in the deck by the time the card is played.
+    pub deck_started_spelless: bool,
+    /// The class Shadowed Informant is pointing at right now. It starts as
+    /// this player's own class and swaps to a random other one at the end of
+    /// each of their turns, so a copy played on the turn it arrives offers
+    /// your own spells and a copy held offers someone else's.
+    ///
+    /// One value per player rather than per copy: two copies in hand show
+    /// the same class as each other.
+    pub informant_class: Class,
     /// The active Quest, as (card, progress). A Quest's own printed number
     /// is not stored here, since its `trigger` already knows it -- this is
     /// only ever read back by the same card that wrote it.
@@ -748,6 +761,10 @@ impl Player {
             graveyard_at_turn_start: 0,
             friendly_deaths_turn: 0,
             cards_played_not_from_deck: 0,
+            deck_started_spelless: deck
+                .iter()
+                .all(|c| c.def().kind() != Kind::Spell),
+            informant_class: class,
             quest: None,
             sidequest: None,
             weapon: None,
