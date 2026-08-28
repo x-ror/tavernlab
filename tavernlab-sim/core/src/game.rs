@@ -15,8 +15,8 @@ use crate::events::Event;
 use crate::inline::Inline;
 use crate::rng::Rand;
 use crate::state::{
-    Flags, Game, HandCard, MAX_BOARD, MAX_DECK, MAX_HAND, MAX_MANA, Marks, Outcome, Pending,
-    PendingKind, Permanent, Player, Side, TURN_LIMIT, Target, Weapon,
+    DeckCard, Flags, Game, HandCard, MAX_BOARD, MAX_DECK, MAX_HAND, MAX_MANA, Marks, Outcome,
+    Pending, PendingKind, Permanent, Player, Side, TURN_LIMIT, Target, Weapon,
 };
 
 /// The most actions a position can offer.
@@ -167,9 +167,12 @@ impl Game {
                     queued.push((side, hc.card));
                 }
             }
-            for &card in self.player(side).deck.iter() {
-                if behaviour_of(card).and_then(|b| b.start_of_game).is_some() {
-                    queued.push((side, card));
+            for dc in self.player(side).deck.iter() {
+                if behaviour_of(dc.card)
+                    .and_then(|b| b.start_of_game)
+                    .is_some()
+                {
+                    queued.push((side, dc.card));
                 }
             }
         }
@@ -194,7 +197,7 @@ impl Game {
 
     fn mulligan(&mut self, side: Side, n: usize, agent: &mut dyn Agent) {
         let i = side.index();
-        let mut drawn: Inline<CardId, 5> = Inline::new();
+        let mut drawn: Inline<DeckCard, 5> = Inline::new();
         for _ in 0..n {
             if let Some(c) = self.players[i].deck.pop() {
                 drawn.push(c);
@@ -202,7 +205,8 @@ impl Game {
         }
         let aggressive = false;
         let snapshot = *self;
-        let keep_mask = agent.mulligan(&snapshot, drawn.as_slice(), aggressive);
+        let ids: Inline<CardId, 5> = drawn.iter().map(|d| d.card).collect();
+        let keep_mask = agent.mulligan(&snapshot, ids.as_slice(), aggressive);
 
         // Returned cards go back before the reshuffle, exactly as the real
         // mulligan works: you cannot draw the card you just threw away until
@@ -218,14 +222,14 @@ impl Game {
 
         for (k, c) in drawn.iter().enumerate() {
             if keep_mask & (1 << k) != 0 {
-                self.players[i].hand.push(HandCard::new(*c));
+                self.players[i].hand.push(c.to_hand());
             }
         }
         // Top up to the mulligan size with fresh cards.
         while self.players[i].hand.len() < n {
             match self.players[i].deck.pop() {
                 Some(c) => {
-                    self.players[i].hand.push(HandCard::new(c));
+                    self.players[i].hand.push(c.to_hand());
                 }
                 None => break,
             }
@@ -987,6 +991,9 @@ impl Game {
         }
         p.hand.remove(hand_idx);
         p.cards_played_turn += 1;
+        if hc.marks.has(Marks::NOT_FROM_DECK) {
+            p.cards_played_not_from_deck = p.cards_played_not_from_deck.saturating_add(1);
+        }
         if def.kind() == Kind::Spell {
             p.spells_cast_turn += 1;
             p.schools_cast_turn |= 1 << def.school;
@@ -1076,6 +1083,11 @@ impl Game {
                 // Whatever was granted to this copy while it sat in hand.
                 m.atk += hc.atk as i16;
                 m.max_hp += hc.hp as i16;
+                // Where the card came from follows it onto the board, so
+                // bouncing it back to hand does not relabel it as generated.
+                if !hc.marks.has(Marks::NOT_FROM_DECK) {
+                    m.flags.remove(Flags::NOT_FROM_DECK);
+                }
                 // Cleared once this card's own CardPlayed event has gone out;
                 // see `Flags::BEING_PLAYED`.
                 m.flags.insert(Flags::BEING_PLAYED);
@@ -1275,10 +1287,14 @@ impl Game {
         let p = self.player_mut(side);
         p.mana -= TRADE_COST;
         p.hand.remove(hand_idx);
-        // A traded card goes back as a plain card: whatever discount or mark
-        // it was carrying in hand is gone, because the deck holds card ids
-        // and nothing else.
-        self.shuffle_into_deck(side, hc.card);
+        // A traded card goes back stripped of whatever discount or mark it
+        // was carrying in hand -- with one exception. Where it came from
+        // survives, because "a card that didn't start in your deck" is a
+        // question the deck is about to be asked, and trading is the one way
+        // a card gets back there without arriving new.
+        let mut back = DeckCard::new(hc.card);
+        back.started_here = !hc.marks.has(Marks::NOT_FROM_DECK);
+        self.shuffle_deck_card(side, back);
         self.draw(side, 1);
         true
     }
@@ -1301,7 +1317,20 @@ impl Game {
         }
     }
 
+    /// Put a card into hand from anywhere other than the deck it was built
+    /// from -- generated, Discovered, returned. Marked as such, so that a
+    /// card later put back into the deck still knows it did not start there.
     pub fn give_card(&mut self, side: Side, card: CardId) -> bool {
+        let mut hc = HandCard::new(card);
+        hc.marks.insert(Marks::NOT_FROM_DECK);
+        self.give_hand_card(side, hc)
+    }
+
+    /// Put an already-built hand card into hand. The draw path uses this to
+    /// carry what the deck wrote on the card -- stats, cost, provenance --
+    /// across the move.
+    pub fn give_hand_card(&mut self, side: Side, hc: HandCard) -> bool {
+        let card = hc.card;
         let p = self.player_mut(side);
         if p.hand.len() >= MAX_HAND {
             if p.godfrey_active {
@@ -1309,7 +1338,7 @@ impl Game {
             }
             return false;
         }
-        let ok = p.hand.push(HandCard::new(card));
+        let ok = p.hand.push(hc);
         // Hand and deck size are printed conditions ("if your deck has 25 or
         // more cards"), and this is where both move.
         self.refresh_conditionals();
@@ -1322,7 +1351,7 @@ impl Game {
             let card = self.player_mut(side).deck.pop();
             match card {
                 Some(c) => {
-                    self.give_card(side, c);
+                    self.give_hand_card(side, c.to_hand());
                     self.fire(Event::CardDrawn { side });
                 }
                 None => {
@@ -1340,11 +1369,21 @@ impl Game {
 
     /// Summon a minion for `side`, if there is room.
     pub fn summon(&mut self, side: Side, card: CardId) -> bool {
+        self.summon_with(side, card, 0, 0)
+    }
+
+    /// Summon a minion that arrives already enchanted -- a copy pulled out of
+    /// the deck after something buffed it there. The stats land before the
+    /// summon event, so anything reacting to the arrival sees the real body.
+    pub fn summon_with(&mut self, side: Side, card: CardId, atk: i16, hp: i16) -> bool {
         let p = self.player_mut(side);
         if p.board.is_full() {
             return false;
         }
-        let ok = p.board.push(Permanent::summon(card));
+        let mut body = Permanent::summon(card);
+        body.atk += atk;
+        body.max_hp += hp;
+        let ok = p.board.push(body);
         let slot = p.board.len() as u8 - 1;
         self.board_dirty = true;
         // Before the summon event, so anything reacting to the arrival already
@@ -2178,7 +2217,7 @@ impl Game {
             self.summon(side, warptooth);
             return;
         }
-        if let Some(idx) = self.player(side).deck.position(&warptooth) {
+        if let Some(idx) = self.player(side).deck.iter().position(|d| d.card == warptooth) {
             self.player_mut(side).deck.remove(idx);
             self.summon(side, warptooth);
         }

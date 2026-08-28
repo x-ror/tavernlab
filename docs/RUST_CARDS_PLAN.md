@@ -99,8 +99,11 @@
 - **Стан гравця, що вже є:** `corpses`, `herald`, `next_spell_discount`,
   `cards_played_turn`, `spells_cast_turn`, `spell_power_bonus`,
   `played_races_turn/last` (Kindred), `overload_now/next`, `deaths_this_turn`
-  (на `Game`), `secrets`, `deck: Inline<CardId, 60>` (верх = кінець масиву,
-  тож «на дно колоди» = `insert(0, …)`).
+  (на `Game`), `secrets`, `deck: Inline<DeckCard, 60>` (верх = кінець масиву,
+  тож «на дно колоди» = `insert(0, …)`). `DeckCard` — це не просто номер
+  карти: кожен примірник несе `atk`/`hp`, `cost_delta` і `started_here`
+  («чи був у стартовому списку»), і `DeckCard::to_hand()` переносить усе це
+  в `HandCard` на доборі.
 - **`APPROXIMATE: &[(&str, &str)]`** — контракт: частково реалізована карта
   **слабша за надруковану, ніколи не сильніша**; нотатка каже, чого бракує.
   Виняток (Archmage Kalec) названо явно. Кожна нова апроксимація — туди.

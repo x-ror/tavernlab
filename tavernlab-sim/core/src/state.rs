@@ -68,6 +68,19 @@ impl Flags {
     /// remembered slot, because a battlecry can reorder the board underneath
     /// it and a flag travels with the permanent.
     pub const BEING_PLAYED: Flags = Flags(1 << 9);
+    /// This body did not come from the deck its owner built -- it was
+    /// summoned as a token, transformed, resurrected, copied, or played from
+    /// a card that was itself generated. Read only when the minion goes back
+    /// to hand, so a bounced minion keeps knowing where it came from.
+    ///
+    /// Set by default on every summon and cleared in `Game::play_card` for a
+    /// card played out of hand that came from the deck. That leaves one gap:
+    /// a minion pulled straight out of the deck onto the board keeps the
+    /// flag, so bouncing *that* minion marks it as generated. Nothing on the
+    /// board carries a deck slot to consult, and the chain that would notice
+    /// -- summon from deck, bounce, then trade or count it -- is narrow
+    /// enough to name here rather than pay for everywhere.
+    pub const NOT_FROM_DECK: Flags = Flags(1 << 10);
 
     #[inline]
     pub const fn has(self, f: Flags) -> bool {
@@ -164,7 +177,9 @@ impl Permanent {
             },
             damage: 0,
             keywords: d.keywords,
-            flags: Flags::JUST_SUMMONED,
+            // Summoned, not played from a deck card, until something says
+            // otherwise; see `Flags::NOT_FROM_DECK`.
+            flags: Flags(Flags::JUST_SUMMONED.0 | Flags::NOT_FROM_DECK.0),
             attacks_done: 0,
             dormant: d.dormant as u8,
             cooldown: 0,
@@ -326,6 +341,17 @@ impl Marks {
     /// A card costing more than this one's own printed cost was played
     /// while this card sat in hand (Shaladrassil).
     pub const PLAYED_HIGHER_COST: Marks = Marks(1 << 3);
+    /// This copy reached hand from somewhere other than the deck it was
+    /// built from — generated, Discovered, or drawn after being shuffled in.
+    /// Set by [`Game::give_card`] and cleared on the draw path, which copies
+    /// [`DeckCard::started_here`] instead.
+    ///
+    /// It exists so a card put *back* into the deck (Tradeable) keeps its
+    /// provenance. It is exact for every card that has only ever been drawn
+    /// or generated; the one case it overstates is a minion bounced off the
+    /// board back to hand, which the board carries no provenance for, and
+    /// which only matters if that same card is then traded away again.
+    pub const NOT_FROM_DECK: Marks = Marks(1 << 4);
 
     #[inline]
     pub const fn has(self, m: Marks) -> bool {
@@ -379,6 +405,93 @@ impl HandCard {
     pub fn enchant(&mut self, atk: i16, hp: i16) {
         self.atk = self.atk.saturating_add(atk.clamp(-128, 127) as i8);
         self.hp = self.hp.saturating_add(hp.clamp(-128, 127) as i8);
+    }
+}
+
+// ----------------------------------------------------------- deck cards
+
+/// A card in the deck, with the per-copy state that makes two copies of the
+/// same card differ.
+///
+/// A deck is not a bag of identities: "Give +4/+4 to the top 3 minions in
+/// your deck" buffs three specific copies and leaves the fourth alone, and
+/// "cards that didn't start in your deck" asks each copy where it came from.
+/// Both questions need somewhere to write the answer, and this is it. The
+/// stats and the cost fold into the [`HandCard`] the moment the card is
+/// drawn, exactly as a hand enchantment folds into the body when played.
+///
+/// Six bytes, of which one is padding the `CardId`'s alignment would cost
+/// anyway — so `cost_delta` rides along free.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeckCard {
+    pub card: CardId,
+    /// Stats granted to this copy while it waits in the deck.
+    pub atk: i8,
+    pub hp: i8,
+    /// Cost modification applied to this copy only, carried into hand on the
+    /// draw. "Set the Cost to (1)" is stored as the delta that gets there,
+    /// because a delta is what the hand already knows how to apply.
+    pub cost_delta: i8,
+    /// Whether this copy was in the list the deck was built from. Written
+    /// once in [`Player::new`], and preserved across a Trade by
+    /// [`Marks::NOT_FROM_DECK`]; everything shuffled in later is `false`.
+    pub started_here: bool,
+}
+
+impl DeckCard {
+    /// A copy that arrived after the game started — shuffled in, put back,
+    /// created. Not part of the opening list.
+    pub const fn new(card: CardId) -> Self {
+        Self { card, atk: 0, hp: 0, cost_delta: 0, started_here: false }
+    }
+
+    /// A copy from the list the deck was built from.
+    pub const fn started(card: CardId) -> Self {
+        Self { card, atk: 0, hp: 0, cost_delta: 0, started_here: true }
+    }
+
+    #[inline]
+    pub fn def(&self) -> &'static crate::cards::CardDef {
+        self.card.def()
+    }
+
+    #[inline]
+    pub fn name(&self) -> &'static str {
+        self.card.name()
+    }
+
+    /// Add stats to this copy while it waits in the deck, saturating rather
+    /// than wrapping, for the same reason [`HandCard::enchant`] does.
+    pub fn enchant(&mut self, atk: i16, hp: i16) {
+        self.atk = self.atk.saturating_add(atk.clamp(-128, 127) as i8);
+        self.hp = self.hp.saturating_add(hp.clamp(-128, 127) as i8);
+    }
+
+    /// Set what this copy costs, whatever it was printed at. Stored as the
+    /// delta that lands on `cost`, clamped so an absurd printed cost cannot
+    /// wrap the byte.
+    pub fn set_cost(&mut self, cost: i16) {
+        let delta = cost - self.def().cost;
+        self.cost_delta = delta.clamp(-128, 127) as i8;
+    }
+
+    /// The hand card this becomes when drawn, carrying everything the deck
+    /// wrote on it.
+    pub fn to_hand(self) -> HandCard {
+        let mut hc = HandCard::new(self.card);
+        hc.atk = self.atk;
+        hc.hp = self.hp;
+        hc.cost_delta = self.cost_delta as i16;
+        if !self.started_here {
+            hc.marks.insert(Marks::NOT_FROM_DECK);
+        }
+        hc
+    }
+}
+
+impl From<CardId> for DeckCard {
+    fn from(card: CardId) -> Self {
+        Self::new(card)
     }
 }
 
@@ -514,6 +627,10 @@ pub struct Player {
     pub graveyard_at_turn_start: u8,
     /// Friendly minions that have died this turn.
     pub friendly_deaths_turn: u8,
+    /// Cards this player has played this game that did not start in the deck
+    /// they built -- generated, Discovered, shuffled in (Techysaurus).
+    /// Saturating, and never reset: the card counts the whole game.
+    pub cards_played_not_from_deck: u8,
     /// The active Quest, as (card, progress). A Quest's own printed number
     /// is not stored here, since its `trigger` already knows it -- this is
     /// only ever read back by the same card that wrote it.
@@ -524,7 +641,7 @@ pub struct Player {
     pub sidequest: Option<(CardId, u8)>,
     pub weapon: Option<Weapon>,
     pub hand: Inline<HandCard, MAX_HAND>,
-    pub deck: Inline<CardId, MAX_DECK>,
+    pub deck: Inline<DeckCard, MAX_DECK>,
     pub board: Inline<Permanent, MAX_BOARD>,
     pub secrets: Inline<CardId, MAX_SECRETS>,
     /// The hand this player kept after mulligan, captured once before Start
@@ -630,11 +747,12 @@ impl Player {
             discovered_turn: false,
             graveyard_at_turn_start: 0,
             friendly_deaths_turn: 0,
+            cards_played_not_from_deck: 0,
             quest: None,
             sidequest: None,
             weapon: None,
             hand: Inline::new(),
-            deck: deck.iter().copied().collect(),
+            deck: deck.iter().map(|&c| DeckCard::started(c)).collect(),
             board: Inline::new(),
             secrets: Inline::new(),
             starting_hand: Inline::new(),
@@ -864,6 +982,13 @@ mod tests {
         // and granted deathrattles were added: both are per-card state with
         // nowhere else to live. `tavernsim bench` was unchanged across the
         // move, which is the number this assertion is really protecting.
+        //
+        // It has not moved since. Giving the deck per-card state -- `DeckCard`
+        // instead of a bare `CardId`, six bytes for sixty slots on both sides
+        // -- took a game from 2032 to 2512 bytes, and `tavernsim bench`
+        // measured ~18 300 games/s on one core both before and after. The
+        // headroom left is small on purpose: the next thing that wants a byte
+        // per deck card has to take its own measurement first.
         assert!(
             n < 2560,
             "Game is {n} bytes; it is meant to stay well under 3 KB"

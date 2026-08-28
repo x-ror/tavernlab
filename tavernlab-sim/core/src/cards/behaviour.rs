@@ -21,8 +21,8 @@ use crate::effects::Area;
 use crate::events::{Event, Trigger};
 use crate::inline::Inline;
 use crate::state::{
-    Flags, Game, HandCard, MAX_BOARD, MAX_DECK, MAX_HAND, Marks, Pending, PendingKind, Side,
-    Target,
+    DeckCard, Flags, Game, HandCard, MAX_BOARD, MAX_DECK, MAX_HAND, Marks, Pending, PendingKind,
+    Side, Target,
 };
 
 /// What an effect is told about the circumstances it fires in.
@@ -1910,18 +1910,19 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.destroy(t);
         }
     }),
-    // Approximate: the five Dragons arrive at their printed cost. "They cost
-    // (1)" needs a per-copy discount that survives in the deck, and a deck
-    // here is a list of card ids with nowhere to write one -- the same limit
-    // Ultraxion's entry in APPROXIMATE records.
+    // "They cost (1)" is written on each copy as it goes in: a deck card
+    // carries its own cost, and the draw hands it to the card in hand.
     spell("Enthrall", T::None, |g, c| {
-        for _ in 0..5 {
-            g.shuffle_random_into_deck(c.side, |d| {
+        g.shuffle_random_into_deck_where(
+            c.side,
+            5,
+            |d| {
                 d.kind() == super::Kind::Minion
                     && d.races.any(Races::DRAGON)
                     && d.rarity() == super::Rarity::Legendary
-            });
-        }
+            },
+            |dc| dc.set_cost(1),
+        );
     }),
     // "Choose N Cataclysms to unleash", where N is 1, and 2 or 3 once you
     // have Heralded twice or four times. The engine picks for you, the same
@@ -2585,7 +2586,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         }
         for &i in demon_idx.iter().rev() {
             if let Some(card) = g.player_mut(c.side).deck.remove(i as usize) {
-                g.summon(c.side, card);
+                g.summon_with(c.side, card.card, card.atk as i16, card.hp as i16);
             }
         }
     }),
@@ -2736,13 +2737,13 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     // Start of Game: docs/RUST_CARDS_PLAN.md §4 phase 4 (G5).
     start_of_game("Chainbreaker Hogger", |g, c| {
         let mut extra: Inline<CardId, MAX_DECK> = Inline::new();
-        for &card in g.player(c.side).deck.iter() {
-            if card != c.card && card.def().rarity() == super::Rarity::Legendary {
-                extra.push(card);
+        for dc in g.player(c.side).deck.iter() {
+            if dc.card != c.card && dc.def().rarity() == super::Rarity::Legendary {
+                extra.push(dc.card);
             }
         }
         for card in extra.iter() {
-            g.player_mut(c.side).deck.push(*card);
+            g.player_mut(c.side).deck.push(DeckCard::new(*card));
         }
         g.shuffle_deck(c.side);
     }),
@@ -2759,7 +2760,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         // scans deck and hand alike), and must not disqualify itself.
         if deck
             .iter()
-            .all(|&card| card == c.card || card.def().kind() != super::Kind::Minion)
+            .all(|dc| dc.card == c.card || dc.def().kind() != super::Kind::Minion)
         {
             g.player_mut(c.side).hero_power = tokens::MUGS_MAGIC;
         }
@@ -2780,15 +2781,15 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         None,
         Some(|g, c| {
             g.draw_cards(c.side, 1);
-            g.player_mut(c.side).deck.push(c.card);
+            g.player_mut(c.side).deck.push(DeckCard::started(c.card));
             g.shuffle_deck(c.side);
         }),
         None, None, None, None, None, None,
         Some(|g, c| {
             let foe = c.side.other();
-            if let Some(idx) = g.player(c.side).deck.position(&c.card) {
+            if let Some(idx) = g.player(c.side).deck.iter().position(|dc| dc.card == c.card) {
                 g.player_mut(c.side).deck.remove(idx);
-                g.player_mut(foe).deck.push(c.card);
+                g.player_mut(foe).deck.push(DeckCard::new(c.card));
                 g.shuffle_deck(foe);
             }
         }),
@@ -3114,7 +3115,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         let p = g.player_mut(c.side);
         while p.deck.len() > 1 {
             if let Some(card) = p.deck.pop() {
-                p.void.push(card);
+                p.void.push(card.card);
             }
         }
     }),
@@ -3202,19 +3203,24 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     // (its own battlecry is what is template-stripped), but that does not
     // block this card's own slot. `Game::herald` already existed, built for
     // exactly this: its own doc comment names Deathwing's cost reduction as
-    // the reason classes with no Soldier still advance the counter. Only
-    // reaches Deathwing in hand -- a deck-side CardId carries no cost_delta
-    // to persist the reduction on, so a copy still undrawn simply does not
-    // get it, weaker rather than guessed at.
+    // the reason classes with no Soldier still advance the counter. The
+    // reduction reaches a copy wherever it is waiting -- in hand, and in the
+    // deck, where it rides on the deck card until the draw hands it over.
     battlecry("Ultraxion", T::None, |g, c| {
         g.herald(c.side);
+        let is_deathwing = |name: &str| name == "Deathwing, Worldbreaker";
         if let Some(idx) = g
             .player(c.side)
             .hand
             .iter()
-            .position(|hc| hc.card.name() == "Deathwing, Worldbreaker")
+            .position(|hc| is_deathwing(hc.card.name()))
         {
             g.player_mut(c.side).hand[idx].cost_delta -= 1;
+        }
+        for dc in g.player_mut(c.side).deck.iter_mut() {
+            if is_deathwing(dc.name()) {
+                dc.cost_delta = dc.cost_delta.saturating_sub(1);
+            }
         }
     }),
     // "Costs (0) if you control Medivh" is unreachable: Medivh is a Hero
@@ -3239,7 +3245,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         let p = g.player_mut(c.side);
         if let Some(idx) = p.hand.iter().position(|hc| hc.card == c.card) {
             p.hand.remove(idx);
-        } else if let Some(idx) = p.deck.position(&c.card) {
+        } else if let Some(idx) = p.deck.iter().position(|dc| dc.card == c.card) {
             p.deck.remove(idx);
         }
     }),
@@ -3260,11 +3266,11 @@ pub static BEHAVIOURS: &[Behaviour] = &[
                 .player(c.side)
                 .deck
                 .iter()
-                .position(|&card| card.name().contains("Portal to Argus"))
+                .position(|dc| dc.card.name().contains("Portal to Argus"))
             {
                 let card = g.player(c.side).deck[idx];
                 g.player_mut(c.side).deck.remove(idx);
-                g.give_card(c.side, card);
+                g.give_hand_card(c.side, card.to_hand());
                 g.fire(Event::CardDrawn { side: c.side });
             }
         }
@@ -4082,7 +4088,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         if let Some(i) = best
             && let Some(card) = g.player_mut(c.side).deck.remove(i)
         {
-            g.give_card(c.side, card);
+            g.give_hand_card(c.side, card.to_hand());
         }
     }),
     battlecry("Doomguard", T::None, |g, c| {
@@ -4207,7 +4213,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     spell("Contingency", T::None, |g, c| {
         for _ in 0..2 {
             if let Some(card) = g.player_mut(c.side).deck.remove(0) {
-                g.give_card(c.side, card);
+                g.give_hand_card(c.side, card.to_hand());
             }
         }
     }),
@@ -5146,7 +5152,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
                 continue;
             }
             let pick = g.rngs.effects.index(pool.len());
-            g.player_mut(c.side).deck[i] = pool[pick];
+            g.player_mut(c.side).deck[i] = DeckCard::new(pool[pick]);
         }
     }),
     battlecry("Hellraiser", T::None, |g, c| {
@@ -5595,7 +5601,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
                 let at = matches[pick] as usize;
                 let card = g.player(c.side).deck[at];
                 g.player_mut(c.side).deck.remove(at);
-                g.give_card(c.side, card);
+                g.give_hand_card(c.side, card.to_hand());
             }
         }
         for i in before..g.player(c.side).hand.len() {
@@ -5703,7 +5709,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         g.draw_cards(c.side, 1);
     }),
     battlecry("Timeless Causality", T::None, |g, c| {
-        let deck: Inline<CardId, { crate::state::MAX_DECK }> =
+        let deck: Inline<DeckCard, { crate::state::MAX_DECK }> =
             g.player(c.side).deck.iter().copied().rev().collect();
         g.player_mut(c.side).deck = deck;
     }),
@@ -6870,7 +6876,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             let card = g.player(c.side).deck[at];
             g.player_mut(c.side).deck.remove(at);
             taken.push(card.def().cost);
-            g.give_card(c.side, card);
+            g.give_hand_card(c.side, card.to_hand());
         }
     }),
     deathrattle("Possessed Animancer", |g, c| {
@@ -6929,7 +6935,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             let at = deck[pick - hand.len()] as usize;
             let card = g.player(c.side).deck[at];
             g.player_mut(c.side).deck.remove(at);
-            card
+            card.card
         };
         g.summon(c.side, card);
     }),
@@ -6962,7 +6968,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             let Some((at, _)) = best else { break };
             let card = g.player(c.side).deck[at];
             g.player_mut(c.side).deck.remove(at);
-            g.give_card(c.side, card);
+            g.give_hand_card(c.side, card.to_hand());
         }
         for _ in 0..2 {
             let mut worst: Option<(usize, i16)> = None;
@@ -6975,7 +6981,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             let Some((at, _)) = worst else { break };
             let card = g.player(c.side).deck[at];
             g.player_mut(c.side).deck.remove(at);
-            g.give_card(c.side.other(), card);
+            g.give_card(c.side.other(), card.card);
         }
     }),
     battlecry("Razidir", T::None, |g, c| {
@@ -6991,7 +6997,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             return;
         }
         let pick = g.rngs.effects.index(n);
-        let card = g.player(foe).deck[pick];
+        let card = g.player(foe).deck[pick].card;
         g.give_token(c.side, card);
     }),
     trigger("Shadow Ascendant", |g, c| {
@@ -8227,6 +8233,122 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             }
         }
     }),
+
+    // ------------------------------------------------ the deck as a zone
+    // Cards that write on the copies still waiting in a deck, or ask where a
+    // copy came from. Both live on `DeckCard`; see `state::DeckCard`.
+
+    // "Top" is the end of the array -- the end `Game::draw` pops from -- and
+    // only minions count, so this can skip past spells to find its three.
+    battlecry("Beanstalk Brute", T::None, |g, c| {
+        g.enchant_deck_top(c.side, 3, |d| d.kind() == super::Kind::Minion, 4, 4);
+    }),
+    // Two separate Discovers, each landing on the bottom rather than in hand.
+    battlecry("Kaldorei Cultivator", T::None, |g, c| {
+        for _ in 0..2 {
+            g.discover_to_deck_bottom(
+                c.side,
+                |d| d.kind() == super::Kind::Minion && d.races.any(Races::BEAST),
+                5,
+                5,
+            );
+        }
+    }),
+    deathrattle("Seismopod", |g, c| {
+        g.enchant_hand_where(c.side, |d| d.kind() == super::Kind::Minion, 3, 3);
+        g.enchant_deck_where(c.side, |d| d.kind() == super::Kind::Minion, 3, 3);
+    }),
+    spell("Supreme Dinomancy", T::None, |g, c| {
+        let beast = |d: &super::CardDef| d.kind() == super::Kind::Minion && d.races.any(Races::BEAST);
+        g.enchant_hand_where(c.side, beast, 2, 2);
+        g.enchant_deck_where(c.side, beast, 2, 2);
+        for i in 0..g.player(c.side).board.len() {
+            if g.player(c.side).board[i].races().any(Races::BEAST) {
+                g.buff(Target::Minion(c.side, i as u8), 2, 2);
+            }
+        }
+    }),
+    // "Double their stats" is read off each card's own printed body, so the
+    // numbers stay the cards' own.
+    spell("Azshara's Triumph", T::None, |g, c| {
+        g.shuffle_random_into_deck_where(
+            c.side,
+            5,
+            |d| d.kind() == super::Kind::Minion && d.cost >= 8,
+            |dc| {
+                let d = dc.def();
+                dc.enchant(d.atk, d.hp);
+            },
+        );
+    }),
+    // "Every minion in your deck shares a minion type": the tribes common to
+    // all of them, intersected. A minion with no tribe at all breaks it; one
+    // printed as All belongs to every tribe and so breaks nothing. A deck
+    // with no minions left in it passes, having nothing to disagree.
+    battlecry("City Chief Esho", T::None, |g, c| {
+        let mut common = Races(u32::MAX);
+        for dc in g.player(c.side).deck.iter() {
+            let d = dc.def();
+            if d.kind() != super::Kind::Minion {
+                continue;
+            }
+            let r = if d.races.has(Races::ALL) { Races(u32::MAX) } else { d.races };
+            common = Races(common.0 & r.0);
+        }
+        if common.is_empty() {
+            return;
+        }
+        // "Your other minions": every copy in hand and deck, and every body
+        // on the board but this one.
+        g.enchant_hand_where(c.side, |d| d.kind() == super::Kind::Minion, 2, 2);
+        g.enchant_deck_where(c.side, |d| d.kind() == super::Kind::Minion, 2, 2);
+        let me = c.source;
+        for i in 0..g.player(c.side).board.len() as u8 {
+            if Some(i) == me {
+                continue;
+            }
+            if g.player(c.side).board[i as usize].is_minion() {
+                g.buff(Target::Minion(c.side, i), 2, 2);
+            }
+        }
+    }),
+    battlecry("Krona, Keeper of Eons", T::None, |g, c| {
+        g.set_deck_bottom_cost(c.side, 5, 1);
+    }),
+
+    // ----------------------------------------- "that didn't start in your deck"
+    // Answered by `DeckCard::started_here`, written once when the deck is
+    // built. Everything shuffled, put or traded in later says no.
+
+    battlecry("Steamcleaner", T::None, |g, c| {
+        g.destroy_shuffled_in(c.side);
+        g.destroy_shuffled_in(c.side.other());
+    }),
+    deathrattle("Smuggled Shovel", |g, c| {
+        g.draw_by_origin(c.side, false, |d| d.kind() == super::Kind::Spell);
+    }),
+    spell("Dragonscale Armaments", T::None, |g, c| {
+        let spell = |d: &super::CardDef| d.kind() == super::Kind::Spell;
+        g.draw_by_origin(c.side, true, spell);
+        g.draw_by_origin(c.side, false, spell);
+    }),
+    battlecry("Dreamwarden", T::None, |g, c| {
+        if g.draw_by_origin(c.side, false, |_| true)
+            && let Some(slot) = c.source
+        {
+            g.buff(Target::Minion(c.side, slot), 2, 2);
+        }
+    }),
+    spell("Story of the Waygate", T::None, |g, c| {
+        g.discount_hand_where(c.side, |hc| hc.marks.has(Marks::NOT_FROM_DECK), 1);
+    }),
+    c(
+        "Techysaurus",
+        T::None,
+        None, None, None, None, None, None, None,
+        Some(|g, side, _i| -(g.player(side).cards_played_not_from_deck as i16)),
+        None,
+    ),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -8242,10 +8364,6 @@ pub static BEHAVIOURS: &[Behaviour] = &[
 /// smaller honest one.
 pub const APPROXIMATE: &[(&str, &str)] = &[
     (
-        "Enthrall",
-        "the five Legendary Dragons arrive at their printed cost; \"They cost (1)\" needs a per-copy discount that survives in the deck, and a deck here is a list of card ids with nowhere to write one",
-    ),
-    (
         "Deathwing, Worldbreaker",
         "the Cataclysms are picked by a crude board heuristic rather than by the player -- the same limit Discover has, since an effect is resolved without reaching a policy",
     ),
@@ -8255,7 +8373,7 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     ),
     (
         "Archmage Kalec",
-        "\"all spells in your hand and deck\" needs per-card state in the deck;          implemented as Spell Damage on the hero, which also boosts spells          acquired after it lands -- the one entry here that can read stronger          than the card, not weaker",
+        "\"all spells in your hand and deck\" needs per-card Spell Damage, which neither a card in hand nor a card in the deck carries -- they hold stats and a cost, and a spell's damage bonus is neither; implemented as Spell Damage on the hero, which also boosts spells acquired after it lands -- the one entry here that can read stronger than the card, not weaker",
     ),
     (
         "Felwood Treant",
@@ -8336,10 +8454,6 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
     (
         "Sinestra",
         "each Wing's own Discover fires at full price; \"It costs ({0}) less\" is template-stripped at every Herald tier, with no floor value to fall back on",
-    ),
-    (
-        "Ultraxion",
-        "\"Reduce Deathwing's Cost\" only reaches a copy currently in hand; a deck-side CardId has no cost_delta to persist the reduction on, so a copy still undrawn does not get it",
     ),
     (
         "Atiesh the Greatstaff",

@@ -174,7 +174,7 @@ fn run_range(me: Contender, opp: Contender, seeds: &[u64], first_index: usize) -
         opening.clear();
         opening.extend(g.player(Side::Player0).starting_hand.iter().copied());
         before.clear();
-        before.extend(g.player(Side::Player0).deck.iter().copied());
+        before.extend(g.player(Side::Player0).deck.iter().map(|d| d.card));
 
         let outcome = g.play_out(&mut agents);
         let won = matches!(outcome, Outcome::Win(Side::Player0));
@@ -182,7 +182,7 @@ fn run_range(me: Contender, opp: Contender, seeds: &[u64], first_index: usize) -
         out.wins += u32::from(won);
 
         left.clear();
-        left.extend(g.player(Side::Player0).deck.iter().copied());
+        left.extend(g.player(Side::Player0).deck.iter().map(|d| d.card));
 
         for (card, stat) in out.cards.iter_mut() {
             let in_opening = opening.contains(card);
