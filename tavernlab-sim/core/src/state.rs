@@ -331,7 +331,7 @@ impl Weapon {
 /// this" text, which two copies of the same card can answer differently.
 /// Cleared along with the rest of [`HandCard`] the moment it leaves hand.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct Marks(pub u8);
+pub struct Marks(pub u16);
 
 impl Marks {
     pub const NONE: Marks = Marks(0);
@@ -368,6 +368,22 @@ impl Marks {
     /// also deals 2 damage to a random enemy. Cleared at the end of the turn
     /// it was given, like the spell says.
     pub const FUSED: Marks = Marks(1 << 6);
+    /// A Stealthed minion attacked while this card sat in hand (Tricks of
+    /// the Trade). Set on every card in hand at the moment of the swing, the
+    /// same way `PLAYED_MINION` is set when a minion lands.
+    pub const STEALTH_ATTACKED: Marks = Marks(1 << 7);
+    /// This copy carries Follow the Footsteps' effect for the turn: playing
+    /// it also Discovers a Stealth minion. Cleared with `FUSED` at the end of
+    /// the turn it was given.
+    pub const FOOTSTEPS: Marks = Marks(1 << 8);
+    /// Prepared this turn, and so unplayable for the rest of it -- otherwise
+    /// the discount could be banked into and cashed on the same turn.
+    ///
+    /// A mark rather than the turn number it used to be: a `u16` there made
+    /// `HandCard` fourteen bytes and a `Game` eighty bigger, and the number
+    /// was only ever compared against the current turn. Cleared with `FUSED`
+    /// at the owner's turn end, which is exactly "the rest of it".
+    pub const PREPARED: Marks = Marks(1 << 9);
 
     #[inline]
     pub const fn has(self, m: Marks) -> bool {
@@ -389,9 +405,6 @@ pub struct HandCard {
     pub card: CardId,
     /// Cost modification applied to this copy only.
     pub cost_delta: i16,
-    /// Turn number on which this card became unplayable (Prepare), or
-    /// `u16::MAX` for never.
-    pub locked_turn: u16,
     pub marks: Marks,
     /// Mana spent on anything else -- a card, a Hero Power -- while this one
     /// has been sitting in hand, since it arrived (Merithra of the Dream).
@@ -422,7 +435,6 @@ impl HandCard {
         Self {
             card,
             cost_delta: 0,
-            locked_turn: u16::MAX,
             marks: Marks::NONE,
             mana_spent_while_held: 0,
             atk: 0,
@@ -544,6 +556,21 @@ pub enum PendingKind {
     SplitDamage = 4,
     /// Give the owner's hero `amount` Attack for that turn.
     HeroAttack = 5,
+    /// Set the owner's Mana to `amount`, crystals and all (Chef Neth'rek).
+    SetMana = 6,
+}
+
+impl PendingKind {
+    /// Whether this fires once, when the count runs out, instead of on each
+    /// of the turns counted.
+    ///
+    /// Most pending effects repeat: "for the next five turns" is five
+    /// firings, one per turn, and `turns_left` is how many are left. A few
+    /// read the other way -- "after five turns" is one firing, once they have
+    /// passed -- and those wait.
+    pub const fn delayed(self) -> bool {
+        matches!(self, PendingKind::SetMana)
+    }
 }
 
 /// An effect queued against a future one of its owner's own turns —
@@ -667,6 +694,15 @@ pub struct Player {
     /// because "started with" is a question about that list and not about
     /// whatever is left in the deck by the time the card is played.
     pub deck_started_spelless: bool,
+    /// The highest cost in the deck the player started with, capped at 255.
+    ///
+    /// Read by "if your deck only has cards that cost (3) or less"
+    /// (Chef Neth'rek). Taken at construction for the same reason
+    /// `deck_started_spelless` is: Start of Game fires after the mulligan, so
+    /// by then `deck` is missing the three or four cards in the opening hand
+    /// and a check made there would pass for a deck whose one expensive card
+    /// happened to be dealt.
+    pub deck_started_max_cost: u8,
     /// Waiting discount for the next Temporary card this player is given
     /// (Spelunker). Spent by the first one that arrives, whether it comes
     /// from a Discover, a battlecry or a Hero Power.
@@ -722,6 +758,11 @@ pub struct Player {
     /// Game fires (it need never be played, only kept). While set,
     /// `Game::give_card` queues an overdraw here instead of burning it.
     pub godfrey_active: bool,
+    /// Whether this player played a minion on their previous turn. Read by
+    /// "if you didn't play a minion last turn" (Heartroot Stones); rolled
+    /// forward from `minions_played_turn` at this player's own turn end.
+    pub played_minion_last_turn: bool,
+    pub minions_played_turn: bool,
     /// Whether this player's first Dragon this turn has already had Naralex,
     /// Herald of the Flights' discount applied. Reset every turn; whether
     /// the discount exists at all is a live board check (is Naralex still
@@ -807,6 +848,11 @@ impl Player {
             deck_started_spelless: deck
                 .iter()
                 .all(|c| c.def().kind() != Kind::Spell),
+            deck_started_max_cost: deck
+                .iter()
+                .map(|c| c.def().cost.clamp(0, 255) as u8)
+                .max()
+                .unwrap_or(0),
             next_temporary_discount: 0,
             imbue_count: 0,
             informant_class: class,
@@ -827,6 +873,8 @@ impl Player {
             end_turn_burn: 0,
             deaths: 0,
             dragon_discounted_turn: false,
+            played_minion_last_turn: false,
+            minions_played_turn: false,
             void: Inline::new(),
         }
     }
@@ -1015,7 +1063,6 @@ mod tests {
             HandCard {
                 card: CardId(0),
                 cost_delta: 0,
-                locked_turn: 0,
                 marks: Marks::NONE,
                 mana_spent_while_held: 0,
                 atk: 0,
@@ -1052,6 +1099,14 @@ mod tests {
         // measured ~18 300 games/s on one core both before and after. The
         // headroom left is small on purpose: the next thing that wants a byte
         // per deck card has to take its own measurement first.
+        //
+        // It has already had to. A ninth `Marks` bit took that type from `u8`
+        // to `u16`, which took `HandCard` to fourteen bytes and a `Game` to
+        // 2608 -- over the line, and `tavernsim bench` measured a real if
+        // small cost with it (best of five: 15 479 games/s against 15 571 on
+        // the same host). Paying for it by turning `locked_turn` into a tenth
+        // mark, which is all the number ever meant, put `HandCard` back to
+        // twelve bytes and the benchmark back to 15 643 against 15 389.
         assert!(
             n < 2560,
             "Game is {n} bytes; it is meant to stay well under 3 KB"

@@ -11095,3 +11095,237 @@ fn tunnel_terror_leaves_two_temporary_two_drops() {
         assert_eq!(h.card.def().cost, 2);
     }
 }
+
+// -------------------------------------------------- closest to the real field
+//
+// The five cards `tavernsim decks` named as standing between the simulator and
+// a deck people are actually playing.
+
+#[test]
+fn portal_vanguard_draws_a_minion_and_buffs_only_that_one() {
+    let mut f = Fix::new().deck(&["Fireball", "Chillwind Yeti"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("Portal Vanguard", None);
+
+    let drawn = *f.g.players[0].hand.last().unwrap();
+    assert_eq!(drawn.card.name(), "Chillwind Yeti", "a minion, not the spell");
+    assert_eq!((drawn.atk, drawn.hp), (2, 2), "+2/+2 in hand");
+    let wisp = f.g.players[0]
+        .hand
+        .iter()
+        .find(|hc| hc.card.name() == "Wisp")
+        .expect("still there");
+    assert_eq!((wisp.atk, wisp.hp), (0, 0), "the card already in hand is untouched");
+    assert_eq!(f.g.players[0].deck.len(), 1, "only the Fireball is left");
+}
+
+#[test]
+fn portal_vanguard_with_no_minion_left_draws_nothing() {
+    let mut f = Fix::new().deck(&["Fireball"]);
+    f.play("Portal Vanguard", None);
+    assert!(f.g.players[0].hand.is_empty(), "\"draw a random minion\" and there is none");
+    assert_eq!(f.g.players[0].deck.len(), 1);
+}
+
+#[test]
+fn follow_the_footsteps_hands_on_its_own_effect() {
+    let mut f = Fix::new();
+    f.play("Follow the Footsteps", None);
+
+    let found = *f.g.players[0].hand.last().expect("a Stealth minion was discovered");
+    assert_eq!(found.card.def().kind(), Kind::Minion);
+    assert!(found.card.def().keywords.has(Keywords::STEALTH));
+    assert!(
+        found.marks.has(tavernlab_core::state::Marks::FOOTSTEPS),
+        "\"give it this effect for a turn\""
+    );
+
+    // Playing it Discovers another Stealth minion, which is the effect.
+    let before = f.g.players[0].hand.len();
+    let idx = before as u8 - 1;
+    assert!(f.g.apply(Action::Play {
+        hand: idx,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    let next = *f.g.players[0].hand.last().expect("and another one arrived");
+    assert!(next.card.def().keywords.has(Keywords::STEALTH));
+    assert!(
+        !next.marks.has(tavernlab_core::state::Marks::FOOTSTEPS),
+        "the effect was lent once, not copied onward"
+    );
+}
+
+#[test]
+fn follow_the_footsteps_effect_expires_at_the_end_of_the_turn() {
+    let mut f = Fix::new();
+    f.play("Follow the Footsteps", None);
+    assert!(
+        f.g.players[0]
+            .hand
+            .last()
+            .unwrap()
+            .marks
+            .has(tavernlab_core::state::Marks::FOOTSTEPS)
+    );
+    f.g.end_turn();
+    assert!(
+        !f.g.players[0]
+            .hand
+            .iter()
+            .any(|hc| hc.marks.has(tavernlab_core::state::Marks::FOOTSTEPS)),
+        "\"for a turn\", and the turn is over"
+    );
+}
+
+#[test]
+fn tricks_of_the_trade_deals_one_until_a_stealthed_minion_swings() {
+    // Worgen Infiltrator is a 2/1 with Stealth.
+    let mut f = Fix::new().board(ME, &["Worgen Infiltrator"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("Tricks of the Trade").unwrap()));
+    assert!(
+        !f.g.players[0].hand[0]
+            .marks
+            .has(tavernlab_core::state::Marks::STEALTH_ATTACKED),
+        "nothing has attacked yet"
+    );
+
+    assert!(f.g.apply(Action::Attack { from: 0, target: Target::Hero(FOE) }));
+    assert!(
+        f.g.players[0].hand[0]
+            .marks
+            .has(tavernlab_core::state::Marks::STEALTH_ATTACKED),
+        "it was Stealthed when it swung, and the card was in hand for it"
+    );
+
+    let before = f.g.players[1].hero_hp;
+    assert!(f.g.apply(Action::Play {
+        hand: 0,
+        target: Some(Target::Hero(FOE)),
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(before - f.g.players[1].hero_hp, 3);
+}
+
+#[test]
+fn tricks_of_the_trade_deals_one_after_an_unstealthed_swing() {
+    // The control: the same swing from a minion that was never Stealthed.
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("Tricks of the Trade").unwrap()));
+    assert!(f.g.apply(Action::Attack { from: 0, target: Target::Hero(FOE) }));
+
+    let before = f.g.players[1].hero_hp;
+    assert!(f.g.apply(Action::Play {
+        hand: 0,
+        target: Some(Target::Hero(FOE)),
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(before - f.g.players[1].hero_hp, 1);
+}
+
+#[test]
+fn tricks_of_the_trade_misses_a_swing_it_was_not_in_hand_for() {
+    // "While holding this" is per copy: a card drawn after the swing did not
+    // see it.
+    let mut f = Fix::new().board(ME, &["Worgen Infiltrator"]);
+    assert!(f.g.apply(Action::Attack { from: 0, target: Target::Hero(FOE) }));
+    f.g.players[0].hand.push(HandCard::new(by_name("Tricks of the Trade").unwrap()));
+
+    let before = f.g.players[1].hero_hp;
+    assert!(f.g.apply(Action::Play {
+        hand: 0,
+        target: Some(Target::Hero(FOE)),
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(before - f.g.players[1].hero_hp, 1);
+}
+
+#[test]
+fn heartroot_stones_draws_twice_when_no_minion_was_played_last_turn() {
+    let mut f = Fix::new().deck(&["Wisp", "Wisp", "Wisp"]);
+    assert!(!f.g.players[0].played_minion_last_turn);
+    f.play("Heartroot Stones", None);
+    assert_eq!(f.g.players[0].hand.len(), 2, "a card and then a card again");
+    assert_eq!(f.g.players[0].armor, 6);
+}
+
+/// One turn boundary, the way `Game::play_out` draws it: end, hand over, and
+/// open the next. `end_turn` on its own does neither of the last two.
+fn pass(g: &mut Game) {
+    g.end_turn();
+    g.current = g.current.other();
+    g.turn += 1;
+    g.begin_turn();
+}
+
+#[test]
+fn heartroot_stones_draws_once_after_a_minion() {
+    let mut f = Fix::new().deck(&["Wisp", "Wisp", "Wisp", "Wisp", "Wisp"]);
+    f.play("Wisp", None);
+    pass(&mut f.g); // mine ends: "played a minion this turn" rolls forward
+    pass(&mut f.g); // theirs ends, and I am up again
+    assert!(f.g.players[0].played_minion_last_turn);
+    f.g.players[0].mana = 10;
+
+    let cards = f.g.players[0].hand.len();
+    let armor = f.g.players[0].armor;
+    f.play("Heartroot Stones", None);
+    assert_eq!(f.g.players[0].hand.len(), cards + 1);
+    assert_eq!(f.g.players[0].armor - armor, 3);
+}
+
+#[test]
+fn chef_nethrek_gives_ten_mana_once_the_fifth_turn_is_over() {
+    use tavernlab_core::agent::{Scripted, Style};
+
+    let chef = by_name("Chef Neth'rek").unwrap();
+    let mut deck = vec![chef];
+    deck.resize(30, by_name("Wisp").unwrap()); // every other card costs 0
+    let plain = vec![by_name("Wisp").unwrap(); 30];
+
+    let mut g = Game::new((Class::Druid, &deck), (Class::Mage, &plain), 1).unwrap();
+    let mut a = Scripted::new(Style::Midrange);
+    let mut b = Scripted::new(Style::Midrange);
+    let mut agents: [&mut dyn Agent; 2] = [&mut a, &mut b];
+    g.start(Side::Player0, &mut agents);
+
+    // My turn one through five: the ordinary curve.
+    g.turn += 1;
+    g.begin_turn();
+    for turn in 1..=5 {
+        assert_eq!(
+            g.players[0].crystals, turn,
+            "turn {turn} is still worth {turn} crystals"
+        );
+        pass(&mut g); // mine
+        pass(&mut g); // theirs
+    }
+    assert_eq!(g.players[0].crystals, 10, "and the sixth opens on ten");
+    assert_eq!(g.players[0].mana, 10);
+}
+
+#[test]
+fn chef_nethrek_stays_quiet_when_one_card_costs_more_than_three() {
+    use tavernlab_core::agent::{Scripted, Style};
+
+    let mut deck = vec![
+        by_name("Chef Neth'rek").unwrap(),
+        by_name("Boulderfist Ogre").unwrap(), // costs 6
+    ];
+    deck.resize(30, by_name("Wisp").unwrap());
+    let plain = vec![by_name("Wisp").unwrap(); 30];
+
+    let mut g = Game::new((Class::Druid, &deck), (Class::Mage, &plain), 1).unwrap();
+    let mut a = Scripted::new(Style::Midrange);
+    let mut b = Scripted::new(Style::Midrange);
+    let mut agents: [&mut dyn Agent; 2] = [&mut a, &mut b];
+    g.start(Side::Player0, &mut agents);
+    assert!(
+        g.players[0].pending.is_empty(),
+        "the condition is over the whole starting list, opening hand included"
+    );
+}

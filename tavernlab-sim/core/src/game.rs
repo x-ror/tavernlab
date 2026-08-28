@@ -361,7 +361,9 @@ impl Game {
         let mut fired: Inline<Pending, 4> = Inline::new();
         let mut remaining: Inline<Pending, 4> = Inline::new();
         for entry in p.pending.iter().copied() {
-            fired.push(entry);
+            if !entry.kind.delayed() || entry.turns_left <= 1 {
+                fired.push(entry);
+            }
             if entry.turns_left > 1 {
                 remaining.push(Pending {
                     turns_left: entry.turns_left - 1,
@@ -415,6 +417,11 @@ impl Game {
                     self.hero_attack_bonus(side, entry.amount);
                 }
 
+                PendingKind::SetMana => {
+                    let p = self.player_mut(side);
+                    p.crystals = entry.amount.min(crate::state::MAX_MANA);
+                    p.mana = p.crystals;
+                }
                 PendingKind::None => {}
             }
         }
@@ -459,12 +466,18 @@ impl Game {
         p.played_races_turn = Races::NONE;
         p.next_spell_discount = 0;
         p.next_beast_discount = 0;
+        p.played_minion_last_turn = p.minions_played_turn;
+        p.minions_played_turn = false;
         // "It is Temporary": unplayed by the end of this turn, it is gone.
         p.hand.retain(|hc| !hc.marks.has(Marks::TEMPORARY));
-        // Follow the Fuse lends its effect "for a turn", and this is the end
-        // of it.
+        // Follow the Fuse and Follow the Footsteps both lend their effect
+        // "for a turn", and this is the end of it.
         for hc in p.hand.iter_mut() {
             hc.marks.remove(Marks::FUSED);
+            hc.marks.remove(Marks::FOOTSTEPS);
+            // Prepare locks the card "for the rest of the turn", and this is
+            // the end of it.
+            hc.marks.remove(Marks::PREPARED);
         }
         // The Fins Beyond Time: swap back whatever hand this turn started
         // with, discarding the temporary starting-hand copies and anything
@@ -590,7 +603,7 @@ impl Game {
 
         // --- cards in hand
         for (i, c) in me.hand.iter().enumerate() {
-            if c.locked_turn == self.turn {
+            if c.marks.has(Marks::PREPARED) {
                 continue;
             }
             let d = c.card.def();
@@ -768,7 +781,7 @@ impl Game {
         if me.mana > 0 {
             for (i, hc) in me.hand.iter().enumerate() {
                 if hc.card.def().keywords.has(Keywords::PREPARE)
-                    && hc.locked_turn != self.turn
+                    && !hc.marks.has(Marks::PREPARED)
                     && self.card_cost(side, i) > me.mana
                 {
                     out.push(Action::Prepare { hand: i as u8 });
@@ -782,7 +795,9 @@ impl Game {
         // you have no target for is the whole point of the keyword.
         if me.mana >= TRADE_COST && me.deck.len() < MAX_DECK {
             for (i, hc) in me.hand.iter().enumerate() {
-                if hc.card.def().keywords.has(Keywords::TRADEABLE) && hc.locked_turn != self.turn {
+                if hc.card.def().keywords.has(Keywords::TRADEABLE)
+                    && !hc.marks.has(Marks::PREPARED)
+                {
                     out.push(Action::Trade { hand: i as u8 });
                 }
             }
@@ -984,7 +999,7 @@ impl Game {
             return false;
         };
         let cost = self.card_cost(side, hand_idx);
-        if cost > self.player(side).mana || hc.locked_turn == self.turn {
+        if cost > self.player(side).mana || hc.marks.has(Marks::PREPARED) {
             return false;
         }
         let def = hc.card.def();
@@ -1049,6 +1064,7 @@ impl Game {
             p.cards_played_not_from_deck = p.cards_played_not_from_deck.saturating_add(1);
         }
         let fused = hc.marks.has(Marks::FUSED);
+        let footsteps = hc.marks.has(Marks::FOOTSTEPS);
         if def.kind() == Kind::Spell {
             p.spells_cast_turn += 1;
             p.schools_cast_turn |= 1 << def.school;
@@ -1060,6 +1076,7 @@ impl Game {
                 p.next_beast_discount = 0;
             }
             p.minions_played_total = p.minions_played_total.saturating_add(1);
+            p.minions_played_turn = true;
             // Spent by the first minion regardless of whether Mug's Magic was
             // even equipped yet -- matching how `next_beast_discount` above
             // clears unconditionally too.
@@ -1291,6 +1308,12 @@ impl Game {
                 card: hc.card,
             });
         }
+        // Follow the Footsteps, on the copy it was given to.
+        if footsteps {
+            self.discover(side, |d| {
+                d.kind() == Kind::Minion && d.keywords.has(Keywords::STEALTH)
+            });
+        }
         // Follow the Fuse, on the copy it was given to.
         if fused {
             let n = 2 + crate::cards::pirate_damage_bonus(self, side);
@@ -1331,17 +1354,16 @@ impl Game {
         let Some(hc) = self.player(side).hand.get(hand_idx).copied() else {
             return false;
         };
-        if !hc.card.def().keywords.has(Keywords::PREPARE) || hc.locked_turn == self.turn {
+        if !hc.card.def().keywords.has(Keywords::PREPARE) || hc.marks.has(Marks::PREPARED) {
             return false;
         }
         let mana = self.player(side).mana;
         if mana <= 0 {
             return false;
         }
-        let turn = self.turn;
         let p = self.player_mut(side);
         p.hand[hand_idx].cost_delta -= mana + 1;
-        p.hand[hand_idx].locked_turn = turn;
+        p.hand[hand_idx].marks.insert(Marks::PREPARED);
         p.mana = 0;
         true
     }
@@ -1356,7 +1378,7 @@ impl Game {
         let Some(hc) = self.player(side).hand.get(hand_idx).copied() else {
             return false;
         };
-        if !hc.card.def().keywords.has(Keywords::TRADEABLE) || hc.locked_turn == self.turn {
+        if !hc.card.def().keywords.has(Keywords::TRADEABLE) || hc.marks.has(Marks::PREPARED) {
             return false;
         }
         if self.player(side).mana < TRADE_COST || self.player(side).deck.len() >= MAX_DECK {
@@ -1571,7 +1593,16 @@ impl Game {
                 let m = &mut self.player_mut(side).board[i];
                 m.attacks_done += 1;
                 m.flags.insert(Flags::ATTACKED);
+                // Attacking is what strips Stealth, so whether this was a
+                // Stealthed swing has to be read here rather than after
+                // (Tricks of the Trade).
+                let was_stealthed = m.has(Keywords::STEALTH);
                 m.keywords.remove(Keywords::STEALTH);
+                if was_stealthed {
+                    for hc in self.player_mut(side).hand.iter_mut() {
+                        hc.marks.insert(Marks::STEALTH_ATTACKED);
+                    }
+                }
             }
             None => {
                 self.player_mut(side).hero_attacks_done += 1;
