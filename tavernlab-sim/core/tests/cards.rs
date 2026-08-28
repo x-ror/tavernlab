@@ -8185,7 +8185,7 @@ fn magma_hound_sprays_after_a_trade_it_survives() {
 
 #[test]
 fn leokk_lifts_the_rest_of_the_board() {
-    let mut f = Fix::new().board(ME, &["Leokk", "Chillwind Yeti"]);
+    let f = Fix::new().board(ME, &["Leokk", "Chillwind Yeti"]);
     assert_eq!(f.mine(0).atk, 2, "not himself");
     assert_eq!(f.mine(1).atk, 5);
 }
@@ -9152,4 +9152,162 @@ fn bronze_keeper_prints_a_dragon_a_turn() {
     f.g.end_turn();
     assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (6, 6));
     assert!(f.mine(1).has(Keywords::DIVINE_SHIELD));
+}
+
+// ------------------------------------------ enchantments in the hand
+
+#[test]
+fn a_card_enchanted_in_hand_lands_with_the_stats() {
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.g.players[0].hand[0].enchant(2, 3);
+    assert!(f.g.apply(Action::Play {
+        hand: 0,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (3, 4));
+}
+
+#[test]
+fn grimestreet_outfitter_lifts_the_whole_hand() {
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.g.players[0].hand.push(HandCard::new(by_name("Fireball").unwrap()));
+    f.play("Grimestreet Outfitter", None);
+    assert_eq!((f.g.players[0].hand[0].atk, f.g.players[0].hand[0].hp), (1, 1));
+    assert_eq!((f.g.players[0].hand[1].atk, f.g.players[0].hand[1].hp), (0, 0));
+}
+
+#[test]
+fn disciple_of_the_dove_draws_then_hardens() {
+    let mut f = Fix::new().deck(&["Chillwind Yeti"]);
+    f.play("Disciple of the Dove", None);
+    assert_eq!(f.g.players[0].hand.len(), 1);
+    assert_eq!(f.g.players[0].hand[0].hp, 2);
+}
+
+#[test]
+fn detonation_juggernaut_only_pays_the_taunts() {
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Chillwind Yeti").unwrap()));
+    f.g.players[0].hand.push(HandCard::new(by_name("Voidwalker").unwrap())); // Taunt
+    f.play("Detonation Juggernaut", None);
+    assert_eq!(f.g.players[0].hand[0].atk, 0);
+    assert_eq!((f.g.players[0].hand[1].atk, f.g.players[0].hand[1].hp), (2, 2));
+}
+
+#[test]
+fn i_know_a_guy_finds_a_bigger_taunt() {
+    let mut f = Fix::new();
+    f.play("I Know a Guy", None);
+    let h = &f.g.players[0].hand[0];
+    assert!(h.card.def().keywords.has(Keywords::TAUNT), "{}", h.card.name());
+    assert_eq!((h.atk, h.hp), (1, 2));
+}
+
+#[test]
+fn twisted_treant_shaves_a_minion_in_each_hand() {
+    let mut f = Fix::new().board(ME, &["Twisted Treant"]);
+    f.g.players[0].hand.push(HandCard::new(by_name("Chillwind Yeti").unwrap()));
+    f.g.players[1].hand.push(HandCard::new(by_name("Chillwind Yeti").unwrap()));
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].hand[0].atk, -2);
+    assert_eq!(f.g.players[1].hand[0].atk, -2);
+}
+
+#[test]
+fn lethal_recipe_only_buffs_at_ten_crystals() {
+    let mut f = Fix::new().deck(&["Wisp", "Wisp"]);
+    f.g.players[0].crystals = 5;
+    f.play("Lethal Recipe", None);
+    assert_eq!(f.g.players[0].hand.len(), 2);
+    assert_eq!(f.g.players[0].hand[0].atk, 0);
+
+    let mut f = Fix::new().deck(&["Wisp", "Wisp"]);
+    f.g.players[0].crystals = 10;
+    f.play("Lethal Recipe", None);
+    assert_eq!((f.g.players[0].hand[0].atk, f.g.players[0].hand[0].hp), (3, 3));
+}
+
+#[test]
+fn story_of_barnabus_rewards_a_big_draw() {
+    let mut f = Fix::new().deck(&["Wisp"]);
+    f.play("Story of Barnabus", None);
+    assert_eq!(f.g.players[0].armor, 0);
+
+    let mut f = Fix::new().deck(&["Boulderfist Ogre"]); // 6 attack
+    f.play("Story of Barnabus", None);
+    assert_eq!(f.g.players[0].hand[0].hp, 5);
+    assert_eq!(f.g.players[0].armor, 5);
+}
+
+#[test]
+fn flight_of_the_firehawk_draws_two_different_tribes() {
+    let mut f = Fix::new().deck(&["Bloodfen Raptor", "Voidwalker", "Bloodfen Raptor"]);
+    f.play("Flight of the Firehawk", None);
+    assert_eq!(f.g.players[0].hand.len(), 2);
+    let a = f.g.players[0].hand[0].card.def().races;
+    let b = f.g.players[0].hand[1].card.def().races;
+    assert!(!a.any(b), "different types");
+    for h in f.g.players[0].hand.iter() {
+        assert_eq!((h.atk, h.hp), (1, 1));
+    }
+}
+
+#[test]
+fn divine_augur_squares_the_hand_up() {
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Boulderfist Ogre").unwrap())); // 6/7
+    f.g.players[0].hand.push(HandCard::new(by_name("Voidwalker").unwrap())); // 1/3
+    f.play("Divine Augur", None);
+    let ogre = &f.g.players[0].hand[0];
+    assert_eq!((6 + ogre.atk as i16, 7 + ogre.hp as i16), (7, 7));
+    let vw = &f.g.players[0].hand[1];
+    assert_eq!((1 + vw.atk as i16, 3 + vw.hp as i16), (3, 3));
+}
+
+#[test]
+fn vicious_bloodworm_arms_a_minion_in_hand() {
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    f.play("Vicious Bloodworm", None); // 3 attack
+    assert_eq!(f.g.players[0].hand[0].atk, 3);
+}
+
+#[test]
+fn gruesome_nightmare_reaches_hand_or_board() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.play("Gruesome Nightmare", None); // 3 attack, nothing in hand
+    assert_eq!(f.mine(0).atk, 7);
+}
+
+#[test]
+fn neferset_weaponsmith_sharpens_on_combo() {
+    let mut f = Fix::new();
+    f.play("Neferset Weaponsmith", None);
+    let h = &f.g.players[0].hand[0];
+    assert_eq!(h.card.def().kind(), Kind::Weapon);
+    assert_eq!(h.atk, 0, "no combo");
+
+    let mut f = Fix::new();
+    f.play("Wisp", None);
+    f.play("Neferset Weaponsmith", None);
+    assert_eq!(f.g.players[0].hand[0].atk, 2);
+}
+
+#[test]
+fn a_weapon_enchanted_in_hand_equips_bigger() {
+    let mut f = Fix::new();
+    f.g.players[0].hand.push(HandCard::new(by_name("Fiery War Axe").unwrap())); // 3/2
+    f.g.players[0].hand[0].enchant(2, 0);
+    assert!(f.g.apply(Action::Play {
+        hand: 0,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!(f.g.players[0].weapon.map(|w| (w.atk, w.durability)), Some((5, 2)));
 }

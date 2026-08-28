@@ -1067,6 +1067,9 @@ impl Game {
         match def.kind() {
             Kind::Minion | Kind::Location => {
                 let mut m = Permanent::summon(hc.card);
+                // Whatever was granted to this copy while it sat in hand.
+                m.atk += hc.atk as i16;
+                m.max_hp += hc.hp as i16;
                 // Cleared once this card's own CardPlayed event has gone out;
                 // see `Flags::BEING_PLAYED`.
                 m.flags.insert(Flags::BEING_PLAYED);
@@ -1082,7 +1085,10 @@ impl Game {
             Kind::Weapon => {
                 // Equipping over an existing weapon breaks it, same as any
                 // other way a weapon can leave play.
-                broken_weapon = p.weapon.replace(Weapon::equip(hc.card));
+                let mut w = Weapon::equip(hc.card);
+                w.atk += hc.atk as i16;
+                w.durability += hc.hp as i16;
+                broken_weapon = p.weapon.replace(w);
             }
             // A Hero card replaces the hero's armor and Hero Power, not its
             // health: the printed Health on a hero card is the starting

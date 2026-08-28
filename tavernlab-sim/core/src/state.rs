@@ -346,6 +346,13 @@ pub struct HandCard {
     /// Unlike `Marks`, this is a running sum rather than a flag, so it lives
     /// as its own field.
     pub mana_spent_while_held: i16,
+    /// Stats granted to this copy while it is in hand -- "Give all minions in
+    /// your hand +1/+1". Folded into the body the moment it is played, and
+    /// into the weapon for a weapon. `i8` because these are small numbers and
+    /// a hand is ten cards on two sides: the whole feature costs forty bytes
+    /// of a `Game`.
+    pub atk: i8,
+    pub hp: i8,
 }
 
 impl HandCard {
@@ -356,7 +363,16 @@ impl HandCard {
             locked_turn: u16::MAX,
             marks: Marks::NONE,
             mana_spent_while_held: 0,
+            atk: 0,
+            hp: 0,
         }
+    }
+
+    /// Add stats to this copy while it is in hand, saturating rather than
+    /// wrapping: a card buffed past 127 is not a card any deck plays.
+    pub fn enchant(&mut self, atk: i16, hp: i16) {
+        self.atk = self.atk.saturating_add(atk.clamp(-128, 127) as i8);
+        self.hp = self.hp.saturating_add(hp.clamp(-128, 127) as i8);
     }
 }
 
@@ -795,6 +811,8 @@ mod tests {
                 locked_turn: 0,
                 marks: Marks::NONE,
                 mana_spent_while_held: 0,
+                atk: 0,
+                hp: 0,
             }
         );
         assert_eq!(

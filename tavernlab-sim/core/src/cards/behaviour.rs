@@ -4841,6 +4841,189 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         if g.player(side).overload_now > 0 { (1, 0) } else { (0, 0) }
     }),
 
+    // -------------------------------- enchantments on cards in hand
+    battlecry("Grimestreet Outfitter", T::None, |g, c| {
+        for h in g.player_mut(c.side).hand.iter_mut() {
+            if h.card.def().kind() == super::Kind::Minion {
+                h.enchant(1, 1);
+            }
+        }
+    }),
+    battlecry("Disciple of the Dove", T::None, |g, c| {
+        g.draw_matching(c.side, |d| d.kind() == super::Kind::Minion);
+        for h in g.player_mut(c.side).hand.iter_mut() {
+            if h.card.def().kind() == super::Kind::Minion {
+                h.enchant(0, 2);
+            }
+        }
+    }),
+    battlecry("Detonation Juggernaut", T::None, |g, c| {
+        for h in g.player_mut(c.side).hand.iter_mut() {
+            let d = h.card.def();
+            if d.kind() == super::Kind::Minion && d.keywords.has(Keywords::TAUNT) {
+                h.enchant(2, 2);
+            }
+        }
+    }),
+    spell("I Know a Guy", T::None, |g, c| {
+        if g.discover(c.side, |d| {
+            d.kind() == super::Kind::Minion && d.keywords.has(Keywords::TAUNT)
+        }) && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            h.enchant(1, 2);
+        }
+    }),
+    deathrattle("Twisted Treant", |g, c| {
+        let _ = c;
+        for i in 0..2 {
+            let mut minions: Inline<u16, MAX_HAND> = Inline::new();
+            for (j, h) in g.players[i].hand.iter().enumerate() {
+                if h.card.def().kind() == super::Kind::Minion {
+                    minions.push(j as u16);
+                }
+            }
+            if minions.is_empty() {
+                continue;
+            }
+            let pick = g.rngs.effects.index(minions.len());
+            if let Some(h) = g.players[i].hand.get_mut(minions[pick] as usize) {
+                h.enchant(-2, 0);
+            }
+        }
+    }),
+    spell("Lethal Recipe", T::None, |g, c| {
+        let before = g.player(c.side).hand.len();
+        for _ in 0..2 {
+            g.draw_matching(c.side, |d| d.kind() == super::Kind::Minion);
+        }
+        // "10 or more Mana" can only be crystals: the spell costs three.
+        if g.player(c.side).crystals < 10 {
+            return;
+        }
+        for i in before..g.player(c.side).hand.len() {
+            if let Some(h) = g.player_mut(c.side).hand.get_mut(i) {
+                h.enchant(3, 3);
+            }
+        }
+    }),
+    spell("Story of Barnabus", T::None, |g, c| {
+        if !g.draw_matching(c.side, |d| d.kind() == super::Kind::Minion) {
+            return;
+        }
+        let big = g
+            .player(c.side)
+            .hand
+            .last()
+            .is_some_and(|h| h.card.def().atk >= 5);
+        if big {
+            if let Some(h) = g.player_mut(c.side).hand.last_mut() {
+                h.enchant(0, 5);
+            }
+            g.gain_armor(c.side, 5);
+        }
+    }),
+    spell("Flight of the Firehawk", T::None, |g, c| {
+        // Two minions, and not two of the same tribe.
+        let before = g.player(c.side).hand.len();
+        g.draw_matching(c.side, |d| d.kind() == super::Kind::Minion);
+        let first = g.player(c.side).hand.last().map(|h| h.card.def().races);
+        if let Some(races) = first {
+            let mut matches: Inline<u16, { crate::state::MAX_DECK }> = Inline::new();
+            for (i, card) in g.player(c.side).deck.iter().enumerate() {
+                let d = card.def();
+                if d.kind() == super::Kind::Minion && !d.races.any(races) {
+                    matches.push(i as u16);
+                }
+            }
+            if !matches.is_empty() {
+                let pick = g.rngs.effects.index(matches.len());
+                let at = matches[pick] as usize;
+                let card = g.player(c.side).deck[at];
+                g.player_mut(c.side).deck.remove(at);
+                g.give_card(c.side, card);
+            }
+        }
+        for i in before..g.player(c.side).hand.len() {
+            if let Some(h) = g.player_mut(c.side).hand.get_mut(i) {
+                h.enchant(1, 1);
+            }
+        }
+    }),
+    battlecry("Divine Augur", T::None, |g, c| {
+        for h in g.player_mut(c.side).hand.iter_mut() {
+            let d = h.card.def();
+            if d.kind() != super::Kind::Minion {
+                continue;
+            }
+            let atk = d.atk + h.atk as i16;
+            let hp = d.hp + h.hp as i16;
+            let best = atk.max(hp);
+            h.enchant(best - atk, best - hp);
+        }
+    }),
+    battlecry("Vicious Bloodworm", T::None, |g, c| {
+        let Some(src) = c.source else { return };
+        let Some(atk) = g.player(c.side).board.get(src as usize).map(|m| m.atk) else {
+            return;
+        };
+        let mut minions: Inline<u16, MAX_HAND> = Inline::new();
+        for (i, h) in g.player(c.side).hand.iter().enumerate() {
+            if h.card.def().kind() == super::Kind::Minion {
+                minions.push(i as u16);
+            }
+        }
+        if minions.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(minions.len());
+        if let Some(h) = g.player_mut(c.side).hand.get_mut(minions[pick] as usize) {
+            h.enchant(atk, 0);
+        }
+    }),
+    battlecry("Gruesome Nightmare", T::None, |g, c| {
+        let Some(src) = c.source else { return };
+        let Some(atk) = g.player(c.side).board.get(src as usize).map(|m| m.atk) else {
+            return;
+        };
+        // One pool over hand and board, so both are equally likely.
+        let hand: Inline<u16, MAX_HAND> = (0..g.player(c.side).hand.len() as u16)
+            .filter(|i| {
+                g.player(c.side).hand[*i as usize].card.def().kind() == super::Kind::Minion
+            })
+            .collect();
+        let board: Inline<u8, MAX_BOARD> = (0..g.player(c.side).board.len() as u8)
+            .filter(|i| {
+                let m = &g.player(c.side).board[*i as usize];
+                m.active() && m.is_minion() && *i != src
+            })
+            .collect();
+        let total = hand.len() + board.len();
+        if total == 0 {
+            return;
+        }
+        let pick = g.rngs.effects.index(total);
+        if pick < hand.len() {
+            if let Some(h) = g.player_mut(c.side).hand.get_mut(hand[pick] as usize) {
+                h.enchant(atk, 0);
+            }
+        } else {
+            g.buff(Target::Minion(c.side, board[pick - hand.len()]), atk, 0);
+        }
+    }),
+    battlecry("Neferset Weaponsmith", T::None, |g, c| {
+        let mine = g.player(c.side).class;
+        let combo = g.combo_active(c.side);
+        if g.add_random_to_hand_where(c.side, |d| {
+            d.kind() == super::Kind::Weapon
+                && d.class() != mine
+                && d.class() != super::Class::Neutral
+        }) && combo
+            && let Some(h) = g.player_mut(c.side).hand.last_mut()
+        {
+            h.enchant(2, 0);
+        }
+    }),
+
     // -------------------------------------------------------- Neutral
     spell("Eternal Toil", T::AnyMinion, |g, c| {
         let Some(t) = c.target else { return };
