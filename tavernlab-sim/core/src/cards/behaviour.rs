@@ -8653,10 +8653,6 @@ pub const APPROXIMATE: &[(&str, &str)] = &[
         "\"Ten copies join your deck\" is a deck-construction-time effect, outside this engine's scope -- plays with only its printed Taunt and whatever thirty cards it was actually given",
     ),
     (
-        "Azalina Soulsever",
-        "\"Your starting Health is 40\" and \"your deck is 20 cards, plus 20 copied from your enemy\" are both deck-construction/game-setup effects, outside this engine's scope; only the Battlecry (draw until your hand is full) is implemented",
-    ),
-    (
         "Devouring Plague",
         "the Lifesteal heal is always the full 4, which can overheal if the random split ran out of live enemy minions before all 4 points landed -- the one entry here besides Archmage Kalec and Cursed Catacombs that can read stronger than the card, not weaker",
     ),
@@ -8778,6 +8774,50 @@ fn cataclysm_score(g: &Game, side: Side, cata: CardId) -> i16 {
         }
         // Value for a long game, discounted because it does nothing now.
         _ => 2,
+    }
+}
+
+/// Effects that change the game before it starts.
+///
+/// Distinct from the `start_of_game` hook, which fires after the mulligan so
+/// that an effect touching a hand is not mistaken for part of dealing one.
+/// These run *before* it, because they change what the mulligan is dealt
+/// from: a starting Health, a deck that is a different size. Reordering the
+/// existing hook to suit them would move every card already on it.
+///
+/// A name list for the same reason `CASTS_WHEN_DRAWN` is one -- the corpus
+/// carries no mechanic for "this changes how the game is set up".
+pub const GAME_SETUP: &[(&str, fn(&mut Game, Side))] = &[("Azalina Soulsever", azalina_setup)];
+
+/// "Your starting Health is 40. Your deck is 20 cards, plus 20 copied from
+/// your enemy."
+///
+/// The list is twenty by construction (`deck::DECK_SIZE_RULES`); this adds
+/// the other twenty. They are copies -- the opponent keeps every card -- and
+/// they are drawn from the opponent's list at random, since the card says
+/// which deck they come from and not which cards.
+fn azalina_setup(g: &mut Game, side: Side) {
+    g.player_mut(side).hero_hp = 40;
+    let foe = side.other();
+    let theirs: Inline<CardId, MAX_DECK> = g.player(foe).deck.iter().map(|d| d.card).collect();
+    if theirs.is_empty() {
+        return;
+    }
+    for _ in 0..20 {
+        let pick = g.rngs.effects.index(theirs.len());
+        if !g.player_mut(side).deck.push(DeckCard::new(theirs[pick])) {
+            break;
+        }
+    }
+}
+
+/// Apply every game-setup rule a player's opening list asks for.
+pub fn apply_game_setup(g: &mut Game, side: Side) {
+    let present: Inline<CardId, MAX_DECK> = g.player(side).deck.iter().map(|d| d.card).collect();
+    for (name, f) in GAME_SETUP {
+        if present.iter().any(|c| c.name() == *name) {
+            f(g, side);
+        }
     }
 }
 

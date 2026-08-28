@@ -376,6 +376,26 @@ mod tests {
     }
 
     #[test]
+    fn the_standard_gauntlet_is_fully_playable() {
+        // Every card in every Standard deck is implemented, and every list is
+        // a legal size -- twenty for the one built around Azalina Soulsever,
+        // thirty for the rest. This is the field the ratings are measured
+        // against, so a deck dropping out of it silently would move every
+        // published number.
+        let root = paths::repo_root().expect("workspace root");
+        let app = App::new(root, temp_home("standard-playable"), 2);
+        for deck in app.gauntlet("standard").iter() {
+            assert!(
+                deck.playable(),
+                "{} cannot be fielded: {:?}, {} cards",
+                deck.name,
+                deck.problem(),
+                deck.total()
+            );
+        }
+    }
+
+    #[test]
     fn the_wild_gauntlet_is_fully_playable() {
         // It is generated from this engine's own implemented pool, so
         // anything less means the generator and the table have drifted

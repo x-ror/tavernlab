@@ -10700,3 +10700,88 @@ fn petal_picker_waits_for_the_second_imbue() {
     f.play("Petal Picker", None);
     assert_eq!(f.g.players[0].hand.len(), 2);
 }
+
+#[test]
+fn azalina_soulsever_starts_at_forty_with_twenty_of_the_enemys_cards() {
+    use tavernlab_core::agent::{Scripted, Style};
+
+    // Twenty cards, because that is the legal size of a list holding her.
+    let azalina = by_name("Azalina Soulsever").unwrap();
+    let mut mine = vec![azalina];
+    mine.resize(20, by_name("Wisp").unwrap());
+    // Something no list of Wisps could contain, so the copies are identifiable.
+    let theirs = vec![by_name("Boulderfist Ogre").unwrap(); 30];
+
+    let mut g = Game::new((Class::Priest, &mine), (Class::Mage, &theirs), 1).unwrap();
+    let mut a = Scripted::new(Style::Midrange);
+    let mut b = Scripted::new(Style::Midrange);
+    let mut agents: [&mut dyn Agent; 2] = [&mut a, &mut b];
+    g.start(Side::Player0, &mut agents);
+
+    assert_eq!(g.players[0].hero_hp, 40, "starting Health is 40");
+
+    // Twenty of her own plus twenty copies, less whatever the mulligan drew.
+    let hers = g.players[0].deck.len() + g.players[0].hand.len();
+    assert_eq!(hers, 40, "twenty of her own and twenty copied");
+    let borrowed = g.players[0]
+        .deck
+        .iter()
+        .filter(|d| d.name() == "Boulderfist Ogre")
+        .count()
+        + g.players[0]
+            .hand
+            .iter()
+            .filter(|h| h.card.name() == "Boulderfist Ogre")
+            .count();
+    assert_eq!(borrowed, 20);
+
+    // Copies: the opponent keeps every card they started with. Counted by
+    // card rather than by zone size, since the player on the draw is also
+    // holding the Coin by now.
+    let theirs_left = g.players[1]
+        .deck
+        .iter()
+        .filter(|d| d.name() == "Boulderfist Ogre")
+        .count()
+        + g.players[1]
+            .hand
+            .iter()
+            .filter(|h| h.card.name() == "Boulderfist Ogre")
+            .count();
+    assert_eq!(theirs_left, 30, "the opponent lost nothing");
+}
+
+#[test]
+fn a_twenty_card_list_is_the_legal_size_only_with_azalina() {
+    use tavernlab_core::cards::Formats;
+    use tavernlab_core::deck::{DeckError, legal_size, validate};
+    let wisp = by_name("Wisp").unwrap();
+    let azalina = by_name("Azalina Soulsever").unwrap();
+
+    let mut with = vec![azalina];
+    with.resize(20, wisp);
+    let without = vec![wisp; 20];
+    assert_eq!(legal_size(&with), 20);
+    assert_eq!(legal_size(&without), 30);
+
+    // Whatever else is wrong with these lists -- nineteen Wisps break the
+    // copy limit -- the size is the question here, and only one of them is
+    // called out on it.
+    assert_ne!(
+        validate(&with, Class::Priest, Formats::STANDARD),
+        Err(DeckError::WrongSize(20))
+    );
+    assert_eq!(
+        validate(&without, Class::Priest, Formats::STANDARD),
+        Err(DeckError::WrongSize(20))
+    );
+
+    // And thirty is the wrong size *with* her.
+    let mut thirty = vec![azalina];
+    thirty.resize(30, wisp);
+    assert_eq!(legal_size(&thirty), 20);
+    assert_eq!(
+        validate(&thirty, Class::Priest, Formats::STANDARD),
+        Err(DeckError::WrongSize(30))
+    );
+}

@@ -8,6 +8,38 @@ use crate::cards::{CardId, Class, Formats, Kind, all, by_name, is_implemented};
 
 pub const DECK_SIZE: usize = 30;
 
+/// Cards that change how many cards a legal list holds, and to what.
+///
+/// A deckbuilding rule, not an in-game effect: the size is decided before a
+/// game exists. Keyed by name, the same way the other printed rules the
+/// corpus carries no mechanic for are (`CASTS_WHEN_DRAWN`, `GRANTED_RATTLES`);
+/// there is no tag on the card saying "this resizes the deck".
+const DECK_SIZE_RULES: &[(&str, usize)] = &[
+    // "Your deck is 20 cards, plus 20 copied from your enemy." The other
+    // twenty arrive at the start of the game; see `behaviour::GAME_SETUP`.
+    ("Azalina Soulsever", 20),
+];
+
+/// How many cards a legal list of these cards holds.
+///
+/// Thirty, unless something in the list says otherwise. Where two such cards
+/// somehow met, the smallest wins, which is the reading that keeps a list
+/// from being called legal at a size no card in it allows.
+pub fn legal_size(cards: &[CardId]) -> usize {
+    legal_size_by_name(|name| cards.iter().any(|c| c.name() == name))
+}
+
+/// [`legal_size`] for a caller that has names rather than ids -- the gauntlet
+/// file, which is a list of names and counts.
+pub fn legal_size_by_name(present: impl Fn(&str) -> bool) -> usize {
+    DECK_SIZE_RULES
+        .iter()
+        .filter(|(name, _)| present(name))
+        .map(|(_, size)| *size)
+        .min()
+        .unwrap_or(DECK_SIZE)
+}
+
 /// What is wrong with a deck list.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DeckError {
@@ -24,7 +56,7 @@ pub enum DeckError {
 
 /// Check a deck list against the construction rules.
 pub fn validate(cards: &[CardId], class: Class, format: Formats) -> Result<(), DeckError> {
-    if cards.len() != DECK_SIZE {
+    if cards.len() != legal_size(cards) {
         return Err(DeckError::WrongSize(cards.len()));
     }
     for &c in cards {

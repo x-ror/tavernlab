@@ -129,6 +129,19 @@ impl Game {
             self.players[i].deck = deck;
         }
 
+        // Deck-construction rules first: they decide what the mulligan is
+        // dealt from. Both sides are set up before either draws, so a deck
+        // that copies from the opponent copies their real list and not one
+        // some other setup effect has already changed.
+        for side in [Side::Player0, Side::Player1] {
+            crate::cards::apply_game_setup(self, side);
+        }
+        for i in 0..2 {
+            let mut deck = self.players[i].deck;
+            self.rngs.library[i].shuffle(deck.as_mut_slice());
+            self.players[i].deck = deck;
+        }
+
         for (order, side) in [first, first.other()].into_iter().enumerate() {
             let n = if order == 0 { 3 } else { 4 };
             self.mulligan(side, n, agents[side.index()]);
