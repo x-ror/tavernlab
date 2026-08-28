@@ -406,6 +406,10 @@ impl Marks {
     /// immutable `CardDef` and this belongs to one card in one hand -- and
     /// `Marks` had a spare bit, so the whole grant costs a `Game` nothing.
     pub const GRANTED_PREPARE: Marks = Marks(1 << 10);
+    /// This copy casts twice when it is played (the empowered Well of
+    /// Eternity). A mark rather than anything on the card, for the same
+    /// reason `GRANTED_PREPARE` is one: it belongs to one copy in one hand.
+    pub const CASTS_TWICE: Marks = Marks(1 << 11);
 
     #[inline]
     pub const fn has(self, m: Marks) -> bool {
@@ -835,6 +839,13 @@ pub struct Player {
     /// Set by Ruby Sanctum: the next Healing effect this turn deals its
     /// damage instead of healing, and spends this.
     pub heal_as_damage: bool,
+    /// Mana crystals this player may hold above the usual ten.
+    ///
+    /// "Increase both players' maximum Mana by 5" (Ysera, Emerald Aspect) is
+    /// the only thing that moves it, and it moves it for both sides at once.
+    /// A ceiling rather than a grant: it raises what the natural ramp and
+    /// every "gain a Mana Crystal" stop at, and hands out nothing itself.
+    pub extra_crystals: u8,
     pub weapon: Option<Weapon>,
     pub hand: Inline<HandCard, MAX_HAND>,
     pub deck: Inline<DeckCard, MAX_DECK>,
@@ -982,6 +993,7 @@ impl Player {
             reborn_dead: 0,
             slimed: 0,
             heal_as_damage: false,
+            extra_crystals: 0,
             weapon: None,
             hand: Inline::new(),
             deck: deck.iter().map(|&c| DeckCard::started(c)).collect(),
@@ -1052,6 +1064,12 @@ impl Player {
     #[inline]
     pub fn is_dead(&self) -> bool {
         self.hero_hp <= 0
+    }
+
+    /// The most crystals this player may hold, ten unless something raised it.
+    #[inline]
+    pub fn crystal_cap(&self) -> i16 {
+        MAX_MANA + self.extra_crystals as i16
     }
 
     /// The graveyard slice Slime 'em! recorded, as `(start, length)`.

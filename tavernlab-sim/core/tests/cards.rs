@@ -12,7 +12,9 @@ use tavernlab_core::cards::{
     Class, Formats, Keywords, Kind, Races, Rarity, School, behaviour_of, by_id, by_name,
 };
 use tavernlab_core::game::{Action, Agent};
-use tavernlab_core::state::{DeckCard, Flags, Game, HandCard, MAX_HAND, Permanent, Side, Target};
+use tavernlab_core::state::{
+    DeckCard, Flags, Game, HandCard, MAX_HAND, Marks, Permanent, Side, Target,
+};
 
 const ME: Side = Side::Player0;
 const FOE: Side = Side::Player1;
@@ -90,6 +92,20 @@ impl Fix {
 
     fn their_board(&self) -> usize {
         self.g.players[1].board.len()
+    }
+}
+
+/// A `Ctx` for calling a hook directly, where there is no play to carry one.
+fn make_ctx(card: tavernlab_core::cards::CardId, side: Side) -> tavernlab_core::cards::Ctx {
+    tavernlab_core::cards::Ctx {
+        card,
+        side,
+        target: None,
+        source: None,
+        outcast: false,
+        dying: None,
+        marks: Marks::NONE,
+        mana_spent: 0,
     }
 }
 
@@ -12825,4 +12841,237 @@ fn morchie_keeps_both_rewind_outcomes_instead_of_choosing() {
         7,
         "Morchie plus both rolls, capped by the board"
     );
+}
+
+// ------------------------------------------------------------------ Azshara
+// Druid's Well and its Queen: two Locations that come with Lady Azshara, one
+// of which she empowers and the other of which she destroys.
+
+#[test]
+fn ysera_raises_the_ceiling_for_both_players_and_takes_three_for_herself() {
+    let mut f = Fix::new();
+    f.g.players[0].crystals = 10;
+    f.g.players[1].crystals = 10;
+    assert_eq!(f.g.players[0].crystal_cap(), 10);
+
+    // Start of Game, not the Battlecry: the ceiling moves for both sides.
+    let ysera = by_name("Ysera, Emerald Aspect").unwrap();
+    let f_of = behaviour_of(ysera).and_then(|b| b.start_of_game).unwrap();
+    f_of(&mut f.g, &make_ctx(ysera, ME));
+    assert_eq!(f.g.players[0].crystal_cap(), 15);
+    assert_eq!(f.g.players[1].crystal_cap(), 15, "both players', as printed");
+
+    // And the ramp can now actually reach past ten.
+    f.g.gain_crystal(ME, 3);
+    assert_eq!(f.g.players[0].crystals, 13);
+    f.g.gain_crystal(ME, 9);
+    assert_eq!(f.g.players[0].crystals, 15, "and stops at the new ceiling");
+}
+
+#[test]
+fn two_yseras_do_not_stack_to_twenty() {
+    let mut f = Fix::new();
+    let ysera = by_name("Ysera, Emerald Aspect").unwrap();
+    let f_of = behaviour_of(ysera).and_then(|b| b.start_of_game).unwrap();
+    f_of(&mut f.g, &make_ctx(ysera, ME));
+    f_of(&mut f.g, &make_ctx(ysera, ME));
+    assert_eq!(f.g.players[0].crystal_cap(), 15, "the ceiling is set, not added to");
+}
+
+#[test]
+fn lady_azshara_empowers_one_location_and_destroys_the_other() {
+    // Both Locations start in the deck, which is where Fabled puts them.
+    let mut f = Fix::new();
+    f.g.players[0]
+        .deck
+        .push(DeckCard::started(by_id("TIME_211t1").unwrap())); // the Well
+    f.g.players[0]
+        .deck
+        .push(DeckCard::started(by_id("TIME_211t2").unwrap())); // Zin-Azshari
+    f.play_mode("Lady Azshara", 0, None); // Empower Zin-Azshari
+
+    let left: Vec<&str> = f.g.players[0]
+        .deck
+        .iter()
+        .map(|d| d.card.info().id)
+        .collect();
+    assert_eq!(
+        left,
+        vec!["TIME_211t2t"],
+        "Zin-Azshari empowered, the Well destroyed"
+    );
+
+    // The other mode, the other way round.
+    let mut f = Fix::new();
+    f.g.players[0]
+        .deck
+        .push(DeckCard::started(by_id("TIME_211t1").unwrap()));
+    f.g.players[0]
+        .deck
+        .push(DeckCard::started(by_id("TIME_211t2").unwrap()));
+    f.play_mode("Lady Azshara", 1, None);
+    let left: Vec<&str> = f.g.players[0]
+        .deck
+        .iter()
+        .map(|d| d.card.info().id)
+        .collect();
+    assert_eq!(left, vec!["TIME_211t1t"]);
+}
+
+#[test]
+fn azshara_reaches_a_location_that_has_already_been_drawn() {
+    // A card that only worked from the deck would quietly do nothing in the
+    // game where she is drawn late.
+    let mut f = Fix::new();
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_id("TIME_211t2").unwrap()));
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_id("TIME_211t1").unwrap()));
+    f.play_mode("Lady Azshara", 0, None);
+    let held: Vec<&str> = f.g.players[0]
+        .hand
+        .iter()
+        .map(|h| h.card.info().id)
+        .collect();
+    assert_eq!(held, vec!["TIME_211t2t"]);
+}
+
+#[test]
+fn zin_azshari_copies_a_friendly_minion_and_doubles_it_when_empowered() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]); // 4/5
+    f.play("Zin-Azshari", None);
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "Zin-Azshari")
+        .unwrap() as u8;
+    assert!(f.g.apply(Action::UseLocation { slot, target: my_minion(0) }));
+    let copy = f.g.players[0].board.last().unwrap();
+    assert_eq!((copy.atk, copy.max_hp), (4, 5), "a plain copy");
+
+    // The empowered printing shares its name, so it is the same row.
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_id("TIME_211t2t").unwrap()));
+    assert!(f.g.apply(Action::Play {
+        hand: 0,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "Zin-Azshari")
+        .unwrap() as u8;
+    assert!(f.g.apply(Action::UseLocation { slot, target: my_minion(0) }));
+    let copy = f.g.players[0].board.last().unwrap();
+    assert_eq!((copy.atk, copy.max_hp), (8, 10), "doubled");
+}
+
+#[test]
+fn the_well_fills_the_hand_with_spells_that_burn_at_end_of_turn() {
+    let mut f = Fix::new();
+    f.play("The Well of Eternity", None);
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "The Well of Eternity")
+        .unwrap() as u8;
+    assert!(f.g.apply(Action::UseLocation { slot, target: None }));
+    assert_eq!(f.g.players[0].hand.len(), MAX_HAND, "filled, not topped up");
+    assert!(
+        f.g.players[0].hand.iter().all(|h| {
+            h.card.def().kind() == Kind::Spell && h.marks.has(Marks::TEMPORARY)
+        }),
+        "random Temporary spells"
+    );
+    f.g.end_turn();
+    assert!(
+        f.g.players[0].hand.is_empty(),
+        "Temporary means gone at the end of the turn"
+    );
+}
+
+#[test]
+fn the_empowered_well_marks_its_spells_to_cast_twice() {
+    let mut f = Fix::new();
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_id("TIME_211t1t").unwrap()));
+    assert!(f.g.apply(Action::Play {
+        hand: 0,
+        target: None,
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "The Well of Eternity")
+        .unwrap() as u8;
+    assert!(f.g.apply(Action::UseLocation { slot, target: None }));
+    assert!(
+        f.g.players[0]
+            .hand
+            .iter()
+            .all(|h| h.marks.has(Marks::CASTS_TWICE)),
+        "the empowered Well's spells cast twice"
+    );
+}
+
+#[test]
+fn welcome_home_lets_a_spent_location_be_used_again() {
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti"]);
+    f.play("Sanguine Depths", None); // 1 damage to a minion, +2 Attack
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "Sanguine Depths")
+        .unwrap() as u8;
+    assert!(f.g.apply(Action::UseLocation { slot, target: foe_minion(0) }));
+    assert!(
+        !f.g.apply(Action::UseLocation { slot, target: foe_minion(0) }),
+        "spent for this turn"
+    );
+
+    f.g.players[0].mana = 10;
+    f.play("Welcome Home!", Some(Target::Minion(ME, slot)));
+    assert!(
+        f.g.apply(Action::UseLocation { slot, target: foe_minion(0) }),
+        "reopened"
+    );
+    assert_eq!(
+        f.g.players[0].board[slot as usize].granted_rattle.name(),
+        "Stubborn Suspect",
+        "and given the deathrattle the card prints"
+    );
+}
+
+#[test]
+fn welcome_home_is_offered_a_location_and_nothing_else() {
+    let f = Fix::new()
+        .board(ME, &["Bloodfen Raptor"])
+        .board(FOE, &["Chillwind Yeti"]);
+    let mut f = f;
+    f.play("Sanguine Depths", None);
+    f.g.players[0].mana = 10;
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Welcome Home!").unwrap()));
+    let idx = f.g.players[0].hand.len() as u8 - 1;
+    let mut legal = tavernlab_core::inline::Inline::new();
+    f.g.legal_actions(&mut legal);
+    let targets: Vec<Target> = legal
+        .iter()
+        .filter_map(|a| match a {
+            Action::Play { hand, target: Some(t), .. } if *hand == idx => Some(*t),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(targets.len(), 1, "one Location and nothing else: {targets:?}");
+    assert!(matches!(targets[0], Target::Minion(ME, _)));
 }

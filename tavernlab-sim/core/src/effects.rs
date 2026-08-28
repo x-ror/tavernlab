@@ -450,7 +450,8 @@ impl Game {
     /// Permanently gain an empty mana crystal, up to the cap.
     pub fn gain_crystal(&mut self, side: Side, n: i16) {
         let p = self.player_mut(side);
-        p.crystals = (p.crystals + n).min(crate::state::MAX_MANA);
+        let cap = p.crystal_cap();
+        p.crystals = (p.crystals + n).min(cap);
     }
 
     /// Equip a weapon by card id, replacing whatever is held. A replaced

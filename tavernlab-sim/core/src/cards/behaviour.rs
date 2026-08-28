@@ -104,6 +104,10 @@ pub enum TargetSpec {
     /// preference: with nothing taunting, the card has no legal target at
     /// all — which is exactly when its Tradeable half earns its keep.
     EnemyTaunt,
+    /// One of your own Locations (Welcome Home!). The only spec that points
+    /// at something that is not a minion, which is why the guard below has
+    /// to ask what kind of permanent it is before it checks anything else.
+    FriendlyLocation,
 }
 
 impl TargetSpec {
@@ -118,6 +122,13 @@ impl TargetSpec {
         let foe = side.other();
         // Stealth hides a minion from the opponent's targeting, and Elusive
         // hides it from every spell and hero power.
+        if self == TargetSpec::FriendlyLocation {
+            return matches!(t, Target::Minion(s, i)
+                if s == side
+                    && g.player(s).board.get(i as usize).is_some_and(|m| {
+                        m.active() && m.kind() == super::Kind::Location
+                    }));
+        }
         if let Target::Minion(s, i) = t {
             let Some(m) = g.player(s).board.get(i as usize) else {
                 return false;
@@ -169,6 +180,8 @@ impl TargetSpec {
                 if s == foe && !g.player(s).board[i as usize].races().is_empty()),
             TargetSpec::EnemyTaunt => matches!(t, Target::Minion(s, i)
                 if s == foe && g.player(s).board[i as usize].has(Keywords::TAUNT)),
+            // Answered above, before the minion guard.
+            TargetSpec::FriendlyLocation => false,
         }
     }
 }
@@ -425,6 +438,15 @@ mod tokens {
     pub const VOID_SOUL: CardId = token("JAIL_732");
     /// The Forbidden Sequence's reward.
     pub const ORIGIN_STONE: CardId = token("TLC_460t");
+    /// Lady Azshara's two Locations, and the empowered form of each. Both
+    /// pairs share a name, so the behaviour table gives each pair one row.
+    pub const WELL_OF_ETERNITY: CardId = token("TIME_211t1");
+    pub const WELL_OF_ETERNITY_EMPOWERED: CardId = token("TIME_211t1t");
+    pub const ZIN_AZSHARI: CardId = token("TIME_211t2");
+    pub const ZIN_AZSHARI_EMPOWERED: CardId = token("TIME_211t2t");
+    /// The carrier for Welcome Home!'s granted deathrattle -- a real card
+    /// whose whole text is "Deathrattle: Summon a random 3-Cost minion."
+    pub const STUBBORN_SUSPECT: CardId = token("SW_006");
     /// The Aura cycle, its summon, and the Shatter pair that flies with it.
     pub const CHRONOLOGICAL_AURA: CardId = token("TIME_700");
     pub const CHRONOLOGICAL_DRAKE: CardId = token("TIME_700t");
@@ -5009,7 +5031,8 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         let theirs = g.player(c.side.other()).crystals;
         let p = g.player_mut(c.side);
         if theirs > p.crystals {
-            p.crystals = theirs.min(crate::state::MAX_MANA);
+            let cap = p.crystal_cap();
+            p.crystals = theirs.min(cap);
         }
     }),
     trigger("Lorewalker Cho", |g, c| {
@@ -9741,7 +9764,139 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.destroy_weapon(side);
         }
     }),
+
+    // ------------------------------------------------------------- Azshara
+    // Druid's Well and its Queen. Lady Azshara comes with two Locations in
+    // the deck -- Fabled puts them there when the list is built -- and her
+    // Choose One empowers one of them and destroys the other. Both Locations
+    // and both empowered forms share their names in pairs, so each pair is
+    // one row here that branches on `c.card`, like Schism and Supply Run.
+
+    choose(
+        "Lady Azshara",
+        &[
+            m(T::None, |g, c| empower(g, c.side, true)),
+            m(T::None, |g, c| empower(g, c.side, false)),
+        ],
+    ),
+
+    // A Location. "Fill your hand with random Temporary spells" -- as many as
+    // there is room for, each burning unplayed at the end of the turn. The
+    // empowered printing marks each of them to cast twice.
+    spell("The Well of Eternity", T::None, |g, c| {
+        let twice = c.card == tokens::WELL_OF_ETERNITY_EMPOWERED;
+        while g.player(c.side).hand.len() < MAX_HAND {
+            let before = g.player(c.side).hand.len();
+            if !g.add_random_to_hand(c.side, |d| d.kind() == super::Kind::Spell) {
+                break;
+            }
+            if g.player(c.side).hand.len() == before {
+                break;
+            }
+            if let Some(hc) = g.player_mut(c.side).hand.last_mut() {
+                hc.marks.insert(Marks::TEMPORARY);
+                if twice {
+                    hc.marks.insert(Marks::CASTS_TWICE);
+                }
+            }
+        }
+    }),
+
+    // A Location. The empowered printing doubles what it copies, which is
+    // done to the copy after it lands rather than to the original.
+    spell("Zin-Azshari", T::FriendlyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        if !g.summon_copy_of(c.side, t) {
+            return;
+        }
+        if c.card == tokens::ZIN_AZSHARI_EMPOWERED {
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            let made = Target::Minion(c.side, slot);
+            if let Some(m) = g.player(c.side).board.get(slot as usize) {
+                let (atk, hp) = (m.atk, m.max_hp);
+                g.buff(made, atk, hp);
+            }
+        }
+    }),
+
+    // "Reopen a location" is the whole of it: a Location that has been used
+    // can be used again. It does not print a durability refill and does not
+    // get one -- see the wiki note in `APPROXIMATE`.
+    spell("Welcome Home!", T::FriendlyLocation, |g, c| {
+        let Some(Target::Minion(s, i)) = c.target else {
+            return;
+        };
+        if let Some(m) = g.player_mut(s).board.get_mut(i as usize) {
+            m.flags.remove(Flags::USED);
+            m.cooldown = 0;
+            m.granted_rattle = tokens::STUBBORN_SUSPECT;
+        }
+    }),
+
+    c(
+        "Ysera, Emerald Aspect",
+        T::None,
+        None,
+        // "Battlecry: Gain 3 Mana Crystals." Capped like every other gain,
+        // by a ceiling this same card has already raised.
+        Some(|g, c| g.gain_crystal(c.side, 3)),
+        None, None, None, None, None, None,
+        // "Start of Game: Increase both players' maximum Mana by 5." Both,
+        // and once: two copies in one deck do not stack to ten, because the
+        // ceiling is set rather than added to.
+        Some(|g, _c| {
+            for i in 0..2 {
+                g.players[i].extra_crystals = g.players[i].extra_crystals.max(5);
+            }
+        }),
+    ),
 ];
+
+/// Lady Azshara's Choose One: empower one of her Locations, destroy the other.
+///
+/// "Empower" swaps the Location for its stronger printing and "destroy" takes
+/// the other out of the game, and both of them can be sitting in any of three
+/// places -- still in the deck, already drawn, or already played. All three
+/// are handled, because a card that only worked from the deck would silently
+/// do nothing in the game where she is drawn late.
+fn empower(g: &mut Game, side: Side, zin: bool) {
+    let (keep, into, drop) = if zin {
+        (
+            tokens::ZIN_AZSHARI,
+            tokens::ZIN_AZSHARI_EMPOWERED,
+            tokens::WELL_OF_ETERNITY,
+        )
+    } else {
+        (
+            tokens::WELL_OF_ETERNITY,
+            tokens::WELL_OF_ETERNITY_EMPOWERED,
+            tokens::ZIN_AZSHARI,
+        )
+    };
+    for dc in g.player_mut(side).deck.iter_mut() {
+        if dc.card == keep {
+            dc.card = into;
+        }
+    }
+    for hc in g.player_mut(side).hand.iter_mut() {
+        if hc.card == keep {
+            hc.card = into;
+        }
+    }
+    for i in 0..g.player(side).board.len() {
+        if g.player(side).board[i].card == keep {
+            g.transform(Target::Minion(side, i as u8), into);
+        }
+    }
+    g.player_mut(side).deck.retain(|dc| dc.card != drop);
+    g.player_mut(side).hand.retain(|hc| hc.card != drop);
+    for i in 0..g.player(side).board.len() {
+        if g.player(side).board[i].card == drop {
+            g.destroy(Target::Minion(side, i as u8));
+        }
+    }
+    g.sweep_deaths();
+}
 
 /// Turn this Location into the next age, keeping the durability it has left.
 ///
@@ -9804,6 +9959,10 @@ pub fn is_aura(card: CardId) -> bool {
 /// coverage figure that mixes exact and approximate cards is worse than a
 /// smaller honest one.
 pub const APPROXIMATE: &[(&str, &str)] = &[
+    (
+        "Welcome Home!",
+        "\"Reopen a location\" clears the once-per-turn lock and nothing else. The wiki says only that Reopen \"refreshes a location that has used its ability, allowing it to be used again\", and neither it nor the corpus says whether durability comes back or by how much -- so the Location gets its use back and keeps whatever durability it had left, which is the reading that cannot overrate the card",
+    ),
     (
         "Q'onzu",
         "the Discovered spell is always kept; \"or put it on top of your opponent's deck\" is never the mode chosen. Picking between them needs a judgement about a card in *their* deck, which nothing here can weigh -- so the engine takes the half that is always available, and the card loses its use as a way to bury a spell it does not want",
