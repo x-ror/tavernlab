@@ -401,6 +401,17 @@ mod tokens {
     pub const IMP_FORMANT: CardId = token("127024-imp-formant");
     /// Tonic of Tyranny's payout.
     pub const VOIDLORD: CardId = token("CORE_LOOT_368");
+    /// The three that wake up when a Dragon is played, and what they wake into.
+    pub const STONETALON_STRIKER: CardId = token("CATA_551");
+    pub const STONETALON_STRIKER_AWAKE: CardId = token("CATA_551t");
+    pub const EBONSCALE_SCOUT: CardId = token("CATA_552");
+    pub const EBONSCALE_SCOUT_AWAKE: CardId = token("CATA_552t");
+    pub const EBYSSIAN: CardId = token("CATA_553");
+    pub const EBYSSIAN_AWAKE: CardId = token("CATA_553t");
+    /// Supply Run, and the two halves it shatters into.
+    pub const SUPPLY_RUN: CardId = token("CATA_820");
+    pub const SUPPLY_RUN_DRAW: CardId = token("CATA_820t");
+    pub const SUPPLY_RUN_BUFF: CardId = token("CATA_820t2");
     /// Godfather Kazakus's nine sham-trial effects, and the trial itself.
     pub const DETAINED_FOR_DESTRUCTION: CardId = token("132837-detained-for-destruction");
     pub const CONVICTED_FOR_CONSPIRACY: CardId = token("132849-convicted-for-conspiracy");
@@ -8557,6 +8568,61 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         }
     }),
 
+    // --------------------------------------------------------------- dragons
+    // Three cards that wake up when a Dragon is played while they sit in hand,
+    // and a spell that arrives already broken in two. `AWAKENS` and
+    // `SHATTERS` hold the mechanics; these are the effects the cards have once
+    // they are played.
+    //
+    // Each of these names belongs to more than one card -- the base form and
+    // the awakened one, the whole spell and its two halves -- and the
+    // behaviour index is keyed by name, so one row serves every form and
+    // branches on `c.card` where the forms differ.
+
+    battlecry("Ebonscale Scout", T::AnyCharacter, |g, c| {
+        // "Damage equal to this minion's Attack": the body is already on the
+        // board when a Battlecry runs, so it reads its own Attack from there
+        // -- which is 4 unawakened and 8 awake, and whatever a buff has since
+        // made it.
+        let atk = c
+            .source
+            .and_then(|s| g.player(c.side).board.get(s as usize))
+            .map_or(0, |m| m.atk);
+        if let Some(t) = c.target
+            && atk > 0
+        {
+            g.spell_damage(c.side, Some(t), atk);
+        }
+    }),
+
+    battlecry("Ebyssian", T::None, |g, c| {
+        // "This game", so it outlives the body: a flag on the player, applied
+        // to the Dragons already out and to every one summoned after.
+        g.player_mut(c.side).dragons_have_rush = true;
+        for m in g.player_mut(c.side).board.iter_mut() {
+            if m.card.def().races.any(Races::DRAGON) {
+                m.keywords.insert(Keywords::RUSH);
+            }
+        }
+    }),
+
+    spell("Supply Run", T::None, |g, c| {
+        // Whole or half. The unshattered card does both halves -- which is
+        // what you get when your hand was too full to split it.
+        if c.card != tokens::SUPPLY_RUN_BUFF {
+            for _ in 0..3 {
+                g.draw_matching(c.side, |d| d.kind() == super::Kind::Minion);
+            }
+        }
+        if c.card != tokens::SUPPLY_RUN_DRAW {
+            for hc in g.player_mut(c.side).hand.iter_mut() {
+                if hc.card.def().kind() == super::Kind::Minion {
+                    hc.enchant(2, 2);
+                }
+            }
+        }
+    }),
+
     // ------------------------------------------------------------- the Kabal
     // A sham trial, and the plants that make the case. The package turns on
     // one token: an Imp-formant goes into the *enemy's* deck and is summoned
@@ -9433,6 +9499,67 @@ const DRAWN_ACTORS: [CardId; 9] = [
     tokens::IMP_FORMANT,      // Summoned: a 3/3 Lifesteal -- for the other side.
 ];
 
+/// "While in hand, play a Dragon to become an X/X Dragon."
+///
+/// Base form and awakened form, both of which the corpus carries as cards in
+/// their own right -- so the stats, the cost and the Dragon tribe of what it
+/// becomes are read rather than written. One Dragon is enough; the wiki says
+/// so and the text says "play a Dragon", not "play Dragons".
+const AWAKENS: [(CardId, CardId); 3] = [
+    (tokens::STONETALON_STRIKER, tokens::STONETALON_STRIKER_AWAKE),
+    (tokens::EBONSCALE_SCOUT, tokens::EBONSCALE_SCOUT_AWAKE),
+    (tokens::EBYSSIAN, tokens::EBYSSIAN_AWAKE),
+];
+
+/// What `card` becomes when its owner plays a Dragon while holding it.
+pub fn awakened_by_dragon(card: CardId) -> Option<CardId> {
+    let mut i = 0;
+    while i < AWAKENS.len() {
+        if AWAKENS[i].0.0 == card.0 {
+            return Some(AWAKENS[i].1);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Shatter: "Splits into two halves that recombine when adjacent in hand."
+///
+/// Parent, then the half that goes to the left of the hand and the half that
+/// goes to the right, in the order the parent's own text reads them. Both
+/// halves keep the parent's full cost, which is what makes splitting a cost
+/// and recombining the reward -- and both costs are the corpus's, not a
+/// choice made here.
+const SHATTERS: [(CardId, CardId, CardId); 1] = [(
+    tokens::SUPPLY_RUN,
+    tokens::SUPPLY_RUN_DRAW,
+    tokens::SUPPLY_RUN_BUFF,
+)];
+
+/// The two halves `card` splits into as it enters hand, left first.
+pub fn shatters_into(card: CardId) -> Option<(CardId, CardId)> {
+    let mut i = 0;
+    while i < SHATTERS.len() {
+        if SHATTERS[i].0.0 == card.0 {
+            return Some((SHATTERS[i].1, SHATTERS[i].2));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The card two adjacent halves recombine into, in that order.
+pub fn recombines(left: CardId, right: CardId) -> Option<CardId> {
+    let mut i = 0;
+    while i < SHATTERS.len() {
+        if SHATTERS[i].1.0 == left.0 && SHATTERS[i].2.0 == right.0 {
+            return Some(SHATTERS[i].0);
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Godfather Kazakus's nine sham-trial effects.
 ///
 /// The whole menu, in the order the corpus lists them as his children. Every
@@ -9500,6 +9627,12 @@ pub fn behaviour_of(card: CardId) -> Option<&'static Behaviour> {
 /// must not be offered to a deck builder.
 pub fn is_implemented(card: CardId) -> bool {
     if behaviour_of(card).is_some() {
+        return true;
+    }
+    // A card whose whole rules text is a side-list mechanic has no hook to
+    // hang a behaviour on and is still implemented: Stonetalon Striker is a
+    // Taunt that wakes up, and the waking lives in `AWAKENS`.
+    if awakened_by_dragon(card).is_some() || shatters_into(card).is_some() {
         return true;
     }
     let d = card.def();

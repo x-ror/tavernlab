@@ -1085,6 +1085,16 @@ impl Game {
             }
             p.minions_played_total = p.minions_played_total.saturating_add(1);
             p.minions_played_turn = true;
+            // "While in hand, play a Dragon to become an X/X Dragon." Every
+            // copy in hand wakes, not one: the text is a standing condition on
+            // the card, not a single trigger to be spent.
+            if def.races.any(Races::DRAGON) {
+                for held in p.hand.iter_mut() {
+                    if let Some(awake) = crate::cards::awakened_by_dragon(held.card) {
+                        held.card = awake;
+                    }
+                }
+            }
             // Spent by the first minion regardless of whether Mug's Magic was
             // even equipped yet -- matching how `next_beast_discount` above
             // clears unconditionally too.
@@ -1171,6 +1181,12 @@ impl Game {
                 // A Dark Gift's keywords arrive with the body; its stats and
                 // cost were folded into the hand card when it was given.
                 m.keywords.insert(crate::cards::gift_keywords(hc.gift));
+                // Ebyssian's standing grant. Played from hand is the path a
+                // Dragon usually arrives by, and it does not go through
+                // `summon_with`, so the rule has to be said in both places.
+                if p.dragons_have_rush && def.races.any(Races::DRAGON) {
+                    m.keywords.insert(Keywords::RUSH);
+                }
                 if hc.gift == 9 {
                     // Persisting Horror: "Is Reborn with full Health".
                     m.flags.insert(Flags::REBORN_FULL);
@@ -1345,6 +1361,8 @@ impl Game {
         }
         // A card left hand to be played; hand size is a printed condition.
         self.refresh_conditionals();
+        // The gap the card left may have put two halves side by side.
+        self.settle_hand(side);
         // One sweep, once everything the card set in motion has resolved.
         self.sweep_deaths();
         true
@@ -1439,6 +1457,27 @@ impl Game {
     /// across the move.
     pub fn give_hand_card(&mut self, side: Side, hc: HandCard) -> bool {
         let card = hc.card;
+        // Shatter: "splits into two halves that recombine when adjacent in
+        // hand", and the split happens as the card arrives, however it
+        // arrives. A full hand cannot split it and burns it whole; a hand
+        // with one slot left takes the left half only, which is the rule as
+        // printed and not a shortcut taken here.
+        if let Some((left, right)) = crate::cards::shatters_into(card) {
+            let room = MAX_HAND.saturating_sub(self.player(side).hand.len());
+            if room == 0 {
+                return false;
+            }
+            let mut l = hc;
+            l.card = left;
+            self.player_mut(side).hand.insert(0, l);
+            if room >= 2 {
+                let mut r = hc;
+                r.card = right;
+                self.player_mut(side).hand.push(r);
+            }
+            self.refresh_conditionals();
+            return true;
+        }
         let p = self.player_mut(side);
         if p.hand.len() >= MAX_HAND {
             if p.godfrey_active {
@@ -1450,7 +1489,39 @@ impl Game {
         // Hand and deck size are printed conditions ("if your deck has 25 or
         // more cards"), and this is where both move.
         self.refresh_conditionals();
+        self.settle_hand(side);
         ok
+    }
+
+    /// Put back together any two halves that have ended up side by side.
+    ///
+    /// "They recombine when adjacent in hand", into one card where they met.
+    /// Checked where the hand's shape changes in a way the player can act on:
+    /// a card arriving, and a card being played. A pair made adjacent by
+    /// something else -- a discard mid-effect -- is settled at the next of
+    /// those rather than the instant it happens, which is a turn's worth of
+    /// hand size at most and never a card gained or lost.
+    pub fn settle_hand(&mut self, side: Side) {
+        loop {
+            let hand = self.player(side).hand;
+            let mut joined = None;
+            for i in 0..hand.len().saturating_sub(1) {
+                if let Some(whole) = crate::cards::recombines(hand[i].card, hand[i + 1].card) {
+                    joined = Some((i, whole));
+                    break;
+                }
+            }
+            let Some((at, whole)) = joined else { return };
+            let p = self.player_mut(side);
+            // The halves carry their own enchantments; the card they make
+            // keeps the left one's, which is where the buff that hit "cards
+            // in your hand" landed first.
+            let mut kept = p.hand[at];
+            kept.card = whole;
+            p.hand.remove(at + 1);
+            p.hand[at] = kept;
+            self.refresh_conditionals();
+        }
     }
 
     /// Draw `n` cards, taking fatigue for each empty draw.
@@ -1498,6 +1569,11 @@ impl Game {
         let mut body = Permanent::summon(card);
         body.atk += atk;
         body.max_hp += hp;
+        // Ebyssian: "Your Dragons have Rush this game" -- including the ones
+        // that arrive after the body that said so has gone.
+        if p.dragons_have_rush && card.def().races.any(Races::DRAGON) {
+            body.keywords.insert(Keywords::RUSH);
+        }
         let ok = p.board.push(body);
         let slot = p.board.len() as u8 - 1;
         self.board_dirty = true;

@@ -782,6 +782,9 @@ pub struct Player {
     /// the taxed player's own turn end -- which is what makes "next turn"
     /// their turn rather than the caster's.
     pub minion_tax: i16,
+    /// Ebyssian: "Your Dragons have Rush this game." A flag on the player
+    /// rather than an aura, because it outlives the body that granted it.
+    pub dragons_have_rush: bool,
     pub played_minion_last_turn: bool,
     pub minions_played_turn: bool,
     /// Whether this player's first Dragon this turn has already had Naralex,
@@ -895,6 +898,7 @@ impl Player {
             deaths: 0,
             dragon_discounted_turn: false,
             minion_tax: 0,
+            dragons_have_rush: false,
             played_minion_last_turn: false,
             minions_played_turn: false,
             void: Inline::new(),
