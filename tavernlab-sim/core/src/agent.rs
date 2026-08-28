@@ -87,6 +87,82 @@ fn minion_value(m: &Permanent) -> f32 {
     v
 }
 
+/// Whether the card could have been pointed at the other side instead.
+///
+/// A spec that only ever allows friendly targets is a card meant for its own
+/// side, and asking whether it harms would answer "no" every time for the cost
+/// of a game copy. These are the specs where both sides are legal, and so the
+/// only ones where the choice of side can be wrong.
+fn could_hit_an_enemy(spec: TargetSpec) -> bool {
+    matches!(
+        spec,
+        TargetSpec::AnyCharacter
+            | TargetSpec::AnyMinion
+            | TargetSpec::DamagedMinion
+            | TargetSpec::UndamagedMinion
+            | TargetSpec::LegendaryMinion
+            | TargetSpec::MinionAtkAtMost(_)
+            | TargetSpec::MinionAtkAtLeast(_)
+    )
+}
+
+/// Whether `a` is a spell aimed at its caster's own hero that hurts it.
+///
+/// Both halves matter. A card that could only ever target a friendly
+/// character is one meant for its own side, and a minion's Battlecry pointed
+/// at your own hero is ordinarily a heal or a buff; the case worth a game copy
+/// is a spell that could have gone at the enemy instead.
+fn self_harming_play(g: &Game, a: Action) -> bool {
+    let Action::Play { hand, target, .. } = a else {
+        return false;
+    };
+    let me = g.current;
+    if target != Some(Target::Hero(me)) {
+        return false;
+    }
+    let Some(hc) = g.player(me).hand.get(hand as usize) else {
+        return false;
+    };
+    if hc.card.def().kind() != Kind::Spell {
+        return false;
+    }
+    let Some(spec) = behaviour_of(hc.card).map(|b| b.target) else {
+        return false;
+    };
+    could_hit_an_enemy(spec) && harms(g, a, Target::Hero(me))
+}
+
+/// Whether playing `a` leaves the thing it hit worse off than it is now.
+///
+/// The engine answers, on a copy: health for a hero, health plus attack for a
+/// minion, and a minion that is no longer there at all has certainly been
+/// harmed. `Game` is a couple of kilobytes and copies by memcpy -- the whole
+/// reason the state is flat -- so this is one memcpy and one turn's worth of
+/// effect resolution, and it is asked only where the side of the target could
+/// be wrong.
+fn harms(g: &Game, a: Action, t: Target) -> bool {
+    let worth = |g: &Game| -> Option<i32> {
+        match t {
+            Target::Hero(s) => Some((g.player(s).hero_hp + g.player(s).armor) as i32),
+            Target::Minion(s, i) => g
+                .player(s)
+                .board
+                .get(i as usize)
+                .map(|m| (m.health() + m.atk) as i32),
+        }
+    };
+    let before = match worth(g) {
+        Some(v) => v,
+        None => return false,
+    };
+    let mut probe = *g;
+    if !probe.apply(a) {
+        return false;
+    }
+    // Gone is worse than anything a number could say.
+    worth(&probe).is_none_or(|after| after < before)
+}
+
 impl Scripted {
     fn score(&self, g: &Game, a: Action) -> f32 {
         let me = g.current;
@@ -103,6 +179,41 @@ impl Scripted {
                 let mut s = 40.0 + g.player(me).effective_cost(hc) as f32 * 2.0;
                 if d.kind() == Kind::Minion {
                     s += (d.atk + d.hp) as f32 * 0.3;
+                }
+                if d.kind() == Kind::Weapon {
+                    // Equipping breaks whatever is already in the hand, so the
+                    // question is not what the new weapon is worth but what
+                    // the swap is worth. The policy did not ask, so a second
+                    // copy of the weapon you are holding scored exactly what
+                    // the first one did -- and a real plan read
+                    // "play Corpse Cannon, play Corpse Cannon", throwing away
+                    // three swings for nothing.
+                    //
+                    // A weapon is worth the damage it can still deal.
+                    let now = g
+                        .player(me)
+                        .weapon
+                        .as_ref()
+                        .map_or(0, |w| w.atk.max(0) * w.durability.max(0));
+                    let next = (d.atk + hc.atk as i16).max(0) * (d.dur + hc.hp as i16).max(0);
+                    // A Battlecry can be the whole reason to equip, and it
+                    // fires whatever the weapon is worth; without one, an
+                    // equal-or-worse swap is a strict loss and belongs below
+                    // ending the turn rather than merely behind other plays.
+                    let battlecry = behaviour_of(hc.card).and_then(|b| b.battlecry).is_some();
+                    // Only a swap can be a loss. With nothing equipped there
+                    // is nothing to break, and `next <= now` would otherwise
+                    // refuse a weapon with no Attack at all -- which some
+                    // carry, because the effect is the whole card.
+                    let swapping = g.player(me).weapon.is_some();
+                    if swapping && next <= now && !battlecry {
+                        return 0.5;
+                    }
+                    // And nothing else: an upgrade keeps exactly the score it
+                    // had. Weighting the size of the upgrade would reorder
+                    // every weapon against every other card, which is tuning
+                    // rather than a fix, and it moved a measured class by two
+                    // points when it was tried.
                 }
                 s
             }
@@ -203,6 +314,7 @@ impl Scripted {
     }
 
     /// Shared by minion and hero attacks.
+
     fn attack_score(
         &self,
         g: &Game,
@@ -248,18 +360,47 @@ impl Scripted {
 
 impl Agent for Scripted {
     fn choose(&mut self, game: &Game, legal: &[Action]) -> Action {
-        let mut best = Action::EndTurn;
-        let mut best_score = f32::MIN;
-        for &a in legal {
-            let s = self.score(game, a);
-            // Strictly greater keeps the choice deterministic: with equal
-            // scores the earlier action wins, and enumeration order is fixed.
-            if s > best_score {
-                best_score = s;
-                best = a;
+        // Whose character to point at is not in the corpus: a target spec of
+        // `AnyCharacter` is what Fireball and a heal both carry, so with the
+        // target unscored the pick fell to enumeration order -- and a real
+        // plan read `зіграти Fireball → свій герой`.
+        //
+        // Rather than guess the polarity from the printed text, ask the
+        // engine: play it on a copy and see what it did to the hero. That is
+        // exact, and it is asked of the action that has already *won* rather
+        // than of every action scored. Scoring is called for every legal
+        // action of every step of every turn -- probing there cost a fifth of
+        // the engine's throughput -- while a winner is one action, and one
+        // that points a two-sided card at your own face is rarer still.
+        // Scored twice rather than tracking a runner-up in one pass: keeping
+        // second place costs a compare on every action of every step, and
+        // measured slower than simply scoring again on the rare step where
+        // the winner turns out to be pointed the wrong way.
+        let mut skip: Option<Action> = None;
+        for _ in 0..2 {
+            let mut best = Action::EndTurn;
+            let mut best_score = f32::MIN;
+            for &a in legal {
+                if skip == Some(a) {
+                    continue;
+                }
+                let s = self.score(game, a);
+                // Strictly greater keeps the choice deterministic: with equal
+                // scores the earlier action wins, and enumeration order is
+                // fixed.
+                if s > best_score {
+                    best_score = s;
+                    best = a;
+                }
             }
+            if !self_harming_play(game, best) {
+                return best;
+            }
+            // Once: the second pick cannot be the same action, and a second
+            // self-harming one is a position with nothing better in it.
+            skip = Some(best);
         }
-        best
+        Action::EndTurn
     }
 
     fn mulligan(&mut self, _game: &Game, drawn: &[crate::cards::CardId], _aggressive: bool) -> u32 {
@@ -426,6 +567,54 @@ mod tests {
         assert!(
             a.score(&g, at(Side::Player0)) > a.score(&g, at(Side::Player1)),
             "Lesser Heal goes at you, not at them"
+        );
+    }
+
+    #[test]
+    fn a_second_copy_of_the_weapon_you_are_wearing_is_not_played() {
+        // From a real plan: "play Corpse Cannon, play Corpse Cannon". The
+        // second equip breaks the first, and both are 1/3 -- three swings
+        // thrown away for nothing.
+        let mut g = game_with(&[], &[]);
+        let cannon = by_name("Corpse Cannon").expect("the corpus has Corpse Cannon");
+        g.players[0].hand.push(crate::state::HandCard::new(cannon));
+        g.players[0].hand.push(crate::state::HandCard::new(cannon));
+        let a = Scripted::new(Style::Midrange);
+        let play = |hand| Action::Play {
+            hand,
+            target: None,
+            position: u8::MAX,
+            choice: u8::MAX,
+        };
+        assert!(
+            a.score(&g, play(0)) > a.score(&g, Action::EndTurn),
+            "with no weapon on, equipping is the right play"
+        );
+
+        g.players[0].weapon = Some(crate::state::Weapon::equip(cannon));
+        assert!(
+            a.score(&g, play(0)) < a.score(&g, Action::EndTurn),
+            "with the same weapon already on, it is a strict loss"
+        );
+    }
+
+    #[test]
+    fn a_better_weapon_still_replaces_a_worse_one() {
+        let mut g = game_with(&[], &[]);
+        let big = by_name("Arcanite Reaper").expect("a 5/2");
+        let small = by_name("Fiery War Axe").expect("a 3/2");
+        g.players[0].hand.push(crate::state::HandCard::new(big));
+        g.players[0].weapon = Some(crate::state::Weapon::equip(small));
+        let a = Scripted::new(Style::Midrange);
+        let play = Action::Play {
+            hand: 0,
+            target: None,
+            position: u8::MAX,
+            choice: u8::MAX,
+        };
+        assert!(
+            a.score(&g, play) > a.score(&g, Action::EndTurn),
+            "ten damage over six is an upgrade, and the swap is worth it"
         );
     }
 
