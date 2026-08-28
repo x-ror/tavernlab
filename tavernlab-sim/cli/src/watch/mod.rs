@@ -14,6 +14,11 @@
 //! a partial view — the opponent's hand is face down, and a board this could
 //! not read is a board this should not advise on — so showing the position
 //! it built is what makes a wrong read visible instead of silent.
+//!
+//! `--quiet` skips the advice and only writes finished games to the history
+//! file. That is the mode a long-running recorder wants: the mulligan
+//! measurement is a batch of simulations, and a daemon that is only keeping
+//! score should not run one on every turn.
 
 pub mod log;
 pub mod tracker;
@@ -52,26 +57,51 @@ fn default_logs_dir() -> Option<PathBuf> {
 /// picking it would leave the watcher silently waiting on a dead file.
 const MIN_POWER_BYTES: u64 = 4096;
 
-/// The newest session directory that holds a log worth reading.
-fn newest_logs(dir: &Path) -> Option<(PathBuf, Option<PathBuf>)> {
-    let mut best: Option<(std::time::SystemTime, PathBuf, Option<PathBuf>)> = None;
-    for entry in std::fs::read_dir(dir).ok()? {
+/// One session directory, if its Power.log is large enough to be real.
+fn session_entry(path: &Path) -> Option<(std::time::SystemTime, PathBuf, Option<PathBuf>)> {
+    let power = path.join("Power.log");
+    let meta = std::fs::metadata(&power).ok()?;
+    if meta.len() < MIN_POWER_BYTES {
+        return None;
+    }
+    let when = meta.modified().ok()?;
+    let zone = path.join("Zone.log");
+    let zone = zone.exists().then_some(zone);
+    Some((when, power, zone))
+}
+
+/// Every session the client has left on disk, oldest first.
+///
+/// A daemon that only tailed the newest folder would miss the previous
+/// session's last games whenever the client rotated while it was stopped.
+/// Replaying them all is cheap (it is line parsing, not a simulation) and
+/// `history::append` is idempotent, so a session this has already ingested
+/// is a no-op rather than a duplicate.
+fn all_sessions(dir: &Path) -> Vec<(PathBuf, Option<PathBuf>)> {
+    let mut v: Vec<(std::time::SystemTime, PathBuf, Option<PathBuf>)> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    for entry in entries {
         let Ok(entry) = entry else { continue };
-        let power = entry.path().join("Power.log");
-        let Ok(meta) = std::fs::metadata(&power) else {
-            continue;
-        };
-        if meta.len() < MIN_POWER_BYTES {
-            continue;
-        }
-        let Ok(when) = meta.modified() else { continue };
-        let zone = entry.path().join("Zone.log");
-        let zone = zone.exists().then_some(zone);
-        if best.as_ref().is_none_or(|(b, _, _)| when >= *b) {
-            best = Some((when, power, zone));
+        if let Some(s) = session_entry(&entry.path()) {
+            v.push(s);
         }
     }
-    best.map(|(_, p, z)| (p, z))
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v.into_iter().map(|(_, p, z)| (p, z)).collect()
+}
+
+/// The newest session directory that holds a log worth reading.
+fn newest_logs(dir: &Path) -> Option<(PathBuf, Option<PathBuf>)> {
+    all_sessions(dir).pop()
+}
+
+fn files_of(power: PathBuf, zone: Option<PathBuf>) -> Vec<PathBuf> {
+    match zone {
+        Some(z) => vec![power, z],
+        None => vec![power],
+    }
 }
 
 /// Read the new lines of both files into one tracker, in the order the client
@@ -462,6 +492,10 @@ pub struct Args {
     /// which is you.
     pub me: Option<String>,
     pub once: bool,
+    /// Record without printing advice. The mulligan measurement is a batch
+    /// of simulations; a daemon that is only keeping history should not pay
+    /// that on every turn.
+    pub quiet: bool,
 }
 
 /// Print everything the tracker can currently say.
@@ -580,19 +614,19 @@ fn print_side(label: &str, board: &[tracker::Body]) {
 }
 
 pub fn run(app: &App, format: &str, args: Args) -> i32 {
-    let files: Vec<PathBuf> = if let Some(one) = args.log_file.clone() {
-        vec![one]
-    } else {
-        let Some(dir) = args.logs_dir.clone().or_else(default_logs_dir) else {
-            eprintln!(
-                "не знаю, де логи гри. Вкажіть --logs <тека> або змінну HS_LOGS.\n\
-                 Логування вмикається у log.config поруч із теками Logs."
-            );
-            return 2;
-        };
+    if let Some(one) = args.log_file.clone() {
+        return follow(app, format, &args, vec![one], args.once);
+    }
+    let Some(dir) = args.logs_dir.clone().or_else(default_logs_dir) else {
+        eprintln!(
+            "не знаю, де логи гри. Вкажіть --logs <тека> або змінну HS_LOGS.\n\
+             Логування вмикається у log.config поруч із теками Logs."
+        );
+        return 2;
+    };
+    if args.once {
         match newest_logs(&dir) {
-            Some((power, Some(zone))) => vec![power, zone],
-            Some((power, None)) => vec![power],
+            Some((power, zone)) => follow(app, format, &args, files_of(power, zone), true),
             None => {
                 eprintln!(
                     "у {} немає жодного Power.log більшого за {MIN_POWER_BYTES} байт.\n\
@@ -600,11 +634,22 @@ pub fn run(app: &App, format: &str, args: Args) -> i32 {
                      і перезапустіть клієнт.",
                     dir.display()
                 );
-                return 2;
+                2
             }
         }
-    };
+    } else {
+        live(app, format, &args, &dir)
+    }
+}
 
+fn snapshot(tr: &Tracker) -> (u16, bool, usize, usize) {
+    (tr.turn, tr.my_turn, tr.hand.len(), tr.board[1].len())
+}
+
+/// Tail a fixed set of files. `--once` is one pass; otherwise the same
+/// files are polled until the process is stopped. A live directory of
+/// sessions — the way the client actually writes — goes through `live`.
+fn follow(app: &App, format: &str, args: &Args, files: Vec<PathBuf>, once: bool) -> i32 {
     let mut tr = Tracker::new(args.me.clone());
     let mut offsets = Vec::new();
     let first = match replay(&mut tr, &files, &mut offsets) {
@@ -617,14 +662,16 @@ pub fn run(app: &App, format: &str, args: Args) -> i32 {
     // Whatever the log still holds becomes history on the first pass. It is
     // the same work the watcher would do a game at a time; doing it once at
     // the start is what makes pointing this at an old session an import.
-    record(app, format, &args, &first);
-    report(app, format, &tr, &args.deck);
-    if args.once {
+    record(app, format, args, &first);
+    if !args.quiet {
+        report(app, format, &tr, &args.deck);
+    }
+    if once {
         return 0;
     }
 
     println!("\nстежу за логом. Ctrl-C щоб вийти.");
-    let mut last = (tr.turn, tr.my_turn, tr.hand.len(), tr.board[1].len());
+    let mut last = snapshot(&tr);
     loop {
         std::thread::sleep(std::time::Duration::from_millis(700));
         let batch = match replay(&mut tr, &files, &mut offsets) {
@@ -635,8 +682,123 @@ pub fn run(app: &App, format: &str, args: Args) -> i32 {
                 return 2;
             }
         };
-        record(app, format, &args, &batch);
-        let now = (tr.turn, tr.my_turn, tr.hand.len(), tr.board[1].len());
+        record(app, format, args, &batch);
+        if args.quiet {
+            continue;
+        }
+        let now = snapshot(&tr);
+        if now != last {
+            last = now;
+            report(app, format, &tr, &args.deck);
+        }
+    }
+}
+
+fn watching_line(files: &[PathBuf]) -> String {
+    match files.first() {
+        Some(p) => format!("\nстежу за логом ({}). Ctrl-C щоб вийти.", p.display()),
+        None => "\nстежу за логом. Ctrl-C щоб вийти.".into(),
+    }
+}
+
+/// Follow the client's log directory for as long as this process lives.
+///
+/// Three things a one-shot `follow` cannot do, and a recorder has to:
+///
+/// * wait for the first session instead of exiting when the client is
+///   not running yet;
+/// * ingest every session still on disk, so a restart does not drop the
+///   games that finished in the folder the client has just rotated off;
+/// * switch when a newer session appears, because the client starts a
+///   fresh directory each launch and the old Power.log stops growing.
+fn live(app: &App, format: &str, args: &Args, dir: &Path) -> i32 {
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut tr = Tracker::new(args.me.clone());
+    let mut offsets: Vec<u64> = Vec::new();
+    let mut last = (0u16, false, 0usize, 0usize);
+    let mut watching = false;
+
+    for (power, zone) in all_sessions(dir) {
+        let next = files_of(power, zone);
+        tr = Tracker::new(args.me.clone());
+        offsets.clear();
+        match replay(&mut tr, &next, &mut offsets) {
+            Ok(batch) => record(app, format, args, &batch),
+            Err(e) => {
+                eprintln!("{}: {e}", next[0].display());
+                continue;
+            }
+        }
+        files = next;
+        last = snapshot(&tr);
+    }
+    if files.is_empty() {
+        eprintln!(
+            "чекаю на лог у {}. Увімкніть логування в log.config і запустіть клієнт.",
+            dir.display()
+        );
+    } else {
+        if !args.quiet {
+            report(app, format, &tr, &args.deck);
+        }
+        println!("{}", watching_line(&files));
+        watching = true;
+    }
+
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        let Some((power, zone)) = newest_logs(dir) else {
+            if watching {
+                eprintln!("лог зник, чекаю знову в {}.", dir.display());
+                watching = false;
+                files.clear();
+            }
+            continue;
+        };
+        let next = files_of(power, zone);
+        if files.first() != next.first() {
+            // A new session directory, or the first one after waiting.
+            if !files.is_empty() {
+                println!("нова сесія: {}", next[0].display());
+            }
+            tr = Tracker::new(args.me.clone());
+            offsets.clear();
+            files = next;
+            match replay(&mut tr, &files, &mut offsets) {
+                Ok(batch) => {
+                    record(app, format, args, &batch);
+                    if !args.quiet {
+                        report(app, format, &tr, &args.deck);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("не вдалося прочитати лог: {e}");
+                    files.clear();
+                    continue;
+                }
+            }
+            last = snapshot(&tr);
+            if !watching {
+                println!("{}", watching_line(&files));
+                watching = true;
+            }
+            continue;
+        }
+        // Same Power.log; Zone.log may have appeared since.
+        files = next;
+        let batch = match replay(&mut tr, &files, &mut offsets) {
+            Ok(b) if b.lines == 0 => continue,
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("лог зник: {e}");
+                continue;
+            }
+        };
+        record(app, format, args, &batch);
+        if args.quiet {
+            continue;
+        }
+        let now = snapshot(&tr);
         if now != last {
             last = now;
             report(app, format, &tr, &args.deck);
@@ -699,5 +861,67 @@ fn record(app: &App, format: &str, args: &Args, batch: &Batch) {
             path.display()
         ),
         Err(e) => eprintln!("не вдалося записати історію: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "tavernlab-sessions-{}-{tag}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        dir
+    }
+
+    fn write_power(dir: &Path, name: &str, body: &str, min_bytes: bool) {
+        let session = dir.join(name);
+        std::fs::create_dir_all(&session).expect("session");
+        let mut padded = String::new();
+        if min_bytes {
+            while padded.len() < MIN_POWER_BYTES as usize {
+                padded.push_str("D 00:00:00.0 [Power] padding that says nothing\n");
+            }
+        }
+        padded.push_str(body);
+        std::fs::write(session.join("Power.log"), padded).expect("Power.log");
+    }
+
+    #[test]
+    fn a_tiny_power_log_is_not_a_session() {
+        let dir = scratch("tiny");
+        write_power(&dir, "small", "CREATE_GAME\n", false);
+        assert!(newest_logs(&dir).is_none(), "below the verbose-logging floor");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_padded_power_log_is_a_session() {
+        let dir = scratch("padded");
+        write_power(&dir, "real", "CREATE_GAME\n", true);
+        let (power, zone) = newest_logs(&dir).expect("one real session");
+        assert!(power.ends_with("Power.log"), "{}", power.display());
+        assert!(zone.is_none(), "no Zone.log was written");
+        assert_eq!(all_sessions(&dir).len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn all_sessions_skip_the_tiny_one_and_keep_the_real() {
+        let dir = scratch("mixed");
+        write_power(&dir, "noise", "tiny\n", false);
+        write_power(&dir, "real", "CREATE_GAME\n", true);
+        let all = all_sessions(&dir);
+        assert_eq!(all.len(), 1, "the stub is not a session");
+        assert!(
+            all[0].0.parent().unwrap().ends_with("real"),
+            "{}",
+            all[0].0.display()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

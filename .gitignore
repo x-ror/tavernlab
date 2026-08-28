@@ -6,6 +6,7 @@ tavernlab.log
 tavernlab.log.*
 settings.json
 tiers_*.json
+watch.env
 
 # ─── Вхідні дані генератора карткової таблиці ────────────────────────
 # `data/standard_cards.json` і `data/wild_cards.json` — комітяться: це

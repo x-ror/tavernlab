@@ -32,6 +32,16 @@ D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=6 local=False [entityNa
 /// `tag` names the file: the tests run in parallel and two of them pass the
 /// same arguments, so keying the path off those would have them clobber each
 /// other's log.
+/// Isolate the data home so a test cannot pick up the user's deckstring
+/// or write a finished game into the real history file.
+fn home_for(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir()
+        .join(format!("tavernlab-watch-{}", std::process::id()))
+        .join(format!("{tag}-home"));
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 fn run(tag: &str, body: &str, extra: &[&str]) -> String {
     let dir = std::env::temp_dir().join(format!("tavernlab-watch-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
@@ -43,6 +53,9 @@ fn run(tag: &str, body: &str, extra: &[&str]) -> String {
         .arg(&path)
         .arg("--once")
         .args(extra)
+        .env("TAVERNLAB_HOME", home_for(tag))
+        .env_remove("HS_DECK")
+        .env_remove("HS_ME")
         .output()
         .expect("run tavernsim watch");
     String::from_utf8_lossy(&out.stdout).to_string()
@@ -99,6 +112,9 @@ fn a_missing_log_says_so_instead_of_pretending() {
         .arg("--logs")
         .arg(std::env::temp_dir().join("tavernlab-no-such-logs-dir"))
         .arg("--once")
+        .env("TAVERNLAB_HOME", home_for("missing"))
+        .env_remove("HS_DECK")
+        .env_remove("HS_ME")
         .output()
         .expect("run tavernsim watch");
     assert!(!out.status.success());
@@ -157,6 +173,9 @@ D 09:30:02.0000000 [Zone] [entityName=Uther Lightbringer id=71 zone=PLAY zonePos
         .arg("--me")
         .arg("Me#1")
         .arg("--once")
+        .env("TAVERNLAB_HOME", home_for("two-games"))
+        .env_remove("HS_DECK")
+        .env_remove("HS_ME")
         .output()
         .expect("run tavernsim watch");
     let out = String::from_utf8_lossy(&out.stdout).to_string()
@@ -453,5 +472,43 @@ D 09:00:01.2 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=CU
     assert!(
         !out.contains("Fireball → свій герой"),
         "six damage to your own face is never the play: {out}"
+    );
+}
+
+/// `--quiet` is the recorder: finished games go to history, and the
+/// advice — including the mulligan batch — is not printed.
+#[test]
+fn quiet_records_a_finished_game_without_advising() {
+    const OVER: &str = "\
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=12
+D 09:05:00.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=PLAYSTATE value=WON
+";
+    let dir = std::env::temp_dir().join(format!("tavernlab-watch-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("quiet.log");
+    std::fs::write(&path, format!("{LOG}{OVER}")).expect("write the log");
+    let home = home_for("quiet");
+    let out = Command::new(env!("CARGO_BIN_EXE_tavernsim"))
+        .args(["watch", "--log"])
+        .arg(&path)
+        .args(["--me", "Me#1", "--once", "--quiet"])
+        .env("TAVERNLAB_HOME", &home)
+        .env_remove("HS_DECK")
+        .env_remove("HS_ME")
+        .output()
+        .expect("run tavernsim watch --quiet");
+    let out = String::from_utf8_lossy(&out.stdout).to_string()
+        + &String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.contains("записано в історію"),
+        "the finished game is the whole point: {out}"
+    );
+    assert!(
+        !out.contains("МУЛІГАН") && !out.contains("ХІД") && !out.contains("СУПЕРНИК"),
+        "quiet means no advice: {out}"
+    );
+    assert!(
+        home.join("history.sqlite").exists(),
+        "and the file is where the rest of the program will look for it"
     );
 }

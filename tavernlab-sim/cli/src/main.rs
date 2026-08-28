@@ -4,6 +4,8 @@
 //!
 //! ```text
 //! tavernsim serve [port]              the local app: web UI + API
+//! tavernsim watch [opts]              read the game log; --quiet records only
+//! tavernsim history [file]            the games watch has recorded
 //! tavernsim bench [games] [threads]   throughput against a fixed mirror match
 //! tavernsim matrix [games]            every class against every class
 //! tavernsim demo [seed]               one game, turn by turn
@@ -530,6 +532,7 @@ fn watch(args: &[String]) {
         deck: String::new(),
         me: None,
         once: false,
+        quiet: false,
     };
     let mut format = "standard".to_string();
     let mut i = 0;
@@ -561,12 +564,13 @@ fn watch(args: &[String]) {
             }
             "--no-history" => a.history = Some(std::path::PathBuf::new()),
             "--once" => a.once = true,
+            "--quiet" => a.quiet = true,
             other => {
                 eprintln!("unknown option {other:?}");
                 eprintln!(
                     "usage: tavernsim watch [--logs DIR] [--log FILE] \
                      [--me BATTLETAG] [--deck CODE] [--format standard|wild] \
-                     [--history FILE | --no-history] [--once]"
+                     [--history FILE | --no-history] [--once] [--quiet]"
                 );
                 std::process::exit(2);
             }
@@ -578,6 +582,7 @@ fn watch(args: &[String]) {
     // it than a shell profile.
     if a.deck.is_empty()
         && let Ok(code) = std::env::var("HS_DECK")
+        && !code.is_empty()
     {
         a.deck = code;
     }
@@ -591,6 +596,15 @@ fn watch(args: &[String]) {
         std::process::exit(1);
     };
     let app = serve::state::App::new(root, serve::paths::data_home(), default_threads());
+    // The deck the UI is already studying is the one the history should
+    // remember, when nothing was passed on the command line. An empty
+    // settings value is not a deck.
+    if a.deck.is_empty()
+        && let Some(code) = app.settings().get("deckstring")
+        && !code.is_empty()
+    {
+        a.deck = code.clone();
+    }
     std::process::exit(watch_mod::run(&app, &format, a));
 }
 
