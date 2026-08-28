@@ -16,7 +16,7 @@ use crate::events::Event;
 use crate::inline::Inline;
 use crate::rng::Rand;
 use crate::state::{
-    DeckCard, Flags, Game, HandCard, MAX_BOARD, MAX_DECK, MAX_HAND, MAX_MANA, Marks, Outcome,
+    DeckCard, Flags, Game, HandCard, MAX_BOARD, MAX_DECK, MAX_HAND, Marks, Outcome,
     Pending, PendingKind, Permanent, Player, Side, TURN_LIMIT, Target, Weapon,
 };
 
@@ -317,7 +317,7 @@ impl Game {
     pub fn begin_turn(&mut self) {
         let side = self.current;
         let p = self.player_mut(side);
-        if p.crystals < MAX_MANA {
+        if p.crystals < p.crystal_cap() {
             p.crystals += 1;
         }
         p.overload_now = p.overload_next;
@@ -434,7 +434,8 @@ impl Game {
                 }
                 PendingKind::SetMana => {
                     let p = self.player_mut(side);
-                    p.crystals = entry.amount.min(crate::state::MAX_MANA);
+                    let cap = p.crystal_cap();
+                    p.crystals = entry.amount.min(cap);
                     p.mana = p.crystals;
                 }
                 // Queued against the other tick; see `end_turn`.
@@ -1051,14 +1052,20 @@ impl Game {
     pub fn targetable(&self, spell_like: bool) -> impl Iterator<Item = Target> + '_ {
         let me = self.current;
         let foe = me.other();
+        // Your own Locations are offered too, and every spec but
+        // `FriendlyLocation` rejects them on the "is it a minion" guard --
+        // which is why this can widen the candidate set without widening
+        // anything that reads it.
         let mine = self
             .player(me)
             .board
             .iter()
             .enumerate()
             .filter_map(move |(i, m)| {
-                (m.active() && m.is_minion() && !(spell_like && m.has(Keywords::ELUSIVE)))
-                    .then_some(Target::Minion(me, i as u8))
+                (m.active()
+                    && (m.is_minion() || m.kind() == Kind::Location)
+                    && !(spell_like && m.has(Keywords::ELUSIVE)))
+                .then_some(Target::Minion(me, i as u8))
             });
         let theirs = self
             .player(foe)
@@ -1459,7 +1466,9 @@ impl Game {
                     .any(|m| m.card.name() == "Sinestra"))
                 // Morchie, the same way as the Battlecry half above.
                 || (def.keywords.has(Keywords::REWIND)
-                    && self.keeps_both_rewind_outcomes(side)));
+                    && self.keeps_both_rewind_outcomes(side))
+                // A Temporary spell the empowered Well of Eternity made.
+                || hc.marks.has(Marks::CASTS_TWICE));
 
         if let Some(mode) = chosen {
             let ctx = Ctx {
