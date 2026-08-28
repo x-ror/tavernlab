@@ -29,6 +29,10 @@ pub enum Event {
     CurrentPlayer { player_name: String, current: bool },
     /// The game ended for one player.
     Result { player_name: String, won: bool },
+    /// Mulligan is over: `STEP=MAIN_READY`. Turn 1 is set at `CREATE_GAME`,
+    /// so a turn counter is not this — treating it as such made every real
+    /// log skip the opening hand.
+    Started,
     /// A tag changed on one entity -- a minion or a hero, not a player.
     ///
     /// Only the handful of tags the advice actually needs; everything else
@@ -168,6 +172,12 @@ fn tag_change(line: &str) -> Option<(&str, &str, &str)> {
 /// Read one line. `None` for the great majority of them, which say nothing
 /// this needs.
 pub fn parse(line: &str) -> Option<Event> {
+    // PowerTaskList is GameState played back a moment later. Taking both
+    // would CREATE_GAME twice (wiping the opening the first pass just
+    // built) and PLAYSTATE twice (two history rows one second apart).
+    if line.contains("PowerTaskList.") {
+        return None;
+    }
     if line.contains("CREATE_GAME") {
         return Some(Event::NewGame);
     }
@@ -241,7 +251,13 @@ pub fn parse(line: &str) -> Option<Event> {
     // and correct. So: player tags take the name out of whichever shape
     // arrived, entity tags take the id, and each says which it wants.
     match tag {
-        "TURN" => return value.parse().ok().map(Event::Turn),
+        // Only the game's own counter. Players also carry a TURN tag (how
+        // many turns they have taken), and reading those made the tracker
+        // jump to 1 the moment the opponent's mulligan finished.
+        "TURN" if who == "GameEntity" || who == "1" => {
+            return value.parse().ok().map(Event::Turn);
+        }
+        "STEP" if value == "MAIN_READY" => return Some(Event::Started),
         "RESOURCES" => {
             return Some(Event::Resources {
                 player_name: player_name(who)?.to_string(),
@@ -458,6 +474,23 @@ mod tests {
             Some(Event::Turn(11))
         );
         assert_eq!(
+            parse("D [Power] GameState.DebugPrintPower() -     TAG_CHANGE Entity=1 tag=TURN value=1"),
+            Some(Event::Turn(1)),
+            "GameEntity is entity 1; the CREATE_GAME dump names it that way"
+        );
+        assert_eq!(
+            parse("D [Power] TAG_CHANGE Entity=xror#21652 tag=TURN value=1"),
+            None,
+            "a player's own turn count is not the game's"
+        );
+        assert_eq!(
+            parse(
+                "D [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity \
+                 tag=STEP value=MAIN_READY"
+            ),
+            Some(Event::Started)
+        );
+        assert_eq!(
             parse("D [Power] TAG_CHANGE Entity=Player#12345 tag=PLAYSTATE value=WON"),
             Some(Event::Result {
                 player_name: "Player#12345".into(),
@@ -507,5 +540,32 @@ mod tests {
         assert_eq!(parse("D [Power] CREATE_GAME"), Some(Event::NewGame));
         assert_eq!(parse("D [Power] BLOCK_START BlockType=PLAY"), None);
         assert_eq!(parse(""), None);
+    }
+
+    #[test]
+    fn powertasklist_is_the_same_game_played_back_and_is_not_read_twice() {
+        assert_eq!(
+            parse(
+                "D 22:16:06.5689958 PowerTaskList.DebugPrintPower() -     CREATE_GAME"
+            ),
+            None
+        );
+        assert_eq!(
+            parse(
+                "D 22:22:20.0049768 PowerTaskList.DebugPrintPower() -     \
+                 TAG_CHANGE Entity=xror#21652 tag=PLAYSTATE value=WON"
+            ),
+            None
+        );
+        assert_eq!(
+            parse(
+                "D 22:22:19.2393682 GameState.DebugPrintPower() - \
+                 TAG_CHANGE Entity=xror#21652 tag=PLAYSTATE value=WON"
+            ),
+            Some(Event::Result {
+                player_name: "xror#21652".into(),
+                won: true
+            })
+        );
     }
 }

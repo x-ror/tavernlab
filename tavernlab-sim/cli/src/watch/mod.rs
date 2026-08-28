@@ -816,19 +816,27 @@ fn live(app: &App, format: &str, args: &Args, dir: &Path) -> i32 {
 
 /// Turn one finished game into the row the history keeps.
 fn recorded(app: &App, format: &str, deck: &str, at: i64, tr: &Tracker) -> Option<history::Game> {
-    let (mine, theirs) = (tr.my_class()?, tr.opponent_class()?);
+    let mine = tr.my_class().map(class_name).unwrap_or("");
+    let theirs = tr.opponent_class().map(class_name).unwrap_or("");
+    // A finished game with no classes at all is a log we could not attribute
+    // — still a game, still recorded, rather than a silent hole in the file.
+    if mine.is_empty() && theirs.is_empty() {
+        eprintln!("бій завершився, але класи ще не видно — записую як є");
+    }
     // The best read at the moment the game ended, and the count behind it.
     // Empty when nothing matched: a deck name with no evidence is exactly
     // what the report refuses to print, and the history keeps the same rule.
     let seen: Vec<CardId> = tr.played[1].clone();
-    let field = app.gauntlet(format);
-    let best = tavernlab_core::gauntlet::read_opponent(&field, theirs, &seen)
-        .into_iter()
-        .find(|r| r.hits > 0);
+    let best = tr.opponent_class().and_then(|class| {
+        let field = app.gauntlet(format);
+        tavernlab_core::gauntlet::read_opponent(&field, class, &seen)
+            .into_iter()
+            .find(|r| r.hits > 0)
+    });
     Some(history::Game {
         played_at: at,
-        my_class: class_name(mine).to_string(),
-        opponent_class: class_name(theirs).to_string(),
+        my_class: mine.to_string(),
+        opponent_class: theirs.to_string(),
         won: tr.won,
         turns: tr.turn as i64,
         coin: tr.had_coin(),

@@ -120,10 +120,48 @@ impl Game {
     /// session twice -- which happens every time the watcher starts against a
     /// log it has already seen -- must not double the history, and there is no
     /// game id in the log to key on.
+    ///
+    /// A two-second window, not exact equality: GameState and PowerTaskList
+    /// write the same PLAYSTATE a beat apart, and a restart whose file mtime
+    /// moved by a second would otherwise insert a twin. Two real games of the
+    /// same pairing cannot finish that close.
     fn same_as(&self, other: &Game) -> bool {
-        self.played_at == other.played_at
-            && self.my_class == other.my_class
+        self.my_class == other.my_class
             && self.opponent_class == other.opponent_class
+            && (self.played_at - other.played_at).abs() <= 2
+    }
+
+    /// Copy fields the earlier write left empty. Returns whether anything changed.
+    ///
+    /// A first pass against a log that set TURN=1 at CREATE_GAME stored every
+    /// game with a blank opening. Re-reading the same log, once that is fixed,
+    /// has to fill the hole rather than skip the row as "already there".
+    fn fill_from(&mut self, other: &Game) -> bool {
+        let mut changed = false;
+        if self.opening.is_empty() && !other.opening.is_empty() {
+            self.opening = other.opening.clone();
+            changed = true;
+        }
+        if self.coin.is_none() && other.coin.is_some() {
+            self.coin = other.coin;
+            changed = true;
+        }
+        if self.won.is_none() && other.won.is_some() {
+            self.won = other.won;
+            changed = true;
+        }
+        if self.opponent_cards.is_empty() && !other.opponent_cards.is_empty() {
+            self.opponent_cards = other.opponent_cards.clone();
+            self.opponent_deck = other.opponent_deck.clone();
+            self.opponent_hits = other.opponent_hits;
+            self.opponent_seen = other.opponent_seen;
+            changed = true;
+        }
+        if self.turns == 0 && other.turns > 0 {
+            self.turns = other.turns;
+            changed = true;
+        }
+        changed
     }
 }
 
@@ -157,11 +195,13 @@ pub fn read(path: &Path) -> Result<Vec<Game>, String> {
     Ok(out)
 }
 
-/// Add games that are not already recorded, and return how many were added.
+/// Add games that are not already recorded, and return how many rows changed.
 ///
 /// Idempotent on purpose: the watcher replays whatever the log still holds
 /// every time it starts, so "append" has to mean "make sure these are in
-/// there" or a week of restarts would be a week of duplicates.
+/// there" or a week of restarts would be a week of duplicates. A later read
+/// that can see an opening the first one missed updates the row rather than
+/// skipping it.
 pub fn append(path: &Path, games: &[Game]) -> Result<usize, String> {
     if games.is_empty() {
         return Ok(0);
@@ -174,20 +214,47 @@ pub fn append(path: &Path, games: &[Game]) -> Result<usize, String> {
 
     let table = db.ensure("games", SCHEMA);
     let mut added = 0;
+    let mut changed = 0;
     let mut seen = existing;
     for game in games {
-        if seen.iter().any(|g| g.same_as(game)) {
+        let hits: Vec<usize> = seen
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.same_as(game))
+            .map(|(i, _)| i)
+            .collect();
+        if hits.is_empty() {
+            table.push(game.to_values());
+            seen.push(game.clone());
+            added += 1;
             continue;
         }
-        table.push(game.to_values());
-        seen.push(game.clone());
-        added += 1;
+        // Keep the row that already has an opening, else the earlier stamp
+        // (GameState, not the PowerTaskList echo a second later).
+        let keep = *hits
+            .iter()
+            .min_by_key(|&&i| (seen[i].opening.is_empty(), seen[i].played_at))
+            .expect("hits is not empty");
+        if seen[keep].fill_from(game) {
+            let rowid = table.rows[keep].rowid;
+            let mut vals = seen[keep].to_values();
+            vals[0] = Value::Int(rowid);
+            table.rows[keep].values = vals;
+            changed += 1;
+        }
+        let mut extras: Vec<usize> = hits.into_iter().filter(|&i| i != keep).collect();
+        extras.sort_unstable_by(|a, b| b.cmp(a));
+        for i in extras {
+            table.rows.remove(i);
+            seen.remove(i);
+            changed += 1;
+        }
     }
-    if added == 0 {
+    if added == 0 && changed == 0 {
         return Ok(0);
     }
     tavernlab_sqlite::save(&db, path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(added)
+    Ok(added + changed)
 }
 
 // ------------------------------------------------------------------ summary
@@ -330,6 +397,32 @@ mod tests {
         assert_eq!(few.rate(), None, "four wins is four wins, not 100%");
         let enough = Tally { key: "WARLOCK".into(), games: 5, wins: 4 };
         assert_eq!(enough.rate(), Some(0.8));
+    }
+
+    #[test]
+    fn a_one_second_echo_is_the_same_game() {
+        let path = scratch("echo.sqlite");
+        let a = game(1_700_000_000, "ROGUE", Some(true));
+        let mut b = a.clone();
+        b.played_at += 1;
+        assert_eq!(append(&path, &[a.clone()]).expect("first"), 1);
+        assert_eq!(append(&path, &[b]).expect("echo"), 0, "not a second game");
+        assert_eq!(read(&path).expect("read"), vec![a]);
+    }
+
+    #[test]
+    fn a_later_read_fills_the_opening_the_first_pass_missed() {
+        let path = scratch("fill.sqlite");
+        let mut blank = game(1_700_000_000, "ROGUE", Some(true));
+        blank.opening.clear();
+        blank.coin = None;
+        assert_eq!(append(&path, std::slice::from_ref(&blank)).expect("blank"), 1);
+        let full = game(1_700_000_000, "ROGUE", Some(true));
+        assert_eq!(append(&path, std::slice::from_ref(&full)).expect("fill"), 1);
+        let got = read(&path).expect("read");
+        assert_eq!(got.len(), 1, "still one row");
+        assert_eq!(got[0].opening, full.opening);
+        assert_eq!(got[0].coin, Some(true));
     }
 
     #[test]

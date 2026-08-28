@@ -122,12 +122,28 @@ export default function History() {
 
   useEffect(() => {
     let live = true
-    api
-      .get('/api/history')
-      .then((d) => live && setData(d))
-      .catch((e) => live && setError(e.message))
+    let got = false
+    const load = () =>
+      api
+        .get('/api/history')
+        .then((d) => {
+          if (!live) return
+          got = true
+          setError(null)
+          setData(d)
+        })
+        .catch((e) => {
+          if (!live) return
+          // A later poll failing must not blank a record already on screen:
+          // the watcher writes this file while we read it, and a blip is
+          // not "your games are gone".
+          if (!got) setError(e.message)
+        })
+    load()
+    const id = setInterval(load, 2500)
     return () => {
       live = false
+      clearInterval(id)
     }
   }, [])
 

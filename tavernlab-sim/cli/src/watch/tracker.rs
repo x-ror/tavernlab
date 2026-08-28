@@ -197,6 +197,10 @@ pub struct Tracker {
     /// resolved, and on one where `--me` was never supplied.
     pub won: Option<bool>,
     /// True once the mulligan is done and the game proper has started.
+    ///
+    /// Driven by `STEP=MAIN_READY`, not by the turn counter: a real log sets
+    /// `TURN=1` inside `CREATE_GAME`, before any card is dealt, and treating
+    /// that as "started" left every recorded game with an empty opening.
     pub started: bool,
 }
 
@@ -271,11 +275,16 @@ impl Tracker {
         match ev {
             Event::NewGame => *self = Tracker::new(self.me_name.clone()),
             Event::Turn(t) => {
-                if t > 0 {
+                self.turn = t;
+                // Turn 1 is written at CREATE_GAME, before the opening is
+                // dealt. Turn 2 means someone has already taken a turn, so
+                // the mulligan is over even if MAIN_READY was never seen
+                // (synthetic logs, a truncated file).
+                if t > 1 {
                     self.started = true;
                 }
-                self.turn = t;
             }
+            Event::Started => self.started = true,
             Event::Result { player_name, won } => {
                 self.note_name(&player_name);
                 // The line names one player. Mine says it straight; theirs
@@ -503,12 +512,24 @@ mod tests {
         feed(&mut t, &[
             "[Zone] [entityName=Wisp id=1 zone=DECK zonePos=0 cardId=CS2_231 \
              player=1] zone from FRIENDLY DECK -> FRIENDLY HAND",
-            "D [Power] TAG_CHANGE Entity=GameEntity tag=TURN value=1",
+            "D [Power] GameState.DebugPrintPower() -     TAG_CHANGE Entity=1 tag=TURN value=1",
+            "[Zone] [entityName=The Coin id=3 zone=DECK zonePos=0 cardId=GAME_005 \
+             player=1] zone from  -> FRIENDLY HAND",
+            "D [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity \
+             tag=STEP value=MAIN_READY",
             "[Zone] [entityName=Fireball id=2 zone=DECK zonePos=0 cardId=CS2_029 \
              player=1] zone from FRIENDLY DECK -> FRIENDLY HAND",
         ]);
-        assert_eq!(t.opening.len(), 1, "only what was dealt before turn one");
-        assert_eq!(t.hand.len(), 2, "but the hand keeps up");
+        assert_eq!(
+            t.opening.len(),
+            2,
+            "TURN=1 is set at CREATE_GAME, before any card is dealt; \
+             the opening is everything until MAIN_READY"
+        );
+        assert_eq!(t.opening[1].name(), "The Coin");
+        assert_eq!(t.had_coin(), Some(true));
+        assert_eq!(t.hand.len(), 3, "but the hand keeps up after mulligan");
+        assert!(t.started);
     }
 
     #[test]

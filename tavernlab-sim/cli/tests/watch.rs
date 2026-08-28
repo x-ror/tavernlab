@@ -362,6 +362,7 @@ fn a_coin_with_nothing_after_it_is_not_suggested() {
 D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES value=0
 D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES_USED value=0
 D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=1
+D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=STEP value=MAIN_READY
 D 09:00:04.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=CURRENT_PLAYER value=1
 D 09:00:04.2 [Zone] ZoneChangeList.ProcessChanges() - id=8 local=False [entityName=The Coin id=33 zone=DECK zonePos=0 cardId=GAME_005 player=1] zone from  -> FRIENDLY HAND
 ";
@@ -474,6 +475,76 @@ D 09:00:01.2 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=CU
     assert!(
         !out.contains("Fireball → свій герой"),
         "six damage to your own face is never the play: {out}"
+    );
+}
+
+/// A real Power.log writes CREATE_GAME and PLAYSTATE twice — GameState,
+/// then PowerTaskList a moment later — and sets TURN=1 before any card
+/// is dealt. Taking both copies doubled the history; taking TURN=1 as
+/// "the game has started" left every row with an empty opening.
+#[test]
+fn a_real_shaped_log_records_one_game_with_its_opening() {
+    const BODY: &str = "\
+D 22:16:06.5689958 GameState.DebugPrintPower() - CREATE_GAME
+D 22:16:06.5689958 GameState.DebugPrintPower() -     TAG_CHANGE Entity=1 tag=TURN value=1
+D 22:16:06.5689958 PowerTaskList.DebugPrintPower() -     CREATE_GAME
+D 22:16:08.6500861 ZoneChangeList.ProcessChanges() - id=1 local=False [entityName=Jaina Proudmoore id=64 zone=PLAY zonePos=0 cardId=HERO_08 player=1] zone from  -> FRIENDLY PLAY (Hero)
+D 22:16:08.7487601 ZoneChangeList.ProcessChanges() - id=1 local=False [entityName=Garrosh Hellscream id=66 zone=PLAY zonePos=0 cardId=HERO_01 player=2] zone from  -> OPPOSING PLAY (Hero)
+D 22:16:09.8666320 ZoneChangeList.ProcessChanges() - id=2 local=False [entityName=Chillwind Yeti id=30 zone=HAND zonePos=0 cardId=CS2_182 player=1] zone from FRIENDLY DECK -> FRIENDLY HAND
+D 22:16:10.0999193 ZoneChangeList.ProcessChanges() - id=2 local=False [entityName=The Coin id=68 zone=HAND zonePos=5 cardId=GAME_005 player=1] zone from  -> FRIENDLY HAND
+D 22:16:40.9516948 GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=STEP value=MAIN_READY
+D 22:16:42.2228160 ZoneChangeList.ProcessChanges() - id=4 local=False [entityName=Fireball id=25 zone=HAND zonePos=0 cardId=CS2_029 player=1] zone from FRIENDLY DECK -> FRIENDLY HAND
+D 22:22:19.2393682 GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=PLAYSTATE value=WON
+D 22:22:20.0049768 PowerTaskList.DebugPrintPower() -     TAG_CHANGE Entity=Me#1 tag=PLAYSTATE value=WON
+";
+    let dir = std::env::temp_dir().join(format!("tavernlab-watch-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("real-shaped.log");
+    std::fs::write(&path, BODY).expect("write the log");
+    let home = home_for("real-shaped");
+    let out = Command::new(env!("CARGO_BIN_EXE_tavernsim"))
+        .args(["watch", "--log"])
+        .arg(&path)
+        .args(["--me", "Me#1", "--once", "--quiet"])
+        .env("TAVERNLAB_HOME", &home)
+        .env_remove("HS_DECK")
+        .env_remove("HS_ME")
+        .output()
+        .expect("run tavernsim watch --quiet");
+    let out = String::from_utf8_lossy(&out.stdout).to_string()
+        + &String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.contains("записано в історію: 1 "),
+        "PowerTaskList is an echo, not a second game: {out}"
+    );
+
+    let hist = Command::new(env!("CARGO_BIN_EXE_tavernsim"))
+        .arg("history")
+        .env("TAVERNLAB_HOME", &home)
+        .output()
+        .expect("read the history back");
+    let hist = String::from_utf8_lossy(&hist.stdout).to_string();
+    assert!(hist.contains("1 бій"), "one row, not two: {hist}");
+    assert!(hist.contains("MAGE"), "{hist}");
+    assert!(hist.contains("WARRIOR"), "{hist}");
+
+    // Opening is in the sqlite file even if the CLI summary does not print
+    // the cards. sqlite3 would, and so does a second watch against the same
+    // log: zero new rows, because the game is already there.
+    let again = Command::new(env!("CARGO_BIN_EXE_tavernsim"))
+        .args(["watch", "--log"])
+        .arg(&path)
+        .args(["--me", "Me#1", "--once", "--quiet"])
+        .env("TAVERNLAB_HOME", &home)
+        .env_remove("HS_DECK")
+        .env_remove("HS_ME")
+        .output()
+        .expect("watch the same log again");
+    let again = String::from_utf8_lossy(&again.stdout).to_string()
+        + &String::from_utf8_lossy(&again.stderr);
+    assert!(
+        !again.contains("записано в історію"),
+        "re-reading must not double it: {again}"
     );
 }
 
