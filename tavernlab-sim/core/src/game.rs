@@ -470,6 +470,12 @@ impl Game {
         p.hero_bonus_atk = 0;
         p.played_races_last = p.played_races_turn;
         p.played_races_turn = Races::NONE;
+        // Kindred on a spell asks about the school, the way it asks a minion
+        // about its tribe, so the schools roll over on the same boundary.
+        p.schools_cast_last = p.schools_cast_turn;
+        // Ruby Sanctum's charge is printed "this turn", and an unspent one
+        // does not carry over.
+        p.heal_as_damage = false;
         p.next_spell_discount = 0;
         p.next_beast_discount = 0;
         // "Enemy minions cost (2) more next turn": the turn it taxed is over.
@@ -1512,18 +1518,33 @@ impl Game {
             let mut joined = None;
             for i in 0..hand.len().saturating_sub(1) {
                 if let Some(whole) = crate::cards::recombines(hand[i].card, hand[i + 1].card) {
-                    joined = Some((i, whole));
+                    joined = Some((i, i + 1, whole));
                     break;
                 }
             }
-            let Some((at, whole)) = joined else { return };
+            // A pair that combines wherever it is held, rather than only side
+            // by side -- Sol'etos, whose two halves arrive turns apart. See
+            // `cards::COMBINES`.
+            if joined.is_none() {
+                'outer: for i in 0..hand.len() {
+                    for j in i + 1..hand.len() {
+                        if let Some(whole) = crate::cards::combines(hand[i].card, hand[j].card) {
+                            joined = Some((i, j, whole));
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+            let Some((at, other, whole)) = joined else {
+                return;
+            };
             let p = self.player_mut(side);
             // The halves carry their own enchantments; the card they make
             // keeps the left one's, which is where the buff that hit "cards
             // in your hand" landed first.
             let mut kept = p.hand[at];
             kept.card = whole;
-            p.hand.remove(at + 1);
+            p.hand.remove(other);
             p.hand[at] = kept;
             self.refresh_conditionals();
         }
@@ -1931,6 +1952,10 @@ impl Game {
     }
 
     pub fn heal_hero(&mut self, side: Side, amount: i16) {
+        if amount > 0 && self.take_heal_charge() {
+            self.damage_hero(side, amount);
+            return;
+        }
         let p = self.player_mut(side);
         let before = p.hero_hp;
         // The ceiling is the starting total, except for a hero already above
@@ -1952,6 +1977,25 @@ impl Game {
         }
     }
 
+    /// Spend Ruby Sanctum's charge, if the player now acting is holding one.
+    ///
+    /// "Your next Healing effect this turn deals damage instead": one effect,
+    /// not one point, so the whole call is turned round and a heal of four
+    /// deals four. Whose effect it is is read as whose turn it is, which the
+    /// engine does know -- healing arrives here from a spell, a battlecry or
+    /// a trigger, none of which carries a caster this far down. That is exact
+    /// for every heal the card is played to convert, and wrong only for an
+    /// opposing trigger that heals during your own turn, which would spend
+    /// the charge early.
+    fn take_heal_charge(&mut self) -> bool {
+        let side = self.current;
+        if !self.player(side).heal_as_damage {
+            return false;
+        }
+        self.player_mut(side).heal_as_damage = false;
+        true
+    }
+
     pub fn heal(&mut self, target: Target, amount: i16) {
         if amount <= 0 {
             return;
@@ -1959,6 +2003,10 @@ impl Game {
         match target {
             Target::Hero(s) => self.heal_hero(s, amount),
             Target::Minion(s, i) => {
+                if self.take_heal_charge() {
+                    self.deal_damage(target, amount);
+                    return;
+                }
                 let Some(m) = self.player_mut(s).board.get_mut(i as usize) else {
                     return;
                 };
@@ -2052,7 +2100,13 @@ impl Game {
                     let p = self.player_mut(side);
                     p.deaths = p.deaths.saturating_add(1);
                     p.friendly_deaths_turn = p.friendly_deaths_turn.saturating_add(1);
-                    p.graveyard.push(card);
+                    let at = p.graveyard.len();
+                    if p.graveyard.push(card) && body.flags.has(Flags::CAME_BACK) {
+                        // The slot this body just took, so Raith Van Geist can
+                        // pick it out of the pool later. A graveyard already at
+                        // its cap records neither the body nor the bit.
+                        p.reborn_dead |= 1 << at;
+                    }
                 }
             }
 
@@ -2123,14 +2177,34 @@ impl Game {
                 }
                 let mut back = Permanent::summon(card);
                 back.keywords.remove(Keywords::REBORN);
-                // Persisting Horror brings it back whole; everything else
-                // comes back at one Health.
-                back.damage = if body.flags.has(Flags::REBORN_FULL) {
-                    back.flags.insert(Flags::REBORN_FULL);
-                    0
+                // What Raith Van Geist reads when this copy dies in turn: the
+                // returning body is otherwise indistinguishable from one that
+                // was played, since Reborn has just been stripped off it.
+                back.flags.insert(Flags::CAME_BACK);
+                // "This is Reborn with full Health and enchantments" (Sinful
+                // Steed): the permanent buffs and the granted keywords come
+                // back with the body. Aura stats and temporary Attack are
+                // deliberately left behind -- both are recomputed from what is
+                // on the board now, and folding them in would make a borrowed
+                // number permanent.
+                if crate::cards::reborn_keeps_enchantments(card) {
+                    back.atk = body.atk - body.aura_atk - body.temp_atk;
+                    back.max_hp = body.max_hp - body.aura_hp;
+                    back.keywords = body.keywords;
+                    back.keywords.remove(Keywords::REBORN);
+                    back.granted_rattle = body.granted_rattle;
+                    back.spell_damage = body.spell_damage;
+                    back.damage = 0;
                 } else {
-                    (back.max_hp - 1).max(0)
-                };
+                    // Persisting Horror brings it back whole; everything else
+                    // comes back at one Health.
+                    back.damage = if body.flags.has(Flags::REBORN_FULL) {
+                        back.flags.insert(Flags::REBORN_FULL);
+                        0
+                    } else {
+                        (back.max_hp - 1).max(0)
+                    };
+                }
                 let p = self.player_mut(side);
                 p.board.push(back);
                 let slot = p.board.len() as u8 - 1;

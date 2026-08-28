@@ -408,6 +408,19 @@ mod tokens {
     pub const EBONSCALE_SCOUT_AWAKE: CardId = token("CATA_552t");
     pub const EBYSSIAN: CardId = token("CATA_553");
     pub const EBYSSIAN_AWAKE: CardId = token("CATA_553t");
+    /// Schism, and the two halves it shatters into. Both halves are printed
+    /// under the parent's own name, which is why they need ids here at all:
+    /// the behaviour table is keyed by name, so all three would otherwise be
+    /// one row.
+    pub const SCHISM: CardId = token("CATA_306");
+    pub const SCHISM_BUFF: CardId = token("CATA_306t1");
+    pub const SCHISM_COPY: CardId = token("CATA_306t2");
+    /// Reach Equilibrium's two rewards, and the minion they combine into.
+    pub const SOLETOS_LIFE: CardId = token("TLC_817t3");
+    pub const SOLETOS_DEATH: CardId = token("TLC_817t4");
+    pub const SOLETOS_WHOLE: CardId = token("TLC_817t5");
+    /// Slime 'em!'s payout, one for each player.
+    pub const ECTOPLASM: CardId = token("127118-ectoplasm");
     /// Supply Run, and the two halves it shatters into.
     pub const SUPPLY_RUN: CardId = token("CATA_820");
     pub const SUPPLY_RUN_DRAW: CardId = token("CATA_820t");
@@ -9140,6 +9153,217 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         Some(|g, side, _i| -(g.player(side).cards_played_not_from_deck as i16)),
         None,
     ),
+
+    // ------------------------------------------------------------ the cycle
+    // Priest's Quest package. One Quest that is really two, the two halves of
+    // one Elemental it pays out, a board wipe that hands both players the
+    // undo, and the minion that reads the whole game's Reborns back off the
+    // graveyard.
+
+    // "Quest: Cast 4 Holy spells Reward: Life's Breath. Quest: Cast 4 Shadow
+    // spells. Reward: Death's Touch." Two counts in one Quest slot, four bits
+    // each: Holy in the low nibble, Shadow in the high one. Neither reward
+    // ends the Quest on its own -- the slot is only given up once both have
+    // been paid, which is what lets one card carry two.
+    trigger("Reach Equilibrium", |g, ctx| {
+        let Event::CardPlayed { side, card } = ctx.event else {
+            return;
+        };
+        if side != ctx.side || card.def().kind() != super::Kind::Spell {
+            return;
+        }
+        let Some((qcard, progress)) = g.player(ctx.side).quest else {
+            return;
+        };
+        let (holy, shadow) = (progress & 0xf, progress >> 4);
+        let (mut holy, mut shadow) = (holy, shadow);
+        match card.def().school() {
+            super::School::Holy if holy < 4 => {
+                holy += 1;
+                if holy == 4 {
+                    g.give_token(ctx.side, tokens::SOLETOS_LIFE);
+                }
+            }
+            super::School::Shadow if shadow < 4 => {
+                shadow += 1;
+                if shadow == 4 {
+                    g.give_token(ctx.side, tokens::SOLETOS_DEATH);
+                }
+            }
+            _ => return,
+        }
+        g.player_mut(ctx.side).quest = if holy == 4 && shadow == 4 {
+            None
+        } else {
+            Some((qcard, holy | (shadow << 4)))
+        };
+    }),
+
+    // The two halves of Sol'etos. Each is a 4/4 for (5) with its own half of
+    // the whole card's text; holding both combines them, which `COMBINES`
+    // does as the second one arrives. The combined 8/8 keeps both hooks, so
+    // all three forms are three rows here rather than one branching row --
+    // unlike Schism below, the three carry three different names.
+    battlecry("Sol'etos, Life's Breath", T::None, |g, c| {
+        g.summon_token(c.side, c.card, 1);
+    }),
+    deathrattle("Sol'etos, Death's Touch", |g, c| {
+        if let Some(t) = g.random_enemy(c.side) {
+            g.deal_damage(t, 5);
+        }
+    }),
+    c(
+        "Sol'etos, Cycle's Rebirth",
+        T::None,
+        None,
+        Some(|g, c| {
+            g.summon_token(c.side, c.card, 1);
+        }),
+        Some(|g, c| {
+            if let Some(t) = g.random_enemy(c.side) {
+                g.deal_damage(t, 5);
+            }
+        }),
+        None, None, None, None, None, None,
+    ),
+
+    // "Destroy all minions. Each player gets a 3-Cost spell that resummons
+    // theirs." The wipe goes through the ordinary death path, so deathrattles
+    // fire and the bodies land in each player's graveyard; the slice they
+    // landed in is what each Ectoplasm reads back.
+    spell("Slime 'em!", T::None, |g, c| {
+        let before = [
+            g.player(Side::from_index(0)).graveyard.len(),
+            g.player(Side::from_index(1)).graveyard.len(),
+        ];
+        g.destroy_area_where(c.side, Area::AllMinions, |_| true);
+        // `destroy` only marks; the bodies reach the graveyard on the sweep,
+        // and the slice cannot be read before they are in it. Sweeping here
+        // also puts the wipe's deathrattles before the two Ectoplasms, which
+        // is the order the card reads in.
+        g.sweep_deaths();
+        for (i, was) in before.into_iter().enumerate() {
+            let side = Side::from_index(i);
+            let grew = g.player(side).graveyard.len() - was;
+            if grew > 0 {
+                g.player_mut(side).set_slimed(was, grew);
+            }
+            g.give_token(side, tokens::ECTOPLASM);
+        }
+    }),
+
+    // "Resummon all friendly minions that were slimed." The slice is spent as
+    // it is read: a second Ectoplasm resummons nothing unless another Slime
+    // 'em! has been cast since.
+    spell("Ectoplasm", T::None, |g, c| {
+        let (at, len) = g.player(c.side).slimed_slice();
+        g.player_mut(c.side).slimed = 0;
+        for i in at..at + len {
+            let Some(card) = g.player(c.side).graveyard.get(i).copied() else {
+                break;
+            };
+            if !g.summon(c.side, card) {
+                break;
+            }
+        }
+    }),
+
+    // "Battlecry: Resurrect your minions that were Reborn this game. They
+    // attack random enemy minions." The pool is the graveyard slots marked
+    // when a body that had come back through Reborn died again -- see
+    // `Player::reborn_dead`. Every one of them, not a pick: the card says
+    // "your minions", plural and unqualified.
+    battlecry("Raith Van Geist", T::None, |g, c| {
+        let marks = g.player(c.side).reborn_dead;
+        let mut brought: Inline<u8, MAX_BOARD> = Inline::new();
+        for i in 0..g.player(c.side).graveyard.len() {
+            if marks & (1 << i) == 0 {
+                continue;
+            }
+            let card = g.player(c.side).graveyard[i];
+            if !g.summon(c.side, card) {
+                break;
+            }
+            brought.push(g.player(c.side).board.len() as u8 - 1);
+        }
+        // "They attack random enemy minions" -- the minion only, never the
+        // hero, and only while there is one left to hit. Slots are re-read
+        // through the card each swing, since a death in the middle shifts
+        // the board under the ones still to go.
+        for slot in brought.iter().copied() {
+            let Some(m) = g.player(c.side).board.get(slot as usize) else {
+                break;
+            };
+            if !m.active() || !m.is_minion() {
+                continue;
+            }
+            let Some(t) = g.random_minion(c.side.other()) else {
+                break;
+            };
+            g.forced_attack((c.side, slot), t);
+            g.sweep_deaths();
+            if g.is_over() {
+                return;
+            }
+        }
+    }),
+
+    // "Deathrattle: Get three 1/1 copies of random Legendary minions. They
+    // cost (1)." Stats and cost are set by delta on the hand card, so the
+    // numbers stay the card's own: whatever the Legendary printed, what
+    // arrives is a 1/1 for (1).
+    deathrattle("Karov the Broken", |g, c| {
+        for _ in 0..3 {
+            if !g.add_random_to_hand_where(c.side, |d| {
+                d.kind() == super::Kind::Minion && d.rarity() == super::Rarity::Legendary
+            }) {
+                break;
+            }
+            let p = g.player_mut(c.side);
+            let Some(hc) = p.hand.last_mut() else { break };
+            let d = hc.card.def();
+            hc.atk = (1 - d.atk).clamp(-128, 127) as i8;
+            hc.hp = (1 - d.hp).clamp(-128, 127) as i8;
+            hc.cost_delta = 1 - d.cost;
+        }
+    }),
+
+    // "Draw 2 cards. Kindred: This costs (2) less." Kindred on a spell asks
+    // about the spell school rather than a tribe, and this one is Holy.
+    c(
+        "Gravedawn Sunbloom",
+        T::None,
+        Some(|g, c| g.draw_cards(c.side, 2)),
+        None, None, None, None, None, None,
+        Some(|g, side, _i| {
+            if g.player(side).schools_cast_last & (1 << (super::School::Holy as u8)) != 0 {
+                -2
+            } else {
+                0
+            }
+        }),
+        None,
+    ),
+
+    // A Location. "Your next Healing effect this turn deals damage instead"
+    // is a charge on the player, spent by the next heal -- see
+    // `Game::take_heal_charge`.
+    spell("Ruby Sanctum", T::None, |g, c| {
+        g.player_mut(c.side).heal_as_damage = true;
+    }),
+
+    // Shatter, like Supply Run above: whole or half, and all three forms are
+    // printed under the one name "Schism", so one row branches on `c.card`.
+    spell("Schism", T::FriendlyMinion, |g, c| {
+        let Some(t) = c.target else { return };
+        if c.card != tokens::SCHISM_COPY {
+            g.buff(t, 2, 3);
+            g.grant(t, Keywords::ELUSIVE);
+        }
+        if c.card != tokens::SCHISM_BUFF {
+            g.summon_copy_of(c.side, t);
+        }
+    }),
 ];
 
 /// Cards implemented only in part, with what is missing.
@@ -9154,6 +9378,14 @@ pub static BEHAVIOURS: &[Behaviour] = &[
 /// coverage figure that mixes exact and approximate cards is worse than a
 /// smaller honest one.
 pub const APPROXIMATE: &[(&str, &str)] = &[
+    (
+        "Ruby Sanctum",
+        "whose Healing effect it is is read as whose turn it is, since a heal reaches the engine with no caster attached -- so an opposing trigger that heals during your own turn spends the charge early; and the charge catches only a heal that goes through `Game::heal`, so \"Restore a minion to full Health\" is not turned round at all and a split heal loses one point of its total rather than all of it",
+    ),
+    (
+        "Slime 'em!",
+        "the slimed bodies are named by their slice of the graveyard rather than copied out, so a wipe whose deaths run past the graveyard's thirty-two slots resummons only what fitted, and a second Slime 'em! cast before the first Ectoplasm was spent overwrites the slice the unspent one was holding",
+    ),
     (
         "Deathwing, Worldbreaker",
         "the Cataclysms are picked by a crude board heuristic rather than by the player -- the same limit Discover has, since an effect is resolved without reaching a policy",
@@ -9590,11 +9822,60 @@ pub fn awakened_by_dragon(card: CardId) -> Option<CardId> {
 /// halves keep the parent's full cost, which is what makes splitting a cost
 /// and recombining the reward -- and both costs are the corpus's, not a
 /// choice made here.
-const SHATTERS: [(CardId, CardId, CardId); 1] = [(
-    tokens::SUPPLY_RUN,
-    tokens::SUPPLY_RUN_DRAW,
-    tokens::SUPPLY_RUN_BUFF,
+const SHATTERS: [(CardId, CardId, CardId); 2] = [
+    (
+        tokens::SUPPLY_RUN,
+        tokens::SUPPLY_RUN_DRAW,
+        tokens::SUPPLY_RUN_BUFF,
+    ),
+    (tokens::SCHISM, tokens::SCHISM_BUFF, tokens::SCHISM_COPY),
+];
+
+/// Halves that combine wherever they are in hand, not only side by side.
+///
+/// Shatter's own halves have to be adjacent, which is the cost the mechanic
+/// charges for splitting a card. Sol'etos is not a Shatter card: its two
+/// halves are separate Quest rewards paid out turns apart, and its text asks
+/// only "if you're holding both halves". So the pair is listed here instead,
+/// and `Game::settle_hand` joins them from wherever they sit.
+const COMBINES: [(CardId, CardId, CardId); 1] = [(
+    tokens::SOLETOS_LIFE,
+    tokens::SOLETOS_DEATH,
+    tokens::SOLETOS_WHOLE,
 )];
+
+/// The card `left` and `right` combine into, in either order, when both are
+/// held anywhere in hand.
+pub fn combines(left: CardId, right: CardId) -> Option<CardId> {
+    let mut i = 0;
+    while i < COMBINES.len() {
+        let (a, b, whole) = COMBINES[i];
+        if (a.0 == left.0 && b.0 == right.0) || (a.0 == right.0 && b.0 == left.0) {
+            return Some(whole);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Whether this card's Reborn copy keeps what the body was carrying.
+///
+/// "This is Reborn with full Health and enchantments" (Sinful Steed). Reborn
+/// otherwise returns a fresh printing at one Health, so this is a rule the
+/// card prints and the mechanic has no room for -- a side list, like
+/// `AWAKENS` and `SHATTERS` above.
+const REBORN_KEEPS_ALL: [CardId; 1] = [token("127060-sinful-steed")];
+
+pub fn reborn_keeps_enchantments(card: CardId) -> bool {
+    let mut i = 0;
+    while i < REBORN_KEEPS_ALL.len() {
+        if REBORN_KEEPS_ALL[i].0 == card.0 {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
 
 /// The two halves `card` splits into as it enters hand, left first.
 pub fn shatters_into(card: CardId) -> Option<(CardId, CardId)> {
@@ -9692,7 +9973,10 @@ pub fn is_implemented(card: CardId) -> bool {
     // A card whose whole rules text is a side-list mechanic has no hook to
     // hang a behaviour on and is still implemented: Stonetalon Striker is a
     // Taunt that wakes up, and the waking lives in `AWAKENS`.
-    if awakened_by_dragon(card).is_some() || shatters_into(card).is_some() {
+    if awakened_by_dragon(card).is_some()
+        || shatters_into(card).is_some()
+        || reborn_keeps_enchantments(card)
+    {
         return true;
     }
     let d = card.def();

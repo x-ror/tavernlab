@@ -8,7 +8,9 @@
 //! Each test builds a fixed position, plays exactly one card, and states what
 //! should have changed.
 
-use tavernlab_core::cards::{Class, Keywords, Kind, Races, behaviour_of, by_name};
+use tavernlab_core::cards::{
+    Class, Keywords, Kind, Races, Rarity, School, behaviour_of, by_id, by_name,
+};
 use tavernlab_core::game::{Action, Agent};
 use tavernlab_core::state::{DeckCard, Flags, Game, HandCard, MAX_HAND, Permanent, Side, Target};
 
@@ -5763,7 +5765,11 @@ fn guard_duty_summons_one_taunt_at_each_printed_cost() {
 
 #[test]
 fn reborn_brings_a_minion_back_once_at_one_health() {
-    let mut f = Fix::new().board(ME, &["Sinful Steed"]);
+    // A minion whose whole text is keywords, so what is being tested is the
+    // rule and not a card. Sinful Steed used to stand here and no longer can:
+    // it prints its own exception to this ("with full Health and
+    // enchantments"), which `sinful_steed_comes_back_whole` covers instead.
+    let mut f = Fix::new().board(ME, &["Whelp of the Infinite"]);
     assert!(f.mine(0).has(Keywords::REBORN));
     f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
     f.g.sweep_deaths();
@@ -11849,4 +11855,337 @@ fn escape_artist_that_does_not_survive_stays_dead() {
     assert!(f.g.players[0].board.is_empty(), "the 4/4 died to a 6/7");
     assert_eq!(f.g.players[0].hand.len(), 0, "and drew nothing");
     assert_eq!(f.g.players[0].deaths, 1, "that one really was a death");
+}
+
+// ---------------------------------------------------------- the Priest cycle
+// Reach Equilibrium and what it pays out, Slime 'em! and its undo, and the
+// minion that reads the game's Reborns back off the graveyard.
+
+#[test]
+fn reach_equilibrium_pays_each_half_at_its_own_fourth_spell() {
+    let mut f = Fix::new();
+    f.g.players[0].crystals = 10;
+    f.play("Reach Equilibrium", None);
+    assert!(f.g.players[0].quest.is_some(), "the Quest slot is taken");
+
+    // Holy first. Three casts pay nothing; the fourth pays Life's Breath.
+    for n in 1..=4 {
+        f.g.players[0].mana = 10;
+        f.play("Convalescence", None); // Holy, no target
+        let held = f.g.players[0]
+            .hand
+            .iter()
+            .any(|h| h.card.name() == "Sol'etos, Life's Breath");
+        assert_eq!(held, n == 4, "after {n} Holy spells");
+    }
+    assert!(
+        f.g.players[0].quest.is_some(),
+        "one half paid does not end a Quest that has two"
+    );
+
+    // Then Shadow. The fourth pays Death's Touch -- and the two halves
+    // combine in hand the moment the second one lands.
+    for _ in 0..4 {
+        f.g.players[0].mana = 10;
+        f.play("Blood Tap", None); // Shadow, no target
+    }
+    assert!(f.g.players[0].quest.is_none(), "both halves paid, slot given up");
+    let names: Vec<&str> = f.g.players[0]
+        .hand
+        .iter()
+        .map(|h| h.card.name())
+        .collect();
+    assert!(
+        names.contains(&"Sol'etos, Cycle's Rebirth"),
+        "the halves combined: {names:?}"
+    );
+    assert!(
+        !names.contains(&"Sol'etos, Life's Breath") && !names.contains(&"Sol'etos, Death's Touch"),
+        "and neither half is left behind: {names:?}"
+    );
+}
+
+#[test]
+fn the_soletos_halves_combine_from_opposite_ends_of_the_hand() {
+    // Not a Shatter pair: these two arrive turns apart and need not be
+    // adjacent, so the join has to find them across a hand of other cards.
+    let mut f = Fix::new();
+    f.g.players[0]
+        .hand
+        .push(HandCard::new(by_name("Sol'etos, Life's Breath").unwrap()));
+    for _ in 0..4 {
+        f.g.players[0].hand.push(HandCard::new(by_name("Wisp").unwrap()));
+    }
+    f.g.give_token(ME, by_name("Sol'etos, Death's Touch").unwrap());
+    let names: Vec<&str> = f.g.players[0]
+        .hand
+        .iter()
+        .map(|h| h.card.name())
+        .collect();
+    assert_eq!(
+        names.iter().filter(|n: &&&str| n.starts_with("Sol'etos")).count(),
+        1,
+        "one card, not two: {names:?}"
+    );
+    assert_eq!(names[0], "Sol'etos, Cycle's Rebirth");
+}
+
+#[test]
+fn the_whole_soletos_carries_both_halves_hooks() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0].crystals = 10;
+    f.g.players[0].mana = 10;
+    f.play("Sol'etos, Cycle's Rebirth", None);
+    assert_eq!(
+        f.g.players[0].board.len(),
+        2,
+        "the Battlecry summons a copy of itself"
+    );
+    let before = f.g.players[1].hero_hp + f.theirs(0).health();
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    let after = f.g.players[1].hero_hp + f.theirs(0).health();
+    assert_eq!(before - after, 5, "the Deathrattle deals five to a random enemy");
+}
+
+#[test]
+fn sinful_steed_comes_back_whole_and_keeps_what_it_was_given() {
+    let mut f = Fix::new().board(ME, &["Sinful Steed"]); // 2/3 Reborn
+    f.g.buff(Target::Minion(ME, 0), 2, 2);
+    f.g.grant(Target::Minion(ME, 0), Keywords::TAUNT);
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (4, 5));
+
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 1, "it came back");
+    assert_eq!(
+        (f.mine(0).atk, f.mine(0).health()),
+        (4, 5),
+        "full Health and enchantments, not a fresh 2/3 at one"
+    );
+    assert!(f.mine(0).has(Keywords::TAUNT), "granted keywords come back too");
+    assert!(!f.mine(0).has(Keywords::REBORN), "once, not forever");
+}
+
+#[test]
+fn raith_van_geist_brings_back_only_what_actually_came_back() {
+    // One minion that died having been Reborn, and one that simply died.
+    let mut f = Fix::new().board(ME, &["Whelp of the Infinite", "Bloodfen Raptor"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.players[0].board[1].damage = f.g.players[0].board[1].max_hp;
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 1, "the Reborn one is back");
+    // Kill the returned copy: that death is the one Raith reads.
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    assert!(f.g.players[0].board.is_empty());
+    assert_eq!(f.g.players[0].graveyard.len(), 3, "two deaths plus the raptor");
+
+    f.g.players[0].crystals = 10;
+    f.g.players[0].mana = 10;
+    f.play("Raith Van Geist", None);
+    let back: Vec<&str> = f.g.players[0]
+        .board
+        .iter()
+        .map(|m| m.card.name())
+        .collect();
+    assert_eq!(
+        back,
+        vec!["Raith Van Geist", "Whelp of the Infinite"],
+        "the Raptor never Reborn-ed and stays dead: {back:?}"
+    );
+}
+
+#[test]
+fn raith_van_geist_sends_what_it_raised_at_enemy_minions() {
+    let mut f = Fix::new()
+        .board(ME, &["Whelp of the Infinite"]) // 1/4 Poisonous Reborn
+        .board(FOE, &["Boulderfist Ogre"]);
+    for _ in 0..2 {
+        let slot = f.g.players[0].board.len() - 1;
+        f.g.players[0].board[slot].damage = f.g.players[0].board[slot].max_hp;
+        f.g.sweep_deaths();
+    }
+    assert!(f.g.players[0].board.is_empty());
+
+    let hero_before = f.g.players[1].hero_hp;
+    f.g.players[0].crystals = 10;
+    f.g.players[0].mana = 10;
+    f.play("Raith Van Geist", None);
+    assert_eq!(
+        f.g.players[1].hero_hp, hero_before,
+        "they attack minions, never the face"
+    );
+    assert_eq!(f.their_board(), 0, "a Poisonous 1/4 took the Ogre with it");
+}
+
+#[test]
+fn slime_em_wipes_the_board_and_hands_each_player_its_undo() {
+    let mut f = Fix::new()
+        .board(ME, &["Bloodfen Raptor", "Chillwind Yeti"])
+        .board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0].crystals = 10;
+    f.g.players[0].mana = 10;
+    f.play("Slime 'em!", None);
+    assert!(f.g.players[0].board.is_empty() && f.g.players[1].board.is_empty());
+    for side in [0usize, 1] {
+        assert!(
+            f.g.players[side]
+                .hand
+                .iter()
+                .any(|h| h.card.name() == "Ectoplasm"),
+            "player {side} got an Ectoplasm"
+        );
+    }
+
+    // Mine resummons mine, and only mine.
+    f.g.players[0].mana = 10;
+    f.play("Ectoplasm", None);
+    let back: Vec<&str> = f.g.players[0]
+        .board
+        .iter()
+        .map(|m| m.card.name())
+        .collect();
+    assert_eq!(back, vec!["Bloodfen Raptor", "Chillwind Yeti"]);
+    assert!(f.g.players[1].board.is_empty(), "theirs is theirs to cast");
+}
+
+#[test]
+fn a_second_ectoplasm_resummons_nothing() {
+    let mut f = Fix::new().board(ME, &["Bloodfen Raptor"]);
+    f.g.players[0].crystals = 10;
+    f.g.players[0].mana = 10;
+    f.play("Slime 'em!", None);
+    f.g.players[0].mana = 10;
+    f.play("Ectoplasm", None);
+    assert_eq!(f.g.players[0].board.len(), 1);
+    f.g.players[0].mana = 10;
+    f.play("Ectoplasm", None);
+    assert_eq!(
+        f.g.players[0].board.len(),
+        1,
+        "the slice is spent as it is read"
+    );
+}
+
+#[test]
+fn a_minion_that_died_after_the_wipe_is_not_slimed() {
+    let mut f = Fix::new().board(ME, &["Bloodfen Raptor"]);
+    f.g.players[0].crystals = 10;
+    f.g.players[0].mana = 10;
+    f.play("Slime 'em!", None);
+    // Something else dies before the Ectoplasm is cast.
+    f.g.players[0].board.push(Permanent::summon(by_name("Chillwind Yeti").unwrap()));
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+
+    f.g.players[0].mana = 10;
+    f.play("Ectoplasm", None);
+    let back: Vec<&str> = f.g.players[0]
+        .board
+        .iter()
+        .map(|m| m.card.name())
+        .collect();
+    assert_eq!(back, vec!["Bloodfen Raptor"], "the Yeti sits past the slice");
+}
+
+#[test]
+fn karov_hands_over_three_legendaries_cut_down_to_one_one() {
+    let mut f = Fix::new().board(ME, &["Karov the Broken"]);
+    f.g.players[0].board[0].damage = f.g.players[0].board[0].max_hp;
+    f.g.sweep_deaths();
+    let hand: Vec<_> = f.g.players[0].hand.iter().copied().collect();
+    assert_eq!(hand.len(), 3);
+    for h in hand {
+        let d = h.card.def();
+        assert_eq!(d.rarity(), Rarity::Legendary);
+        assert_eq!(d.kind(), Kind::Minion);
+        assert_eq!((d.atk + h.atk as i16, d.hp + h.hp as i16), (1, 1));
+        assert_eq!(f.g.players[0].effective_cost(&h), 1);
+    }
+}
+
+#[test]
+fn gravedawn_sunbloom_is_cheaper_only_after_a_holy_spell() {
+    let mut f = Fix::new().deck(&["Wisp", "Wisp", "Wisp"]);
+    let card = by_name("Gravedawn Sunbloom").unwrap();
+    f.g.players[0].hand.push(HandCard::new(card));
+    assert_eq!(f.g.card_cost(ME, 0), 4, "no Holy spell last turn");
+
+    f.g.players[0].schools_cast_last = 1 << (School::Holy as u8);
+    assert_eq!(f.g.card_cost(ME, 0), 2, "Kindred asks the school, not a tribe");
+
+    f.g.players[0].schools_cast_last = 1 << (School::Shadow as u8);
+    assert_eq!(f.g.card_cost(ME, 0), 4, "a Shadow spell is not Kindred to a Holy one");
+}
+
+#[test]
+fn ruby_sanctum_turns_the_next_heal_around_once() {
+    let mut f = Fix::new().board(FOE, &["Boulderfist Ogre"]);
+    f.g.players[0].crystals = 10;
+    f.g.players[0].mana = 10;
+    f.g.players[0].hero_hp = 20;
+    f.play("Ruby Sanctum", None);
+    let slot = f.g.players[0]
+        .board
+        .iter()
+        .position(|m| m.card.name() == "Ruby Sanctum")
+        .unwrap() as u8;
+    assert!(!f.g.players[0].heal_as_damage, "placing it arms nothing");
+    assert!(f.g.apply(Action::UseLocation { slot, target: None }));
+    assert!(f.g.players[0].heal_as_damage);
+
+    f.g.heal(Target::Minion(FOE, 0), 4);
+    assert_eq!(f.theirs(0).health(), 3, "four healing became four damage");
+    assert!(!f.g.players[0].heal_as_damage, "one effect, then spent");
+
+    f.g.heal(Target::Hero(ME), 4);
+    assert_eq!(f.g.players[0].hero_hp, 24, "the next one heals as normal");
+}
+
+#[test]
+fn schism_whole_does_both_halves_and_each_half_does_its_own() {
+    // Whole: buff, Elusive, and a copy.
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]); // 4/5
+    f.g.players[0].crystals = 10;
+    f.g.players[0].mana = 10;
+    // The card shatters as it reaches hand, so it is played through `apply`
+    // by id rather than by the name all three forms share.
+    f.g.players[0].hand.push(HandCard::new(by_id("CATA_306").unwrap()));
+    let idx = f.g.players[0].hand.len() as u8 - 1;
+    assert!(f.g.apply(Action::Play {
+        hand: idx,
+        target: my_minion(0),
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (6, 8));
+    assert!(f.mine(0).has(Keywords::ELUSIVE));
+    assert_eq!(f.g.players[0].board.len(), 2, "and a copy of it");
+
+    // The buff half alone.
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.g.players[0].crystals = 10;
+    f.g.players[0].mana = 10;
+    f.g.players[0].hand.push(HandCard::new(by_id("CATA_306t1").unwrap()));
+    assert!(f.g.apply(Action::Play {
+        hand: 0,
+        target: my_minion(0),
+        position: u8::MAX,
+        choice: u8::MAX,
+    }));
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (6, 8));
+    assert_eq!(f.g.players[0].board.len(), 1, "no copy from this half");
+}
+
+#[test]
+fn schism_arrives_in_hand_already_in_two() {
+    let mut f = Fix::new();
+    f.g.give_token(ME, by_id("CATA_306").unwrap());
+    let ids: Vec<&str> = f.g.players[0]
+        .hand
+        .iter()
+        .map(|h| h.card.info().id)
+        .collect();
+    assert_eq!(ids, vec!["CATA_306t1", "CATA_306t2"]);
 }

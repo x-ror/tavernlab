@@ -17,7 +17,7 @@ pub use behaviour::{
     APPROXIMATE, Aura, Behaviour, Ctx, DARK_GIFTS, TargetSpec, acts_when_drawn,
     apply_game_setup, behaviour_of, gift_card, gift_keywords, gift_stats,
     awakened_by_dragon, drawn_acts_for_opponent, is_approximate, is_implemented,
-    pirate_damage_bonus, recombines, shatters_into,
+    combines, pirate_damage_bonus, reborn_keeps_enchantments, recombines, shatters_into,
 };
 pub use table::{BY_DBF, BY_ID, BY_NAME, CHILD_IDS, CHILD_SLICES, DEFS, INFO};
 
