@@ -98,6 +98,15 @@ pub enum Event {
     HeroPowerUsed {
         side: Side,
     },
+    /// A Discover finished: one card was taken and the rest were let go.
+    ///
+    /// `others` carries the options that were *not* taken, padded with
+    /// `CardId(0)`, because The Origin Stone plays them and they exist
+    /// nowhere else -- a Discover throws them away the instant it picks.
+    Discovered {
+        side: Side,
+        others: [CardId; 2],
+    },
 }
 
 impl Event {
@@ -108,6 +117,7 @@ impl Event {
             | Event::TurnEnd { side }
             | Event::MinionSummoned { side, .. }
             | Event::CardPlayed { side, .. }
+            | Event::Discovered { side, .. }
             | Event::SpellCasting { side, .. }
             | Event::SpellCast { side, .. }
             | Event::MinionDied { side, .. }

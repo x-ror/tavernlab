@@ -763,10 +763,37 @@ impl Game {
     /// policy needs an agent hook inside effect resolution, which is a change
     /// to how effects are called rather than a change here.
     pub fn discover(&mut self, side: Side, pred: fn(&crate::cards::CardDef) -> bool) -> bool {
+        self.discover_where(side, pred)
+    }
+
+    /// What every Discover does once it has picked: record it, and tell the
+    /// cards that count Discovers or want what was left behind.
+    ///
+    /// One place rather than seven, so a new Discover shape cannot forget to
+    /// be a Discover. `others` is the options that were offered and not
+    /// taken; The Origin Stone is the only thing that reads them, and they
+    /// exist nowhere else once the pick is made.
+    fn took_discover(&mut self, side: Side, others: [CardId; 2]) {
         self.player_mut(side).discovered_turn = true;
-        let pool = crate::cards::discover_pool(pred);
+        // This costs about 1.8% of raw throughput, measured: `Game::fire`
+        // builds a reactor list over both boards, both weapons, both Quests
+        // and both Hero Powers, and a Discover is frequent enough that doing
+        // that for an event almost nothing listens to shows up in `bench`.
+        // It is paid on purpose. The alternative was to check the two slots
+        // that react today -- a Quest and a weapon -- directly from here,
+        // which is cheap and is a hole: a board minion that reacts to a
+        // Discover would silently never fire, and there is no way to notice
+        // that except by a card being quietly wrong.
+        self.fire(crate::events::Event::Discovered { side, others });
+    }
+
+    /// The three cards a Discover offers, and which of them the engine takes.
+    ///
+    /// Split out because every Discover shape makes the same offer and the
+    /// same pick; only where the taken card *goes* differs.
+    fn offer(&mut self, side: Side, pool: &[CardId]) -> Option<(CardId, [CardId; 2])> {
         if pool.is_empty() {
-            return false;
+            return None;
         }
         let mut offered = [0u32; 3];
         let n = self.rngs.effects.sample_indices(pool.len(), &mut offered);
@@ -774,15 +801,18 @@ impl Game {
         let best = offered[..n]
             .iter()
             .map(|&i| pool[i as usize])
-            .max_by_key(|c| {
-                let d = c.def();
-                // Prefer something castable soon, then the biggest of those.
-                (d.cost <= crystals + 1, d.cost)
-            });
-        match best {
-            Some(c) => self.give_card(side, c),
-            None => false,
+            // Prefer something castable soon, then the biggest of those.
+            .max_by_key(|c| (c.def().cost <= crystals + 1, c.def().cost))?;
+        let mut others = [CardId(0); 2];
+        let mut k = 0;
+        for &i in &offered[..n] {
+            let c = pool[i as usize];
+            if c != best && k < 2 {
+                others[k] = c;
+                k += 1;
+            }
         }
+        Some((best, others))
     }
 
     /// Discover a card and put it on the bottom of the deck instead of into
@@ -798,25 +828,15 @@ impl Game {
         atk: i16,
         hp: i16,
     ) -> bool {
-        self.player_mut(side).discovered_turn = true;
         let pool = crate::cards::discover_pool(pred);
-        if pool.is_empty() {
+        let Some((card, others)) = self.offer(side, &pool) else {
             return false;
-        }
-        let mut offered = [0u32; 3];
-        let n = self.rngs.effects.sample_indices(pool.len(), &mut offered);
-        let crystals = self.player(side).crystals;
-        let best = offered[..n]
-            .iter()
-            .map(|&i| pool[i as usize])
-            .max_by_key(|c| {
-                let d = c.def();
-                (d.cost <= crystals + 1, d.cost)
-            });
-        let Some(card) = best else { return false };
+        };
         let mut dc = DeckCard::new(card);
         dc.enchant(atk, hp);
-        self.put_deck_card_on_bottom(side, dc)
+        let took = self.put_deck_card_on_bottom(side, dc);
+        self.took_discover(side, others);
+        took
     }
 
     // ---------------------------------------------------- deck enchanting
@@ -1188,25 +1208,13 @@ impl Game {
     /// for the cards whose pool depends on the position — "from another
     /// class" has to know which class you are.
     pub fn discover_where(&mut self, side: Side, pred: impl Fn(&crate::cards::CardDef) -> bool) -> bool {
-        self.player_mut(side).discovered_turn = true;
         let pool = crate::cards::discover_pool(pred);
-        if pool.is_empty() {
+        let Some((card, others)) = self.offer(side, &pool) else {
             return false;
-        }
-        let mut offered = [0u32; 3];
-        let n = self.rngs.effects.sample_indices(pool.len(), &mut offered);
-        let crystals = self.player(side).crystals;
-        let best = offered[..n]
-            .iter()
-            .map(|&i| pool[i as usize])
-            .max_by_key(|c| {
-                let d = c.def();
-                (d.cost <= crystals + 1, d.cost)
-            });
-        match best {
-            Some(c) => self.give_card(side, c),
-            None => false,
-        }
+        };
+        let took = self.give_card(side, card);
+        self.took_discover(side, others);
+        took
     }
 
     /// Summon a minion straight out of your own deck, chosen at random among
@@ -1288,8 +1296,20 @@ impl Game {
             });
         let Some(at) = best else { return false };
         let card = self.player(side).deck[at];
+        // What was offered and not taken, for the cards that read it.
+        let mut others = [CardId(0); 2];
+        let mut k = 0;
+        for &j in &offered[..n] {
+            let other = matches[j as usize] as usize;
+            if other != at && k < 2 {
+                others[k] = self.player(side).deck[other].card;
+                k += 1;
+            }
+        }
         self.player_mut(side).deck.remove(at);
-        self.give_hand_card(side, card.to_hand())
+        let took = self.give_hand_card(side, card.to_hand());
+        self.took_discover(side, others);
+        took
     }
 
     /// Discover among the opponent's remaining deck, moving the pick to
@@ -1313,7 +1333,12 @@ impl Game {
         }
         let pick = self.rngs.effects.index(matches.len());
         let card = self.player(foe).deck[matches[pick] as usize].card;
-        self.give_card(side, card)
+        let took = self.give_card(side, card);
+        // One card is read out of their deck rather than three offered, so
+        // there is nothing left over for The Origin Stone to play -- but it
+        // is still a Discover, and the cards that count Discovers count it.
+        self.took_discover(side, [CardId(0); 2]);
+        took
     }
 
     /// Discover a copy of a card in the opponent's hand, moving the copy to
@@ -1326,7 +1351,9 @@ impl Game {
         }
         let pick = self.rngs.effects.index(n);
         let card = self.player(foe).hand[pick].card;
-        self.give_card(side, card)
+        let took = self.give_card(side, card);
+        self.took_discover(side, [CardId(0); 2]);
+        took
     }
 
     /// Add a random card matching `pred` to hand, straight from the pool.
@@ -1562,8 +1589,19 @@ impl Game {
         else {
             return false;
         };
-        self.move_deck_card_to_top(side, matches[pick as usize] as usize)
-            .is_some()
+        let at = matches[pick as usize] as usize;
+        let mut others = [CardId(0); 2];
+        let mut k = 0;
+        for &j in &offered[..n] {
+            let other = matches[j as usize] as usize;
+            if other != at && k < 2 {
+                others[k] = self.player(side).deck[other].card;
+                k += 1;
+            }
+        }
+        let took = self.move_deck_card_to_top(side, at).is_some();
+        self.took_discover(side, others);
+        took
     }
 
     /// Every minion on the board attacks another minion, chosen at random.

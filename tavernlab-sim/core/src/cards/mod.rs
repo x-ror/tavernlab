@@ -450,6 +450,19 @@ pub fn all() -> impl Iterator<Item = CardId> {
 /// Filtered rather than cached per predicate: the corpus is 16 771 entries and
 /// a Discover happens a handful of times per game, so one pass over a
 /// pre-filtered base costs less than the bookkeeping a cache would need.
+/// Whether this card is "from the past".
+///
+/// Across the Timeways prints the phrase on twelve Standard cards, and it
+/// means a card from a set that has rotated out: Wild-legal and no longer
+/// Standard-legal. That is a question the card data answers exactly -- every
+/// `CardDef` carries the formats it is legal in -- so nothing here is a
+/// judgement, and the pool moves on its own the next time the corpus is
+/// regenerated after a rotation.
+#[inline]
+pub fn from_the_past(d: &CardDef) -> bool {
+    d.formats.has(Formats::WILD) && !d.formats.has(Formats::STANDARD)
+}
+
 pub fn discover_pool(pred: impl Fn(&CardDef) -> bool) -> Vec<CardId> {
     static BASE: std::sync::OnceLock<Box<[CardId]>> = std::sync::OnceLock::new();
     let base = BASE.get_or_init(|| {

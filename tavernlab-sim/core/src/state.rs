@@ -401,6 +401,11 @@ impl Marks {
     /// was only ever compared against the current turn. Cleared with `FUSED`
     /// at the owner's turn end, which is exactly "the rest of it".
     pub const PREPARED: Marks = Marks(1 << 9);
+    /// Prepare granted to this copy rather than printed on the card (Wanted
+    /// Poster). A mark rather than a keyword because keywords live on the
+    /// immutable `CardDef` and this belongs to one card in one hand -- and
+    /// `Marks` had a spare bit, so the whole grant costs a `Game` nothing.
+    pub const GRANTED_PREPARE: Marks = Marks(1 << 10);
 
     #[inline]
     pub const fn has(self, m: Marks) -> bool {

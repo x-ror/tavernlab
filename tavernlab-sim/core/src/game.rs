@@ -895,7 +895,8 @@ impl Game {
         // offering it would multiply the branching factor for nothing.
         if me.mana > 0 {
             for (i, hc) in me.hand.iter().enumerate() {
-                if hc.card.def().keywords.has(Keywords::PREPARE)
+                if (hc.card.def().keywords.has(Keywords::PREPARE)
+                    || hc.marks.has(Marks::GRANTED_PREPARE))
                     && !hc.marks.has(Marks::PREPARED)
                     && self.card_cost(side, i) > me.mana
                 {
@@ -1102,6 +1103,18 @@ impl Game {
 
     // -------------------------------------------------------- playing cards
 
+    /// Whether this player's Rewinds keep both outcomes instead of choosing
+    /// (Morchie).
+    ///
+    /// Read off the board, like Kayn Sunfury's Taunt rule: it arrives and
+    /// leaves with the body and costs a `Game` nothing.
+    pub fn keeps_both_rewind_outcomes(&self, side: Side) -> bool {
+        self.player(side)
+            .board
+            .iter()
+            .any(|m| m.active() && m.card.name() == "Morchie")
+    }
+
     /// Play a card, and if it has Rewind, decide whether to keep what
     /// happened.
     ///
@@ -1144,7 +1157,12 @@ impl Game {
                 .player(side)
                 .hand
                 .get(hand_idx)
-                .is_some_and(|hc| hc.card.def().keywords.has(Keywords::REWIND));
+                .is_some_and(|hc| hc.card.def().keywords.has(Keywords::REWIND))
+            // Morchie turns the choice off: "Your Rewinds keep BOTH potential
+            // outcomes" means there is nothing to pick between, and the card
+            // resolves twice instead. `play_card` does that half; see
+            // `keeps_both_rewind_outcomes`.
+            && !self.keeps_both_rewind_outcomes(side);
         if !rewinds {
             return self.play_card(hand_idx, target, position, choice);
         }
@@ -1423,17 +1441,25 @@ impl Game {
             && ((self.player(side).hero_power.name() == "Zee's Might"
                 && self.player(side).minions_played_total % 5 == 0)
                 // Rude Awakening: "This minion's Battlecries trigger twice."
-                || hc.gift == 7);
+                || hc.gift == 7)
+            // Morchie: a Rewind that keeps both outcomes is the card
+            // resolving twice, which is this.
+            || (def.keywords.has(Keywords::REWIND)
+                && def.kind() == Kind::Minion
+                && self.keeps_both_rewind_outcomes(side));
         // Sinestra: a spell from a class other than the caster's own casts
         // twice. Read the same way, before either effect below resolves.
         let double_spell = def.kind() == Kind::Spell
-            && def.class() != Class::Neutral
-            && def.class() != self.player(side).class
-            && self
-                .player(side)
-                .board
-                .iter()
-                .any(|m| m.card.name() == "Sinestra");
+            && ((def.class() != Class::Neutral
+                && def.class() != self.player(side).class
+                && self
+                    .player(side)
+                    .board
+                    .iter()
+                    .any(|m| m.card.name() == "Sinestra"))
+                // Morchie, the same way as the Battlecry half above.
+                || (def.keywords.has(Keywords::REWIND)
+                    && self.keeps_both_rewind_outcomes(side)));
 
         if let Some(mode) = chosen {
             let ctx = Ctx {
@@ -1567,7 +1593,10 @@ impl Game {
         let Some(hc) = self.player(side).hand.get(hand_idx).copied() else {
             return false;
         };
-        if !hc.card.def().keywords.has(Keywords::PREPARE) || hc.marks.has(Marks::PREPARED) {
+        if (!hc.card.def().keywords.has(Keywords::PREPARE)
+            && !hc.marks.has(Marks::GRANTED_PREPARE))
+            || hc.marks.has(Marks::PREPARED)
+        {
             return false;
         }
         let mana = self.player(side).mana;
@@ -2734,6 +2763,42 @@ impl Game {
             },
         );
         self.sweep_deaths();
+    }
+
+    /// Resolve `card` for `side` as though it had been played, with no hand,
+    /// no mana and no "you played a card" bookkeeping.
+    ///
+    /// The Origin Stone's "this plays the other options": the two cards a
+    /// Discover let go were never in anyone's hand, so there is nothing to
+    /// play them *from*. A minion is summoned, a weapon is equipped, and
+    /// anything with a cast effect is cast; a Battlecry is fired after the
+    /// body lands, because that is what playing a minion does.
+    pub fn play_loose_card(&mut self, side: Side, card: CardId) {
+        match card.def().kind() {
+            Kind::Minion => {
+                if self.summon(side, card)
+                    && let Some(f) = behaviour_of(card).and_then(|b| b.battlecry)
+                {
+                    let slot = self.player(side).board.len() as u8 - 1;
+                    f(
+                        self,
+                        &Ctx {
+                            card,
+                            side,
+                            target: None,
+                            source: Some(slot),
+                            outcast: false,
+                            dying: None,
+                            marks: Marks::NONE,
+                            mana_spent: 0,
+                        },
+                    );
+                    self.sweep_deaths();
+                }
+            }
+            Kind::Weapon => self.equip(side, card),
+            _ => self.cast_token(side, card),
+        }
     }
 
     /// Imbue this player's Hero Power.
