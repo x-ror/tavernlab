@@ -3058,13 +3058,16 @@ fn nightmare_fuel_discovers_a_minion_copy_from_the_opponents_deck() {
 }
 
 #[test]
-fn dreambound_raptor_gives_a_fixed_bonus_but_not_to_itself() {
+fn dreambound_raptor_gives_a_real_bonus_effect_but_not_to_itself() {
     let mut f = Fix::new().board(ME, &["Dreambound Raptor"]);
     f.play("Chillwind Yeti", None);
-    assert_eq!(f.mine(1).atk, 5, "4/5 Yeti plus the fixed +1/+1");
-    assert_eq!(f.mine(1).max_hp, 6);
-    assert_eq!(f.mine(0).atk, 2, "the Raptor itself is unaffected");
-    assert_eq!(f.mine(0).max_hp, 1);
+    assert_eq!(granted_bonuses(f.mine(1)), 1, "exactly one Bonus Effect");
+    assert_eq!(
+        (f.mine(1).atk, f.mine(1).max_hp),
+        (4, 5),
+        "a Bonus Effect is a keyword, not stats"
+    );
+    assert_eq!(granted_bonuses(f.mine(0)), 0, "the Raptor itself is unaffected");
 }
 
 #[test]
@@ -10354,4 +10357,98 @@ fn shadowed_informant_follows_the_class_it_has_swapped_to() {
     f.play("Shadowed Informant", None);
     let idx = f.g.players[0].hand.len() - 1;
     assert_eq!(f.g.players[0].hand[idx].card.def().class(), want);
+}
+
+// -------------------------------------------------------------- Bonus Effects
+//
+// A Bonus Effect is one of eight keywords. The pool is not in the card data —
+// the corpus holds no enchantment cards at all — so it lives in
+// `Game::BONUS_EFFECTS`, and these tests check membership rather than naming
+// a particular keyword, which the roll is free to choose.
+
+/// How many of the eight this minion has been *given*, as opposed to printed.
+fn granted_bonuses(m: &Permanent) -> usize {
+    let printed = m.card.def().keywords;
+    Game::BONUS_EFFECTS
+        .iter()
+        .filter(|kw| m.has(**kw) && !printed.has(**kw))
+        .count()
+}
+
+#[test]
+fn shadows_of_yesterday_leaves_four_shades_with_two_bonus_effects_each() {
+    let mut f = Fix::new();
+    f.play("Shadows of Yesterday", None);
+    assert_eq!(f.g.players[0].board.len(), 4);
+    for i in 0..4 {
+        let m = f.mine(i);
+        assert_eq!(m.card.name(), "Anomalous Shade");
+        assert_eq!((m.atk, m.max_hp), (3, 2), "a 3/2, as printed");
+        assert_eq!(granted_bonuses(m), 2, "two distinct Bonus Effects");
+    }
+}
+
+#[test]
+fn story_of_galvadon_gives_one_minion_three_distinct_bonus_effects() {
+    let mut f = Fix::new().board(ME, &["Chillwind Yeti"]);
+    f.play("Story of Galvadon", my_minion(0));
+    assert_eq!(granted_bonuses(f.mine(0)), 3);
+    assert_eq!(
+        (f.mine(0).atk, f.mine(0).max_hp),
+        (4, 5),
+        "keywords only, no stats"
+    );
+}
+
+#[test]
+fn tyrannogill_leaves_three_murlocs_each_with_a_bonus_effect() {
+    let mut f = Fix::new().board(ME, &["Tyrannogill"]);
+    f.g.deal_damage(Target::Minion(ME, 0), 3);
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 3);
+    for i in 0..3 {
+        let m = f.mine(i);
+        assert_eq!(m.card.name(), "Dinoloc");
+        assert_eq!((m.atk, m.max_hp), (2, 1));
+        assert_eq!(granted_bonuses(m), 1);
+    }
+}
+
+#[test]
+fn stranglevine_passes_on_a_bonus_effect_and_its_own_deathrattle() {
+    let mut f = Fix::new().board(ME, &["Stranglevine", "Chillwind Yeti"]);
+    f.g.deal_damage(Target::Minion(ME, 0), 2);
+    f.g.sweep_deaths();
+    assert_eq!(f.g.players[0].board.len(), 1, "only the Yeti is left");
+    let yeti = f.mine(0);
+    assert_eq!(granted_bonuses(yeti), 1);
+    assert_eq!(
+        yeti.granted_rattle.name(),
+        "Stranglevine",
+        "and it carries the rattle onward"
+    );
+}
+
+#[test]
+fn violet_punisher_steals_only_what_was_granted() {
+    // Goldshire Footman prints Taunt, so Taunt is not a Bonus Effect on it.
+    let mut f = Fix::new().board(FOE, &["Goldshire Footman"]);
+    f.g.grant(Target::Minion(FOE, 0), Keywords::POISONOUS);
+    f.play("Violet Punisher", foe_minion(0));
+
+    let victim = f.theirs(0);
+    assert!(victim.has(Keywords::TAUNT), "its own printed Taunt stays");
+    assert!(!victim.has(Keywords::POISONOUS), "the granted one is gone");
+
+    let thief = f.mine(0);
+    assert!(thief.has(Keywords::POISONOUS));
+    assert!(!thief.has(Keywords::TAUNT), "Taunt was never a Bonus Effect");
+    assert_eq!((thief.atk, thief.max_hp), (5, 4), "4/3 plus one stolen");
+}
+
+#[test]
+fn violet_punisher_on_a_plain_body_is_just_a_body() {
+    let mut f = Fix::new().board(FOE, &["Chillwind Yeti"]);
+    f.play("Violet Punisher", foe_minion(0));
+    assert_eq!((f.mine(0).atk, f.mine(0).max_hp), (4, 3), "nothing to steal");
 }
