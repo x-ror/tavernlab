@@ -213,3 +213,70 @@ D 09:00:04.2 [Zone] ZoneChangeList.ProcessChanges() - id=9 local=False [entityNa
         "but the one from turn five is free to swing: {out}"
     );
 }
+
+/// The position the command prints is the one the log states, not the one the
+/// cards print.
+///
+/// Stats, damage, granted keywords and both heroes' health all come off
+/// `TAG_CHANGE` lines. Before this the reconstruction used printed stats and
+/// two untouched heroes, which made every lethal it saw a wrong one.
+#[test]
+fn the_printed_position_carries_what_the_log_said_about_it() {
+    const PLAYED: &str = "\
+D 09:00:03.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=5
+D 09:00:03.1 [Zone] ZoneChangeList.ProcessChanges() - id=7 local=False [entityName=Chillwind Yeti id=10 zone=HAND zonePos=1 cardId=CS2_182 player=1] zone from FRIENDLY HAND -> FRIENDLY PLAY
+D 09:00:03.2 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=Chillwind Yeti id=10 zone=PLAY zonePos=1 cardId=CS2_182 player=1] tag=ATK value=6
+D 09:00:03.3 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=Chillwind Yeti id=10 zone=PLAY zonePos=1 cardId=CS2_182 player=1] tag=DAMAGE value=2
+D 09:00:03.4 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=Chillwind Yeti id=10 zone=PLAY zonePos=1 cardId=CS2_182 player=1] tag=TAUNT value=1
+D 09:00:03.5 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=64 tag=DAMAGE value=8
+D 09:00:03.6 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=65 tag=ARMOR value=5
+D 09:00:03.7 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=65 tag=DAMAGE value=11
+";
+    const NOW: &str = "\
+D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES value=7
+D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES_USED value=0
+D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7
+D 09:00:04.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=CURRENT_PLAYER value=1
+";
+    let out = run("tags", &format!("{LOG}{PLAYED}{NOW}"), &["--me", "Me#1"]);
+    assert!(
+        out.contains("ваша дошка: Chillwind Yeti 6/3 Taunt"),
+        "buffed to 6 attack, two damage on it, Taunt granted: {out}"
+    );
+    assert!(
+        out.contains("ваш герой 22, ворожий 19 (+5 броні)"),
+        "both heroes off their own DAMAGE and ARMOR lines: {out}"
+    );
+}
+
+/// A Rush minion played this turn may trade, but not go to the face.
+///
+/// From a real session: four freshly summoned Shades take Rush from a Bonus
+/// Effect and the watcher sent all four into the enemy hero. Now the log's
+/// own `tag=RUSH` line is read, so the minion is offered the trade it really
+/// has and refused the swing it does not.
+#[test]
+fn a_rush_minion_played_this_turn_trades_but_does_not_go_face() {
+    const NOW: &str = "\
+D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES value=7
+D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES_USED value=7
+D 09:00:04.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7
+D 09:00:04.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=CURRENT_PLAYER value=1
+D 09:00:04.2 [Zone] ZoneChangeList.ProcessChanges() - id=8 local=False [entityName=Wisp id=30 zone=HAND zonePos=1 cardId=CS2_231 player=2] zone from OPPOSING HAND -> OPPOSING PLAY
+D 09:00:04.3 [Zone] ZoneChangeList.ProcessChanges() - id=9 local=False [entityName=Chillwind Yeti id=31 zone=HAND zonePos=1 cardId=CS2_182 player=1] zone from FRIENDLY HAND -> FRIENDLY PLAY
+D 09:00:04.4 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=Chillwind Yeti id=31 zone=PLAY zonePos=1 cardId=CS2_182 player=1] tag=RUSH value=1
+";
+    let out = run("rush", &format!("{LOG}{NOW}"), &["--me", "Me#1"]);
+    assert!(
+        out.contains("ваша дошка: Chillwind Yeti 4/5 Rush"),
+        "the granted keyword is shown: {out}"
+    );
+    assert!(
+        out.contains("атакувати: Chillwind Yeti → ворожий Wisp"),
+        "Rush trades on the turn it lands: {out}"
+    );
+    assert!(
+        !out.contains("Chillwind Yeti → ворожий герой"),
+        "but it does not go face until the turn after: {out}"
+    );
+}
