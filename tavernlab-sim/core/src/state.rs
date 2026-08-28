@@ -89,6 +89,15 @@ impl Flags {
     /// and a byte on `Permanent` costs a `Game` far more than a spare bit in
     /// a word that already exists.
     pub const REBORN_FULL: Flags = Flags(1 << 11);
+    /// Queued to swing by "Force each minion to attack another minion".
+    ///
+    /// A marker, not a state: it is set on every minion on both boards before
+    /// any of them attacks, and each one clears its own as it goes. That is
+    /// what makes the card exact without a per-minion identity to track --
+    /// a minion that dies part way through takes its mark with it, and one
+    /// summoned by a Deathrattle in the middle never had one, so neither
+    /// swings when it should not.
+    pub const FORCED_TO_ATTACK: Flags = Flags(1 << 12);
 
     #[inline]
     pub const fn has(self, f: Flags) -> bool {
@@ -558,6 +567,11 @@ pub enum PendingKind {
     HeroAttack = 5,
     /// Set the owner's Mana to `amount`, crystals and all (Chef Neth'rek).
     SetMana = 6,
+    /// Cast `card`'s spell for the owner, as though they had played it.
+    ///
+    /// What a sham trial is: an effect chosen now and resolved several turns
+    /// later, by the card it was chosen from.
+    CastLater = 7,
 }
 
 impl PendingKind {
@@ -569,7 +583,7 @@ impl PendingKind {
     /// read the other way -- "after five turns" is one firing, once they have
     /// passed -- and those wait.
     pub const fn delayed(self) -> bool {
-        matches!(self, PendingKind::SetMana)
+        matches!(self, PendingKind::SetMana | PendingKind::CastLater)
     }
 }
 
@@ -761,6 +775,13 @@ pub struct Player {
     /// Whether this player played a minion on their previous turn. Read by
     /// "if you didn't play a minion last turn" (Heartroot Stones); rolled
     /// forward from `minions_played_turn` at this player's own turn end.
+    /// Extra Mana this player's minions cost, until their next turn ends.
+    ///
+    /// Set on the *opponent* by "enemy minions cost (2) more next turn"
+    /// (Harsh Sentence). Cleared where every other per-turn discount is, at
+    /// the taxed player's own turn end -- which is what makes "next turn"
+    /// their turn rather than the caster's.
+    pub minion_tax: i16,
     pub played_minion_last_turn: bool,
     pub minions_played_turn: bool,
     /// Whether this player's first Dragon this turn has already had Naralex,
@@ -873,6 +894,7 @@ impl Player {
             end_turn_burn: 0,
             deaths: 0,
             dragon_discounted_turn: false,
+            minion_tax: 0,
             played_minion_last_turn: false,
             minions_played_turn: false,
             void: Inline::new(),

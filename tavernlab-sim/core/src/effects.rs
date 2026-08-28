@@ -1519,6 +1519,131 @@ impl Game {
         self.player_mut(side).deck.insert(0, dc)
     }
 
+    /// Move a card already in `side`'s deck to the top of it, and return what
+    /// was moved.
+    ///
+    /// The top is the end of the array, which is the end `Game::draw` pops
+    /// from. Used by two cards that reach into the *enemy's* deck and decide
+    /// what they draw next -- so the card that moves is theirs and stays
+    /// theirs; only its position changes.
+    pub fn move_deck_card_to_top(&mut self, side: Side, at: usize) -> Option<DeckCard> {
+        let dc = self.player_mut(side).deck.remove(at)?;
+        self.player_mut(side).deck.push(dc);
+        Some(dc)
+    }
+
+    /// Discover a card in `side`'s deck matching `pred` and move it to the
+    /// top of that same deck.
+    ///
+    /// Not a copy and not a theft: the card stays where it was, in the deck
+    /// it was in, and what changes is when it will be drawn. Three offered
+    /// and the biggest taken, the way [`Game::discover`] chooses -- for a
+    /// deck you are reaching into, the biggest thing in it is the one worth
+    /// deciding about.
+    pub fn discover_deck_card_to_top(
+        &mut self,
+        side: Side,
+        pred: fn(&crate::cards::CardDef) -> bool,
+    ) -> bool {
+        let mut matches: Inline<u16, { crate::state::MAX_DECK }> = Inline::new();
+        for (i, c) in self.player(side).deck.iter().enumerate() {
+            if pred(c.def()) {
+                matches.push(i as u16);
+            }
+        }
+        if matches.is_empty() {
+            return false;
+        }
+        let mut offered = [0u32; 3];
+        let n = self.rngs.effects.sample_indices(matches.len(), &mut offered);
+        let Some(&pick) = offered[..n]
+            .iter()
+            .max_by_key(|&&o| self.player(side).deck[matches[o as usize] as usize].def().cost)
+        else {
+            return false;
+        };
+        self.move_deck_card_to_top(side, matches[pick as usize] as usize)
+            .is_some()
+    }
+
+    /// Every minion on the board attacks another minion, chosen at random.
+    ///
+    /// "Force each minion to attack another minion" (Detained for
+    /// Destruction). Read once into a list before any of it happens, so a
+    /// minion that dies part way through neither attacks after its death nor
+    /// shifts the slot of one that has not gone yet -- the slots are
+    /// re-found by identity at the moment each attacker swings.
+    ///
+    /// A minion with nothing to attack does not attack: with one minion left
+    /// on the board there is no "another minion", and it stands.
+    pub fn force_every_minion_to_trade(&mut self) {
+        // Mark first, swing after. Whose turn it is decides nothing: the card
+        // names every minion, on both boards.
+        for i in 0..2 {
+            for m in self.players[i].board.iter_mut() {
+                if m.is_minion() {
+                    m.flags.insert(Flags::FORCED_TO_ATTACK);
+                }
+            }
+        }
+        // Fourteen minions, and each swing can kill more than it clears, so
+        // the loop is bounded by the marks it can ever have set.
+        for _ in 0..MAX_BOARD * 2 {
+            let Some((side, from)) = self.next_forced_attacker() else {
+                break;
+            };
+            self.players[side.index()].board[from as usize]
+                .flags
+                .remove(Flags::FORCED_TO_ATTACK);
+            // Any minion but itself, on either board. With none left there is
+            // no "another minion", and it simply stands.
+            let mut targets: Inline<Target, { MAX_BOARD * 2 }> = Inline::new();
+            for i in 0..2 {
+                let s = Side::from_index(i);
+                for (slot, m) in self.player(s).board.iter().enumerate() {
+                    if m.is_minion() && m.active() && !(s == side && slot as u8 == from) {
+                        targets.push(Target::Minion(s, slot as u8));
+                    }
+                }
+            }
+            if targets.is_empty() {
+                continue;
+            }
+            let pick = self.rngs.effects.index(targets.len());
+            self.forced_attack((side, from), targets[pick]);
+            self.sweep_deaths();
+        }
+        // A minion that outlived the resolution keeps no trace of it.
+        for i in 0..2 {
+            for m in self.players[i].board.iter_mut() {
+                m.flags.remove(Flags::FORCED_TO_ATTACK);
+            }
+        }
+    }
+
+    fn next_forced_attacker(&self) -> Option<(Side, u8)> {
+        for i in 0..2 {
+            let s = Side::from_index(i);
+            for (slot, m) in self.player(s).board.iter().enumerate() {
+                if m.flags.has(Flags::FORCED_TO_ATTACK) && m.is_minion() && m.active() {
+                    return Some((s, slot as u8));
+                }
+            }
+        }
+        None
+    }
+
+    /// The positions in `side`'s deck holding `card`.
+    pub fn deck_positions(&self, side: Side, card: CardId) -> Inline<u16, { crate::state::MAX_DECK }> {
+        let mut out = Inline::new();
+        for (i, c) in self.player(side).deck.iter().enumerate() {
+            if c.card == card {
+                out.push(i as u16);
+            }
+        }
+        out
+    }
+
     /// Shuffle `side`'s deck in place -- for a card that adds copies to it
     /// and must not leave them all sitting on top, drawn before anything
     /// already there.
