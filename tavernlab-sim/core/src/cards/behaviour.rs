@@ -396,6 +396,9 @@ mod tokens {
     /// Shadows of Yesterday's 3/2 Shade, and Tyrannogill's 2/1 Murloc.
     pub const ANOMALOUS_SHADE: CardId = token("TIME_610t2");
     pub const DINOLOC: CardId = token("TLC_240t");
+    /// Imbue: the Blessings' own tokens.
+    pub const EMERALD_PORTAL: CardId = token("EDR_445pt3");
+    pub const EDR_WISP: CardId = token("EDR_851t");
     pub const FLAME_ELEMENTAL: CardId = token("UNG_809t1");
     pub const ARCANE_MISSILES: CardId = token("EX1_277");
     pub const MUGS_MAGIC: CardId = token("JAIL_800hp1");
@@ -8367,6 +8370,100 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     // it drifts. The corpus text says only that it swaps, so where it swaps
     // to is not derivable from it; a random other class each turn is the
     // rule the game actually uses.
+    // ------------------------------------------------------------------ Imbue
+    // "Imbue your Hero Power" installs the class's Blessing and raises a
+    // count; every Blessing's number is that count. See `Game::imbue`.
+
+    // The Portal is drawn, not played: it casts itself on the way out of the
+    // deck. `@-Cost` is the Imbue count, like every other Blessing number.
+    spell("Emerald Portal", T::None, |g, c| {
+        let n = g.player(c.side).imbue_count.max(1) as i16;
+        let pool = super::discover_pool(move |d| {
+            d.kind() == super::Kind::Minion && d.cost == n && d.races.any(Races::DRAGON)
+        });
+        if !pool.is_empty() {
+            let pick = g.rngs.effects.index(pool.len());
+            g.summon(c.side, pool[pick]);
+        }
+    }),
+
+    battlecry("Bitterbloom Knight", T::None, |g, c| g.imbue(c.side)),
+    battlecry("Flutterwing Guardian", T::None, |g, c| g.imbue(c.side)),
+    battlecry("Jagged Edge of Time", T::None, |g, c| g.imbue(c.side)),
+    battlecry("Lunarwing Messenger", T::None, |g, c| g.imbue(c.side)),
+    deathrattle("Umbraclaw", |g, c| g.imbue(c.side)),
+    c(
+        "Goldpetal Drake",
+        T::None,
+        None,
+        Some(|g, c| g.imbue(c.side)),
+        Some(|g, c| g.imbue(c.side)),
+        None, None, None, None, None, None,
+    ),
+    spell("Aegis of Light", T::None, |g, c| {
+        if g.summon_random_where(c.side, |d| d.kind() == super::Kind::Minion && d.cost == 2) {
+            let slot = g.player(c.side).board.len() as u8 - 1;
+            g.grant(Target::Minion(c.side, slot), Keywords::TAUNT);
+        }
+        g.imbue(c.side);
+    }),
+    spell("Aspect's Embrace", T::AnyCharacter, |g, c| {
+        if let Some(t) = c.target {
+            g.heal(t, 4);
+        }
+        g.draw_cards(c.side, 1);
+        g.imbue(c.side);
+    }),
+    spell("Eventuality", T::AnyCharacter, |g, c| {
+        g.spell_damage(c.side, c.target, 2);
+        g.imbue(c.side);
+    }),
+    battlecry("Exotic Houndmaster", T::None, |g, c| {
+        g.draw_matching(c.side, |d| d.races.any(Races::BEAST));
+        g.imbue(c.side);
+    }),
+    spell("Finality", T::None, |g, c| {
+        g.draw_matching(c.side, |d| d.races.any(Races::UNDEAD));
+        g.imbue(c.side);
+        g.imbue(c.side);
+    }),
+    battlecry("Living Garden", T::None, |g, c| {
+        g.imbue(c.side);
+        let minions: Inline<u8, MAX_HAND> = g
+            .player(c.side)
+            .hand
+            .iter()
+            .enumerate()
+            .filter(|(_, hc)| hc.card.def().kind() == super::Kind::Minion)
+            .map(|(i, _)| i as u8)
+            .collect();
+        if !minions.is_empty() {
+            let pick = g.rngs.effects.index(minions.len());
+            let at = minions[pick] as usize;
+            if let Some(hc) = g.player_mut(c.side).hand.get_mut(at) {
+                hc.cost_delta -= 1;
+            }
+        }
+    }),
+    battlecry("Spirit Gatherer", T::None, |g, c| {
+        g.give_token(c.side, tokens::EDR_WISP);
+        g.imbue(c.side);
+    }),
+    battlecry("Wisprider", T::None, |g, c| {
+        g.imbue(c.side);
+        g.trigger_hero_power(c.side);
+    }),
+    battlecry("Petal Picker", T::None, |g, c| {
+        if g.player(c.side).imbue_count >= 2 {
+            g.draw_cards(c.side, 2);
+        }
+    }),
+    battlecry("Resplendent Dreamweaver", T::AnyMinion, |g, c| {
+        if g.player(c.side).imbue_count >= 2 {
+            g.spell_damage(c.side, c.target, 4);
+        }
+    }),
+
     // ------------------------------------------------------------ Bonus Effects
     // One of eight keywords, drawn at random -- see `Game::BONUS_EFFECTS` for
     // where that pool comes from and why it is not in the card data.
@@ -8627,12 +8724,7 @@ fn grant_rattle(g: &mut Game, t: Option<Target>, carrier: CardId) {
 /// Turn a minion into a random one of `cost` (Dangerous Variant, Unknown
 /// Voyager).
 fn transform_into_cost(g: &mut Game, t: Target, cost: i16) {
-    let pool = super::discover_pool(move |d| d.kind() == super::Kind::Minion && d.cost == cost);
-    if pool.is_empty() {
-        return;
-    }
-    let pick = g.rngs.effects.index(pool.len());
-    g.transform(t, pool[pick]);
+    g.transform_into_random_of_cost(t, cost);
 }
 
 /// "If your deck has no Neutral cards" -- two Paladin cards ask it.
@@ -8689,6 +8781,21 @@ fn cataclysm_score(g: &Game, side: Side, cata: CardId) -> i16 {
     }
 }
 
+/// Cards that resolve on the way out of the deck instead of reaching hand.
+///
+/// A name list rather than a keyword bit: the corpus spells this as the words
+/// "Casts When Drawn" at the head of the card's text and carries no mechanic
+/// for it, and the keyword word has one free bit left, which a mechanic on
+/// this many cards has no claim on yet. `tests` checks every name here really
+/// does print it.
+const CASTS_WHEN_DRAWN: &[&str] = &["Emerald Portal"];
+
+/// Whether `card` casts itself as it is drawn.
+pub fn casts_when_drawn(card: CardId) -> bool {
+    let name = card.name();
+    CASTS_WHEN_DRAWN.iter().any(|n| *n == name)
+}
+
 /// The behaviour attached to a card, if it has one.
 #[inline]
 pub fn behaviour_of(card: CardId) -> Option<&'static Behaviour> {
@@ -8721,6 +8828,21 @@ pub fn is_implemented(card: CardId) -> bool {
 mod tests {
     use super::super::by_name;
     use super::*;
+
+    #[test]
+    fn every_casts_when_drawn_card_really_prints_it() {
+        // The list is by name because the corpus carries no mechanic for
+        // this -- only the words at the head of the card's text. If a name
+        // here stops printing them, the list is wrong.
+        for name in super::CASTS_WHEN_DRAWN {
+            let card = crate::cards::by_name(name)
+                .unwrap_or_else(|| panic!("{name} is not in the corpus"));
+            assert!(
+                card.info().text.contains("Casts When Drawn"),
+                "{name} does not print \"Casts When Drawn\""
+            );
+        }
+    }
 
     #[test]
     fn every_declared_card_exists_in_the_corpus() {

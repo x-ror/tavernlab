@@ -446,6 +446,8 @@ impl Game {
         p.played_races_turn = Races::NONE;
         p.next_spell_discount = 0;
         p.next_beast_discount = 0;
+        // "It is Temporary": unplayed by the end of this turn, it is gone.
+        p.hand.retain(|hc| !hc.marks.has(Marks::TEMPORARY));
         // The Fins Beyond Time: swap back whatever hand this turn started
         // with, discarding the temporary starting-hand copies and anything
         // drawn into them since.
@@ -825,6 +827,16 @@ impl Game {
                         });
                     }
                 }
+                HpTarget::FriendlyMinion => {
+                    for i in 0..me.board.len() {
+                        if me.board[i].is_minion() {
+                            out.push(Action::HeroPower {
+                                target: Some(Target::Minion(self.current, i as u8)),
+                                second: false,
+                            });
+                        }
+                    }
+                }
             }
         }
         if let Some(hp2) = me.second_hero_power
@@ -844,6 +856,16 @@ impl Game {
                             target: Some(t),
                             second: true,
                         });
+                    }
+                }
+                HpTarget::FriendlyMinion => {
+                    for i in 0..me.board.len() {
+                        if me.board[i].is_minion() {
+                            out.push(Action::HeroPower {
+                                target: Some(Target::Minion(self.current, i as u8)),
+                                second: true,
+                            });
+                        }
                     }
                 }
             }
@@ -1365,7 +1387,14 @@ impl Game {
             let card = self.player_mut(side).deck.pop();
             match card {
                 Some(c) => {
-                    self.give_hand_card(side, c.to_hand());
+                    // "Casts When Drawn": the card never reaches hand. It
+                    // resolves on the way out of the deck, and the draw still
+                    // counts as a draw.
+                    if crate::cards::casts_when_drawn(c.card) {
+                        self.cast_from_draw(side, c.card);
+                    } else {
+                        self.give_hand_card(side, c.to_hand());
+                    }
                     self.fire(Event::CardDrawn { side });
                 }
                 None => {
@@ -2027,7 +2056,7 @@ impl Game {
         } else if me.mana < cost {
             return false;
         }
-        if hero_power_target(hp) == HpTarget::Any && target.is_none() {
+        if hero_power_target(hp) != HpTarget::None && target.is_none() {
             return false;
         }
         if corpse_paid {
@@ -2096,6 +2125,83 @@ impl Game {
             // base damage as a script placeholder (`Deal @ damage`) and gives
             // no number, so the base is 1 -- the smallest value the card's
             // own "increase its damage by 1" is written against.
+            // ---------------------------------------------------------- Imbue
+            // Every Blessing's number is the Imbue count -- the corpus writes
+            // each of them with `@` and carries no value at all. See
+            // `Game::imbue` for where that reading comes from; the printed
+            // Plant Golem token is a 1/1, which is the count after the first
+            // Imbue, and confirms it.
+            "Blessing of the Golem" => {
+                let n = self.player(side).imbue_count.max(1) as i16;
+                if self.summon(side, crate::cards::token("EDR_847pt2")) {
+                    let slot = self.player(side).board.len() as u8 - 1;
+                    self.buff(Target::Minion(side, slot), n - 1, n - 1);
+                }
+            }
+            "Blessing of the Wolf" => {
+                let n = self.player(side).imbue_count.max(1) as i16;
+                let beasts: Inline<u8, MAX_HAND> = self
+                    .player(side)
+                    .hand
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, hc)| hc.card.def().races.any(Races::BEAST))
+                    .map(|(i, _)| i as u8)
+                    .collect();
+                if !beasts.is_empty() {
+                    let pick = self.rngs.effects.index(beasts.len());
+                    let at = beasts[pick] as usize;
+                    if let Some(hc) = self.player_mut(side).hand.get_mut(at) {
+                        hc.enchant(n, 0);
+                        hc.cost_delta -= n;
+                    }
+                }
+            }
+            "Blessing of the Wisp" => {
+                let n = self.player(side).imbue_count.max(1) as i16;
+                for _ in 0..n {
+                    self.summon(side, crate::cards::token("EDR_851t"));
+                }
+                self.damage_split(side, crate::effects::Area::AllEnemies, n);
+            }
+            "Blessing of the Dragon" => {
+                for _ in 0..2 {
+                    self.shuffle_into_deck(side, crate::cards::token("EDR_445pt3"));
+                }
+            }
+            "Blessing of the Moon" => {
+                let n = self.player(side).imbue_count.max(1) as i16;
+                let class = self.player(side).class;
+                if self.discover_where(side, move |d| d.class() == class) {
+                    let at = self.player(side).hand.len() - 1;
+                    if let Some(hc) = self.player_mut(side).hand.get_mut(at) {
+                        hc.cost_delta -= n;
+                        hc.marks.insert(Marks::TEMPORARY);
+                    }
+                }
+            }
+            "Blessing of the Wind" => {
+                let n = self.player(side).imbue_count.max(1) as i16;
+                if let Some(Target::Minion(s, i)) = target
+                    && s == side
+                    && let Some(m) = self.player(side).board.get(i as usize)
+                {
+                    let cost = m.card.def().cost + n;
+                    self.transform_into_random_of_cost(Target::Minion(s, i), cost);
+                }
+            }
+            "Blessing of the Bronze" => {
+                let n = self.player(side).imbue_count.max(1) as i16;
+                let class = self.player(side).class;
+                if self.add_random_to_hand_where(side, move |d| {
+                    d.kind() == Kind::Minion && d.class() != class && d.class() != Class::Neutral
+                }) {
+                    let at = self.player(side).hand.len() - 1;
+                    if let Some(hc) = self.player_mut(side).hand.get_mut(at) {
+                        hc.cost_delta -= n;
+                    }
+                }
+            }
             "Collapsing Star" => {
                 let damage = 1 + self.player(side).hero_power_bonus;
                 if let Some(t) = self.random_enemy(side) {
@@ -2109,6 +2215,78 @@ impl Game {
         true
     }
 
+
+    /// Resolve a "Casts When Drawn" card as it leaves the deck.
+    fn cast_from_draw(&mut self, side: Side, card: CardId) {
+        if let Some(f) = behaviour_of(card).and_then(|b| b.spell) {
+            f(
+                self,
+                &Ctx {
+                    card,
+                    side,
+                    target: None,
+                    source: None,
+                    outcast: false,
+                    dying: None,
+                    marks: Marks::NONE,
+                    mana_spent: 0,
+                },
+            );
+            self.sweep_deaths();
+        }
+    }
+
+    /// Imbue this player's Hero Power.
+    ///
+    /// The first Imbue installs the class's Blessing in place of the basic
+    /// power; every one after that raises the count, and the count *is* the
+    /// number every Blessing is written around. The corpus writes all eight
+    /// of them with `@` and carries no value anywhere -- not in the card
+    /// text, not in a keyword -- so the scaling was supplied from outside the
+    /// card data: one more each time, with no ceiling. The printed Plant
+    /// Golem token being a 1/1 is the one corroboration the data does offer,
+    /// since 1/1 is what the first Imbue must produce.
+    ///
+    /// A class the corpus prints no Blessing for still counts its Imbues; see
+    /// [`blessing_for`].
+    pub fn imbue(&mut self, side: Side) {
+        let p = self.player_mut(side);
+        p.imbue_count = p.imbue_count.saturating_add(1);
+        let class = p.class;
+        if let Some(b) = blessing_for(class) {
+            self.player_mut(side).hero_power = b;
+        }
+    }
+
+    /// Fire this player's Hero Power without paying for it or spending its
+    /// use (Wisprider: "Imbue your Hero Power, then trigger it").
+    pub fn trigger_hero_power(&mut self, side: Side) {
+        let was_current = self.current;
+        let used = self.player(side).hero_power_uses;
+        self.current = side;
+        self.player_mut(side).hero_power_uses = 0;
+        let hp = self.player(side).hero_power;
+        // A Blessing that needs a target picks its own here: nothing is
+        // choosing on the player's behalf at this point in resolution, the
+        // same limit `discover` documents.
+        let target = match hero_power_target(hp) {
+            HpTarget::None => None,
+            HpTarget::Any | HpTarget::FriendlyMinion => {
+                let n = self.player(side).board.len();
+                if n == 0 {
+                    None
+                } else {
+                    let pick = self.rngs.effects.index(n);
+                    Some(Target::Minion(side, pick as u8))
+                }
+            }
+        };
+        let cost = hp.def().cost;
+        self.player_mut(side).mana += cost;
+        self.use_hero_power(target, false);
+        self.player_mut(side).hero_power_uses = used;
+        self.current = was_current;
+    }
 
     /// Activate a Location.
     ///
@@ -2196,13 +2374,38 @@ impl Game {
 enum HpTarget {
     None,
     Any,
+    /// One of your own minions, and nothing else (Blessing of the Wind).
+    FriendlyMinion,
 }
 
 fn hero_power_target(hp: CardId) -> HpTarget {
     match hp.info().name {
         "Fireblast" | "Lesser Heal" => HpTarget::Any,
+        "Blessing of the Wind" => HpTarget::FriendlyMinion,
         _ => HpTarget::None,
     }
+}
+
+/// The Blessing a class Imbues into, or `None` for a class the corpus carries
+/// no Blessing for.
+///
+/// Warlock, Warrior and Demon Hunter are the three: the Emerald Dream set
+/// printed eight, and those three are not among them. A Neutral Imbue card
+/// is still legal in their decks, where it raises the count -- which the
+/// "if you've Imbued twice" cards read -- but has no Blessing to install.
+pub fn blessing_for(class: Class) -> Option<CardId> {
+    let name = match class {
+        Class::Druid => "Blessing of the Golem",
+        Class::Hunter => "Blessing of the Wolf",
+        Class::Mage => "Blessing of the Wisp",
+        Class::Paladin => "Blessing of the Dragon",
+        Class::Priest => "Blessing of the Moon",
+        Class::Shaman => "Blessing of the Wind",
+        Class::DeathKnight => "Blessing of the Infinite",
+        Class::Rogue => "Blessing of the Bronze",
+        _ => return None,
+    };
+    by_name(name)
 }
 
 impl Game {
@@ -2267,7 +2470,10 @@ fn pays_with_corpses(card: CardId) -> bool {
 /// `card_cost`/`play_card` by reading `hero_power` directly, so this only
 /// needs to keep `legal_actions` from offering a button that does nothing.
 fn is_passive_hero_power(card: CardId) -> bool {
-    matches!(card.name(), "Mug's Magic" | "Zee's Might")
+    matches!(
+        card.name(),
+        "Mug's Magic" | "Zee's Might" | "Blessing of the Infinite"
+    )
 }
 
 /// The basic hero power for a class.

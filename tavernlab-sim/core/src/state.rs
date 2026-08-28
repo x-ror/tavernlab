@@ -352,6 +352,10 @@ impl Marks {
     /// board back to hand, which the board carries no provenance for, and
     /// which only matters if that same card is then traded away again.
     pub const NOT_FROM_DECK: Marks = Marks(1 << 4);
+    /// This copy burns at the end of the turn it was given, unplayed
+    /// ("Temporary"). Per-copy, because the same card can sit in hand as a
+    /// permanent copy and a temporary one at the same time.
+    pub const TEMPORARY: Marks = Marks(1 << 5);
 
     #[inline]
     pub const fn has(self, m: Marks) -> bool {
@@ -636,6 +640,14 @@ pub struct Player {
     /// because "started with" is a question about that list and not about
     /// whatever is left in the deck by the time the card is played.
     pub deck_started_spelless: bool,
+    /// How many times this player has Imbued their Hero Power.
+    ///
+    /// Every Blessing scales off this one number: the corpus writes each of
+    /// them with `@` where the value belongs (`Summon a @/@ Plant Golem`),
+    /// and the value is the Imbue count, with no ceiling. The printed tokens
+    /// confirm the reading -- the Plant Golem is a 1/1, which is the count
+    /// after the first Imbue. See `Game::imbue`.
+    pub imbue_count: u8,
     /// The class Shadowed Informant is pointing at right now. It starts as
     /// this player's own class and swaps to a random other one at the end of
     /// each of their turns, so a copy played on the turn it arrives offers
@@ -764,6 +776,7 @@ impl Player {
             deck_started_spelless: deck
                 .iter()
                 .all(|c| c.def().kind() != Kind::Spell),
+            imbue_count: 0,
             informant_class: class,
             quest: None,
             sidequest: None,
