@@ -285,6 +285,25 @@ impl Game {
             }
             if let Some(f) = behaviour_of(card).and_then(|b| b.trigger) {
                 f(self, &TriggerCtx { side, slot, event });
+                // Sandfury Aura: "Your minions' end of turn effects trigger
+                // twice." A modifier on this sweep rather than an effect of
+                // its own, because the only place that can run a trigger a
+                // second time is the place that ran it the first.
+                //
+                // "Your minions'" is read strictly: a board slot, on its own
+                // controller's end of turn. A weapon, a Quest or a Hero Power
+                // reacting to the same event is not a minion and fires once.
+                if matches!(event, Event::TurnEnd { side: whose } if whose == side)
+                    && slot < MAX_BOARD as u8
+                    && self.doubles_end_of_turn(side)
+                    && self
+                        .player(side)
+                        .board
+                        .get(slot as usize)
+                        .is_some_and(|m| m.card == card && m.active())
+                {
+                    f(self, &TriggerCtx { side, slot, event });
+                }
             }
             if self.is_over() {
                 break;

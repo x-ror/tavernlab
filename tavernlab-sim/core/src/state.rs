@@ -580,6 +580,19 @@ pub enum PendingKind {
     /// What a sham trial is: an effect chosen now and resolved several turns
     /// later, by the card it was chosen from.
     CastLater = 7,
+    /// An Aura: summon `card` at the end of each of the owner's turns.
+    AuraSummon = 8,
+    /// An Aura: restore `amount` Health to all the owner's characters at the
+    /// end of each of their turns.
+    AuraHeal = 9,
+    /// An Aura: give a random friendly minion `+amount/+amount` and Divine
+    /// Shield at the end of each of the owner's turns.
+    AuraBuff = 10,
+    /// An Aura that is a modifier rather than an effect: while it is live,
+    /// the owner's minions' end of turn effects trigger twice. Nothing fires
+    /// for it -- `Game::fire` reads it -- but it still ticks down like the
+    /// rest, which is why it is queued the same way.
+    AuraDouble = 11,
 }
 
 impl PendingKind {
@@ -592,6 +605,34 @@ impl PendingKind {
     /// passed -- and those wait.
     pub const fn delayed(self) -> bool {
         matches!(self, PendingKind::SetMana | PendingKind::CastLater)
+    }
+
+    /// Whether this fires at the end of its owner's turn rather than the
+    /// start of it.
+    ///
+    /// The Aura cycle is printed "At the end of your turn", and one of them --
+    /// Acceleration Aura -- is printed "At the start" and is the exception
+    /// rather than the rule. Both ticks walk the same queue; this is what
+    /// decides which one owns an entry.
+    pub const fn at_end_of_turn(self) -> bool {
+        matches!(
+            self,
+            PendingKind::AuraSummon
+                | PendingKind::AuraHeal
+                | PendingKind::AuraBuff
+                | PendingKind::AuraDouble
+        )
+    }
+
+    /// Whether an entry of this kind is an Aura, for the cards that ask
+    /// whether you control one.
+    ///
+    /// The same four as [`at_end_of_turn`](Self::at_end_of_turn) today, and
+    /// deliberately a separate question: Acceleration Aura is an Aura that
+    /// ticks at the start of a turn, and an Aura the engine adds later need
+    /// not be one at all.
+    pub const fn is_aura(self) -> bool {
+        self.at_end_of_turn()
     }
 }
 

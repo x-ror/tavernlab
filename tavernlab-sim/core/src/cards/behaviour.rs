@@ -423,6 +423,25 @@ mod tokens {
     pub const ECTOPLASM: CardId = token("127118-ectoplasm");
     /// What five Demon Hunter cards hand out.
     pub const VOID_SOUL: CardId = token("JAIL_732");
+    /// The Aura cycle, its summon, and the Shatter pair that flies with it.
+    pub const CHRONOLOGICAL_AURA: CardId = token("TIME_700");
+    pub const CHRONOLOGICAL_DRAKE: CardId = token("TIME_700t");
+    pub const SANDFURY_AURA: CardId = token("CATA_480");
+    pub const GNOMISH_AURA: CardId = token("TIME_009t1");
+    pub const MEKKATORQUES_AURA: CardId = token("TIME_009t2");
+    pub const FLIGHT_MANEUVERS: CardId = token("CATA_479");
+    pub const FLIGHT_MANEUVERS_DRAKES: CardId = token("CATA_479t");
+    pub const FLIGHT_MANEUVERS_BUFF: CardId = token("CATA_479t2");
+    pub const SKY_DRAKE: CardId = token("CATA_479t3");
+    /// Gnomeregan's later two ages. The first needs no id: its row is keyed
+    /// by name like every other, and only the ages it turns into are named
+    /// here, as the targets of the transform.
+    /// The carrier for the Gnomeregan chain's granted "Deathrattle: Deal 2
+    /// damage to the enemy hero" -- a real card whose whole text is that
+    /// deathrattle, the way `GRANTED_RATTLES` works everywhere else.
+    pub const LEPER_GNOME: CardId = token("EX1_029");
+    pub const PRESENT_GNOMEREGAN: CardId = token("TIME_044t1");
+    pub const FUTURE_GNOMEREGAN: CardId = token("TIME_044t2");
     /// Supply Run, and the two halves it shatters into.
     pub const SUPPLY_RUN: CardId = token("CATA_820");
     pub const SUPPLY_RUN_DRAW: CardId = token("CATA_820t");
@@ -9423,7 +9442,237 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             d.kind() == super::Kind::Spell && d.school() == super::School::Fel
         });
     }),
+
+    // ------------------------------------------------------------- the Auras
+    // Paladin's Aura cycle, and the five cards built around it.
+    //
+    // An Aura is a spell that stays: it goes to the hero zone rather than the
+    // board, does its thing at the end of each of its owner's turns, and is
+    // gone after three of them. The engine already had somewhere for that to
+    // live -- `Player::pending`, which Acceleration Aura has used since the
+    // second card batch -- so each Aura here is one queued entry and the
+    // firing is in `Game::tick_auras`.
+    //
+    // "Lasts 3 turns" is the one figure the corpus does not carry: all four
+    // arrive with the number cut out ("Lasts turns", "Lasts @ turns"). Three
+    // is what hearthstone.wiki.gg prints on each of the four card pages
+    // separately, and it is also what Acceleration Aura -- whose text is
+    // stripped the same way -- has been queued with here since it was
+    // written. One value for the whole cycle, named where it is used.
+
+    spell("Chronological Aura", T::None, |g, c| {
+        g.player_mut(c.side).pending.push(Pending {
+            kind: PendingKind::AuraSummon,
+            turns_left: 3,
+            amount: 0,
+            card: tokens::CHRONOLOGICAL_DRAKE,
+        });
+    }),
+    spell("Sandfury Aura", T::None, |g, c| {
+        g.player_mut(c.side).pending.push(Pending {
+            kind: PendingKind::AuraDouble,
+            turns_left: 3,
+            amount: 0,
+            card: CardId(0),
+        });
+    }),
+    spell("Gnomish Aura", T::None, |g, c| {
+        g.player_mut(c.side).pending.push(Pending {
+            kind: PendingKind::AuraHeal,
+            turns_left: 3,
+            amount: 4,
+            card: CardId(0),
+        });
+    }),
+    spell("Mekkatorque's Aura", T::None, |g, c| {
+        g.player_mut(c.side).pending.push(Pending {
+            kind: PendingKind::AuraBuff,
+            turns_left: 3,
+            amount: 4,
+            card: CardId(0),
+        });
+    }),
+
+    // "Battlecry: Put one of each Aura from your deck into the battlefield."
+    // One of each, so a deck holding two Chronological Auras loses one; and
+    // "from your deck", so each is taken out of it. Both of Gelbin's own
+    // Auras are in the deck rather than in his text: Fabled puts them there
+    // when the list is built, which is why the real deck codes carry them.
+    battlecry("Gelbin of Tomorrow", T::None, |g, c| {
+        let mut done: Inline<CardId, { AURAS.len() }> = Inline::new();
+        loop {
+            let next = g
+                .player(c.side)
+                .deck
+                .iter()
+                .position(|d| is_aura(d.card) && !done.iter().any(|s| *s == d.card));
+            let Some(at) = next else { break };
+            let card = g.player(c.side).deck[at].card;
+            g.player_mut(c.side).deck.remove(at);
+            done.push(card);
+            g.cast_token(c.side, card);
+        }
+    }),
+
+    battlecry("Manifested Timeways", T::None, |g, c| {
+        if g.controls_aura(c.side) {
+            g.spell_damage_area(c.side, Area::AllEnemies, 3);
+        }
+    }),
+
+    // Shatter, the third pair -- see `SHATTERS`. Whole or half, one row.
+    spell("Flight Maneuvers", T::None, |g, c| {
+        if c.card != tokens::FLIGHT_MANEUVERS_BUFF {
+            g.summon_token(c.side, tokens::SKY_DRAKE, 2);
+        }
+        if c.card != tokens::FLIGHT_MANEUVERS_DRAKES {
+            for i in 0..g.player(c.side).board.len() {
+                let m = g.player(c.side).board[i];
+                if m.is_minion() && m.active() {
+                    let t = Target::Minion(c.side, i as u8);
+                    g.buff(t, 1, 0);
+                    g.grant(t, Keywords::DIVINE_SHIELD);
+                }
+            }
+        }
+    }),
+
+    // "Deathrattle: Trigger a random friendly minion's end of turn effect."
+    // The weapon's own deathrattle, fired from the weapon slot; what it
+    // triggers is one minion's reaction to `TurnEnd`, run on demand with no
+    // turn actually ending.
+    deathrattle("Inspiring Maul", |g, c| {
+        let mut able: Inline<u8, MAX_BOARD> = Inline::new();
+        for (i, m) in g.player(c.side).board.iter().enumerate() {
+            if m.is_minion()
+                && m.active()
+                && behaviour_of(m.card).and_then(|b| b.trigger).is_some()
+            {
+                able.push(i as u8);
+            }
+        }
+        if able.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(able.len());
+        let slot = able[pick];
+        let card = g.player(c.side).board[slot as usize].card;
+        if let Some(f) = behaviour_of(card).and_then(|b| b.trigger) {
+            f(
+                g,
+                &crate::events::TriggerCtx {
+                    side: c.side,
+                    slot,
+                    event: Event::TurnEnd { side: c.side },
+                },
+            );
+        }
+    }),
+
+    // "Battlecry: Cast a random spell from your deck that costs (2) or less
+    // (targets this if possible)." The spell leaves the deck, as a cast from
+    // it does; a spell whose target requirement this body cannot satisfy is
+    // still cast, at whatever the engine's own targeting finds.
+    battlecry("Violet Treasuregill", T::None, |g, c| {
+        let mut cheap: Inline<u16, { MAX_DECK }> = Inline::new();
+        for (i, d) in g.player(c.side).deck.iter().enumerate() {
+            if d.card.def().kind() == super::Kind::Spell
+                && d.card.def().cost + d.cost_delta as i16 <= 2
+                && behaviour_of(d.card).and_then(|b| b.spell).is_some()
+            {
+                cheap.push(i as u16);
+            }
+        }
+        if cheap.is_empty() {
+            return;
+        }
+        let pick = g.rngs.effects.index(cheap.len());
+        let at = cheap[pick] as usize;
+        let card = g.player(c.side).deck[at].card;
+        g.player_mut(c.side).deck.remove(at);
+        // "(targets this if possible)": the body is on the board when a
+        // Battlecry runs, so it can be pointed at -- when the spell will
+        // take it.
+        let me = c.source.map(|s| Target::Minion(c.side, s));
+        let spec = behaviour_of(card).map_or(T::None, |b| b.target);
+        let target = me.filter(|t| spec.needed() && spec.matches(g, c.side, *t));
+        g.cast_token_at(c.side, card, target);
+    }),
+
+    // Gnomeregan across three ages. Each use gives its own buff and then
+    // hands the slot to the next age, which is what "Advance to the present!"
+    // says; the durability that is left goes with it, so the three ages are
+    // three uses of one Location rather than nine.
+    spell("Past Gnomeregan", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.buff(t, 2, 1);
+        }
+        advance_gnomeregan(g, c, tokens::PRESENT_GNOMEREGAN);
+    }),
+    spell("Present Gnomeregan", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.buff(t, 2, 1);
+            grant_rattle(g, Some(t), tokens::LEPER_GNOME);
+        }
+        advance_gnomeregan(g, c, tokens::FUTURE_GNOMEREGAN);
+    }),
+    spell("Future Gnomeregan", T::AnyMinion, |g, c| {
+        if let Some(t) = c.target {
+            g.buff(t, 2, 1);
+            g.grant(t, Keywords::DIVINE_SHIELD);
+            grant_rattle(g, Some(t), tokens::LEPER_GNOME);
+        }
+    }),
 ];
+
+/// Turn this Location into the next age, keeping the durability it has left.
+///
+/// A fresh Permanent would come with the next age's full three uses, and the
+/// chain would be nine uses of an escalating Location rather than three. The
+/// corpus does not say which it is and neither does the wiki, so this takes
+/// the reading that cannot overrate the card, and says so in `APPROXIMATE`.
+fn advance_gnomeregan(g: &mut Game, c: &Ctx, into: CardId) {
+    let Some(slot) = c.source else { return };
+    let Some(here) = g.player(c.side).board.get(slot as usize).copied() else {
+        return;
+    };
+    let spent = here.damage;
+    g.transform(Target::Minion(c.side, slot), into);
+    if let Some(m) = g.player_mut(c.side).board.get_mut(slot as usize) {
+        m.damage = spent;
+        // The age it just became has not been used this turn; the age it was
+        // has. Keeping both marks would give the chain a free extra use.
+        m.flags.insert(Flags::USED);
+        m.cooldown = 1;
+    }
+}
+
+/// The Aura cycle, as cards.
+///
+/// Gelbin of Tomorrow asks the deck for "one of each Aura", which is a
+/// question about card identity rather than about anything queued, so it
+/// needs its own list. Acceleration Aura is in it because it is an Aura in a
+/// deck and Gelbin should find it; it is not in `PendingKind::is_aura`,
+/// because what it queues is a plain temporary crystal that another card
+/// queues too -- see `APPROXIMATE`.
+const AURAS: [CardId; 5] = [
+    tokens::CHRONOLOGICAL_AURA,
+    tokens::SANDFURY_AURA,
+    tokens::GNOMISH_AURA,
+    tokens::MEKKATORQUES_AURA,
+    token("END_011"),
+];
+
+pub fn is_aura(card: CardId) -> bool {
+    let mut i = 0;
+    while i < AURAS.len() {
+        if AURAS[i].0 == card.0 {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
 
 /// Cards implemented only in part, with what is missing.
 ///
@@ -9437,6 +9686,14 @@ pub static BEHAVIOURS: &[Behaviour] = &[
 /// coverage figure that mixes exact and approximate cards is worse than a
 /// smaller honest one.
 pub const APPROXIMATE: &[(&str, &str)] = &[
+    (
+        "Past Gnomeregan",
+        "\"Advance to the present!\" happens on each use and the durability that is left goes with it, so the three ages are three uses of one Location rather than three each. Neither the corpus nor the wiki says when the advance happens or what it does to durability; this is the reading that cannot overrate the card",
+    ),
+    (
+        "Manifested Timeways",
+        "\"If you control an Aura\" sees the four Auras of this cycle but not Acceleration Aura, which queues a plain temporary crystal that a second card queues too -- so there is nothing on the queued entry to tell them apart. Gelbin of Tomorrow does find it in a deck, since that is a question about the card and not about what it queued",
+    ),
     (
         "Void Soul",
         "only the summon is implemented, and the 1-Cost it summons is the wiki's number rather than the corpus's -- the corpus text arrives template-stripped as \"a random -Cost Demon\". \"Improve your future Void Souls\" is not implemented at all: no source states what one improvement changes, and a step invented here would be a number this engine made up",
@@ -9893,13 +10150,18 @@ pub fn awakened_by_dragon(card: CardId) -> Option<CardId> {
 /// halves keep the parent's full cost, which is what makes splitting a cost
 /// and recombining the reward -- and both costs are the corpus's, not a
 /// choice made here.
-const SHATTERS: [(CardId, CardId, CardId); 2] = [
+const SHATTERS: [(CardId, CardId, CardId); 3] = [
     (
         tokens::SUPPLY_RUN,
         tokens::SUPPLY_RUN_DRAW,
         tokens::SUPPLY_RUN_BUFF,
     ),
     (tokens::SCHISM, tokens::SCHISM_BUFF, tokens::SCHISM_COPY),
+    (
+        tokens::FLIGHT_MANEUVERS,
+        tokens::FLIGHT_MANEUVERS_DRAKES,
+        tokens::FLIGHT_MANEUVERS_BUFF,
+    ),
 ];
 
 /// Halves that combine wherever they are in hand, not only side by side.

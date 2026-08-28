@@ -67,7 +67,7 @@ fn every_fieldable_meta_deck_plays_a_whole_game() {
     // reported so that a change which quietly stops a deck from fielding
     // fails here too, and not only in a command nobody runs in CI.
     assert_eq!(
-        played, 22,
+        played, 24,
         "the number of fieldable meta decks moved; re-measure with `tavernsim decks` and update this deliberately"
     );
 }
