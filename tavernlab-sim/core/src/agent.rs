@@ -132,19 +132,36 @@ impl Scripted {
 
             // Worth doing with leftover mana, never worth doing instead of
             // developing the board.
-            Action::HeroPower { target, .. } => {
+            Action::HeroPower { target, second } => {
                 let mut s = 5.0;
-                if let Some(Target::Minion(s_side, i)) = target {
-                    // Only point damage at something it can finish.
-                    if let Some(m) = g.player(s_side).board.get(i as usize) {
-                        if s_side == foe && m.health() <= 1 {
-                            s += 20.0;
-                        } else if s_side == foe {
-                            s += 2.0;
-                        } else {
-                            s -= 30.0; // do not shoot your own board
+                match target {
+                    Some(Target::Minion(s_side, i)) => {
+                        // Only point damage at something it can finish.
+                        if let Some(m) = g.player(s_side).board.get(i as usize) {
+                            if s_side == foe && m.health() <= 1 {
+                                s += 20.0;
+                            } else if s_side == foe {
+                                s += 2.0;
+                            } else {
+                                s -= 30.0; // do not shoot your own board
+                            }
                         }
                     }
+                    // Whose hero to aim at was the one target this never
+                    // checked. "Any character" is the same list for Fireblast
+                    // and Lesser Heal, so with both faces scoring alike the
+                    // pick fell to enumeration order -- and a Mage with an
+                    // empty enemy board burned its own face for one, every
+                    // turn it had the mana spare.
+                    Some(Target::Hero(t_side)) => {
+                        let p = g.player(me);
+                        let hp = if second { p.second_hero_power } else { Some(p.hero_power) };
+                        let harms = hp.is_some_and(crate::game::hero_power_harms);
+                        if harms == (t_side == me) {
+                            s -= 30.0;
+                        }
+                    }
+                    None => {}
                 }
                 s
             }
@@ -373,6 +390,43 @@ mod tests {
             second: false,
         };
         assert!(a.score(&g, own) < a.score(&g, Action::EndTurn));
+    }
+
+    #[test]
+    fn a_harming_hero_power_never_points_at_your_own_face() {
+        // Fireblast and Lesser Heal share one target list -- any character --
+        // and the sides mean opposite things. With both faces scoring alike
+        // the pick fell to enumeration order, and a Mage with an empty enemy
+        // board shot itself for one every turn it had the mana spare.
+        let g = game_with(&[], &[]);
+        let a = Scripted::new(Style::Midrange);
+        let at = |side| Action::HeroPower {
+            target: Some(Target::Hero(side)),
+            second: false,
+        };
+        assert!(
+            a.score(&g, at(Side::Player1)) > a.score(&g, at(Side::Player0)),
+            "Fireblast goes at them, not at you"
+        );
+        assert!(a.score(&g, at(Side::Player0)) < a.score(&g, Action::EndTurn));
+    }
+
+    #[test]
+    fn a_healing_hero_power_never_points_at_theirs() {
+        let mut g = game_with(&[], &[]);
+        for i in 0..2 {
+            g.players[i].hero_power =
+                by_name("Lesser Heal").expect("the corpus has Lesser Heal");
+        }
+        let a = Scripted::new(Style::Midrange);
+        let at = |side| Action::HeroPower {
+            target: Some(Target::Hero(side)),
+            second: false,
+        };
+        assert!(
+            a.score(&g, at(Side::Player0)) > a.score(&g, at(Side::Player1)),
+            "Lesser Heal goes at you, not at them"
+        );
     }
 
     #[test]

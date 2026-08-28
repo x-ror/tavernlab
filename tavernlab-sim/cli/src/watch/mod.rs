@@ -229,6 +229,14 @@ fn plan(tr: &Tracker) -> Vec<String> {
             break;
         }
     }
+    // A trailing Coin is a Coin spent on nothing. The engine's own agent
+    // plays it whenever it is legal, which is right for a game it is playing
+    // out and wrong as advice: what is left after the last line is a mana
+    // crystal with nothing to buy. Only the last one goes -- a Coin that pays
+    // for the play after it stays.
+    while out.last().is_some_and(|l| l == "зіграти The Coin") {
+        out.pop();
+    }
     if out.is_empty() {
         out.push("нічого не робити цього ходу".into());
     }
@@ -309,9 +317,31 @@ fn opponent_read(app: &App, format: &str, tr: &Tracker) -> Vec<String> {
             class_name(class)
         )];
     }
+    if seen.is_empty() {
+        return vec![format!(
+            "{}: ще нічого не зіграно, читати нема чого",
+            class_name(class)
+        )];
+    }
+    // `Read::frac` is 1.0 on no evidence by design -- the web UI wants a
+    // neutral prior -- which printed here read as "Herald Warlock 100%"
+    // before the opponent had played a card. The empty case is answered
+    // above; a best match of nothing is answered here, because naming a deck
+    // beside 0% is a claim with the confidence stripped off but the name
+    // left standing.
+    if reads.iter().all(|r| r.hits == 0) {
+        return vec![format!(
+            "{}: жодна колода гаунтлета не пояснює зіграного ({} карт)",
+            class_name(class),
+            seen.len()
+        )];
+    }
     let mut out = Vec::new();
-    for r in reads.iter().take(3) {
-        let mut line = format!("{}  {:.0}%", r.deck, r.frac * 100.0);
+    for r in reads.iter().take(3).filter(|r| r.hits > 0) {
+        // The fraction and the count it came from: "43%" out of seven cards
+        // is a read, out of two is a coincidence, and the line should not
+        // make them look alike.
+        let mut line = format!("{}  {:.0}% ({} з {})", r.deck, r.frac * 100.0, r.hits, r.seen);
         if !r.threats.is_empty() {
             let names: Vec<String> = r
                 .threats
@@ -383,11 +413,22 @@ pub struct Args {
 
 /// Print everything the tracker can currently say.
 fn report(app: &App, format: &str, tr: &Tracker, deck: &str) {
+    // Straight after a `CREATE_GAME` there is a moment where nothing at all
+    // has been read. A full block of empty boards and two untouched heroes
+    // says nothing and reads like a position; one line is the honest size of
+    // what is known.
+    if tr.my_class().is_none() && tr.opponent_class().is_none() && tr.opening.is_empty() {
+        println!("\n─── нова гра — ще нічого не видно");
+        return;
+    }
     println!("\n─── хід {} {}", tr.turn, if tr.my_turn { "(ваш)" } else { "" });
     match (tr.my_class(), tr.opponent_class()) {
         (Some(a), Some(b)) => println!("  {} проти {}", class_name(a), class_name(b)),
         (Some(a), None) => println!("  {} проти ?", class_name(a)),
         _ => println!("  класи ще не видно"),
+    }
+    if tr.over {
+        println!("  гру завершено");
     }
 
     if !tr.started && !tr.opening.is_empty() {
@@ -438,7 +479,7 @@ fn report(app: &App, format: &str, tr: &Tracker, deck: &str) {
         }
     );
 
-    if tr.my_turn {
+    if tr.my_turn && !tr.over {
         println!("\n  ХІД");
         for line in plan(tr) {
             println!("    {line}");
