@@ -314,7 +314,6 @@ impl Scripted {
     }
 
     /// Shared by minion and hero attacks.
-
     fn attack_score(
         &self,
         g: &Game,

@@ -45,7 +45,7 @@ impl Game {
     fn wielding_atiesh(&self, side: Side) -> bool {
         self.player(side)
             .weapon
-            .is_some_and(|w| w.card.name() == "Atiesh the Greatstaff")
+            .is_some_and(|w| crate::cards::controlled::is_atiesh(w.card))
     }
 
     /// Damage from a spell or hero power, boosted by the caster's Spell Damage.
@@ -664,11 +664,52 @@ impl Game {
     /// nothing and running it late can only leave stats stale rather than
     /// compounding an error. Called wherever the board changes.
     ///
-    /// Cost is at most fourteen minions against fourteen possible sources —
-    /// under two hundred pure comparisons, against a game that takes tens of
-    /// microseconds. A dirty-flag scheme would be bookkeeping to avoid work
-    /// that does not measurably exist.
+    /// Cost is at most fourteen minions against fourteen possible sources.
+    /// That is small per call and there are a great many calls -- it runs
+    /// after every resolution point in the game, some six hundred thousand
+    /// times in a two-thousand-game batch, and it is the second most
+    /// expensive function in the engine. What has been done about that is
+    /// the scan below; a dirty-flag scheme was not, because auras depend on
+    /// board membership, silence and whatever else each `Bonus` chooses to
+    /// read, and there is no one place that invalidates all three.
     pub fn recompute_auras(&mut self) {
+        // One pass over both boards, asking three questions at once: what
+        // projects an aura, what grants itself a bonus, and whether anything
+        // is currently carrying either. A position with none of the three
+        // leaves without writing a byte -- which used to mean walking both
+        // boards four times and looking a behaviour up twice per minion to
+        // arrive at nothing.
+        //
+        // The hook table answers the first two questions from a byte per
+        // card, so the scan stays in L1 instead of reaching into the ninety
+        // kilobytes of `BEHAVIOURS`; the behaviour itself is fetched further
+        // down, only for the few cards that have one.
+        let hooks = crate::cards::hooks();
+        let mut sources: Inline<(Side, u8, CardId), { MAX_BOARD * 2 }> = Inline::new();
+        let mut bonuses: Inline<(u8, u8), { MAX_BOARD * 2 }> = Inline::new();
+        let mut carrying = false;
+        for i in 0..2 {
+            for (slot, m) in self.players[i].board.iter().enumerate() {
+                carrying |= m.aura_atk != 0 || m.aura_hp != 0;
+                if !m.active() || m.flags.has(Flags::SILENCED) {
+                    continue;
+                }
+                let h = hooks[m.card.0 as usize];
+                if h & crate::cards::HAS_BONUS != 0 {
+                    bonuses.push((i as u8, slot as u8));
+                }
+                if h & crate::cards::HAS_AURA != 0 {
+                    sources.push((Side::from_index(i), slot as u8, m.card));
+                }
+            }
+        }
+        // The count of live bonus sources is kept on the game so the damage
+        // path can skip this whole function with a single comparison.
+        self.conditional = bonuses.len() as u8;
+        if !carrying && bonuses.is_empty() && sources.is_empty() {
+            return;
+        }
+
         // 1. take back what auras previously granted
         for i in 0..2 {
             for m in self.players[i].board.iter_mut() {
@@ -681,28 +722,20 @@ impl Game {
         // 2. what each minion grants itself ("Has +3 Attack while damaged").
         // Every bonus is read before any is applied, so one minion's grant
         // cannot be an input to another's -- see `Bonus` on why that matters.
-        // The count of live sources is kept on the game so the damage path can
-        // skip this whole pass with a single comparison.
+        // The body is re-read here rather than in the scan above, because a
+        // bonus must see the board with the old aura stats already taken off.
         let mut grants: Inline<(usize, usize, i16, i16), { MAX_BOARD * 2 }> = Inline::new();
-        let mut conditional = 0u8;
-        for i in 0..2 {
-            let side = Side::from_index(i);
-            for slot in 0..self.players[i].board.len() {
-                let m = self.players[i].board[slot];
-                if !m.active() || m.flags.has(Flags::SILENCED) {
-                    continue;
-                }
-                let Some(f) = crate::cards::behaviour_of(m.card).and_then(|b| b.bonus) else {
-                    continue;
-                };
-                conditional += 1;
-                let (a, h) = f(self, side, slot as u8, &m);
-                if a != 0 || h != 0 {
-                    grants.push((i, slot, a, h));
-                }
+        for (i, slot) in bonuses.iter().copied() {
+            let (i, slot) = (i as usize, slot as usize);
+            let m = self.players[i].board[slot];
+            let Some(f) = crate::cards::behaviour_of(m.card).and_then(|b| b.bonus) else {
+                continue;
+            };
+            let (a, h) = f(self, Side::from_index(i), slot as u8, &m);
+            if a != 0 || h != 0 {
+                grants.push((i, slot, a, h));
             }
         }
-        self.conditional = conditional;
         for (i, slot, a, h) in grants.iter().copied() {
             let m = &mut self.players[i].board[slot];
             m.atk += a;
@@ -711,25 +744,8 @@ impl Game {
             m.aura_hp += h;
         }
 
-        // 3. collect live aura sources; a silenced minion projects nothing
-        // Stored as the source card rather than its function: a bare `fn`
-        // pointer has no `Default`, and re-reading it is one array index.
-        let mut sources: Inline<(Side, u8, CardId), { MAX_BOARD * 2 }> = Inline::new();
-        for i in 0..2 {
-            let side = Side::from_index(i);
-            for (slot, m) in self.players[i].board.iter().enumerate() {
-                if !m.active() || m.flags.has(Flags::SILENCED) {
-                    continue;
-                }
-                if crate::cards::behaviour_of(m.card).and_then(|b| b.aura).is_some() {
-                    sources.push((side, slot as u8, m.card));
-                }
-            }
-        }
-        if sources.is_empty() {
-            return;
-        }
-        // 4. apply
+        // 3. apply what the aura sources project. A silenced minion projects
+        // nothing, which the scan above already settled.
         for (src_side, src_slot, src_card) in sources.iter().copied() {
             let Some(f) = crate::cards::behaviour_of(src_card).and_then(|b| b.aura) else {
                 continue;
@@ -754,6 +770,7 @@ impl Game {
             }
         }
     }
+
 
     /// Draw the first card in the deck matching `pred`, chosen at random among
     /// the matches. Returns whether anything was drawn.
@@ -1529,15 +1546,8 @@ impl Game {
             f(
                 self,
                 &crate::cards::Ctx {
-                    card,
-                    side,
-                    target: None,
                     source: Some(slot),
-                    outcast: false,
-                    centre: false,
-                    dying: None,
-                    marks: crate::state::Marks::NONE,
-                    mana_spent: 0,
+                    ..crate::cards::Ctx::bare(card, side)
                 },
             );
         }
@@ -1822,15 +1832,9 @@ impl Game {
                 f(
                     self,
                     &crate::cards::Ctx {
-                        card: m.card,
-                        side,
-                        target: None,
                         source: Some(slot as u8),
-                        outcast: false,
-                        centre: false,
                         dying: Some(m),
-                        marks: crate::state::Marks::NONE,
-                        mana_spent: 0,
+                        ..crate::cards::Ctx::bare(m.card, side)
                     },
                 );
                 fired += 1;
@@ -1954,15 +1958,8 @@ impl Game {
         f(
             self,
             &crate::cards::Ctx {
-                card,
-                side,
-                target: None,
-                source: None,
-                outcast: false,
-                centre: false,
                 dying: Some(crate::state::Permanent::summon(card)),
-                marks: crate::state::Marks::NONE,
-                mana_spent: 0,
+                ..crate::cards::Ctx::bare(card, side)
             },
         );
         true

@@ -24,7 +24,7 @@ ENV  := $(DATA)/watch.env
 # kill. Nothing here is worth parallelising anyway; cargo does its own.
 .NOTPARALLEL:
 
-.PHONY: help build serve watch watch-start watch-stop watch-restart watch-status watch-log history bench
+.PHONY: help build serve watch watch-start watch-stop watch-restart watch-status watch-log history bench callgrind
 
 help:
 	@echo "make watch          перезібрати й (пере)запустити запис ігор"
@@ -35,6 +35,7 @@ help:
 	@echo "make serve          зібрати й відкрити інтерфейс"
 	@echo "make build          лише зібрати (PROFILE=release для оптимізованого)"
 	@echo "make bench          пропускна здатність (див. tools/ab-bench.sh для порівнянь)"
+	@echo "make callgrind      підрахунок інструкцій (детермінований A/B)"
 	@echo
 	@echo "бойовий тег і тека логів — у $(ENV), не в репозиторії:"
 	@echo "  HS_ME='Ваш#12345'"
@@ -107,3 +108,10 @@ history: build
 # shared host reports a 2% regression for a binary against a copy of itself.
 bench: build
 	$(BIN) bench
+
+# Instruction count instead of seconds: deterministic, so a 0.2% difference
+# is a real one and needs no control run. About ten seconds under valgrind.
+callgrind: build
+	valgrind --tool=callgrind --callgrind-out-file=/tmp/tavernsim.cg \
+	    $(BIN) bench 2000 1
+	callgrind_annotate /tmp/tavernsim.cg | head -40

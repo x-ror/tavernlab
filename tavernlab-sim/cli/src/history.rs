@@ -350,7 +350,6 @@ mod tests {
             opponent_seen: 7,
             opening: vec!["Twilight Egg".into(), "The Coin".into()],
             opponent_cards: vec!["Rotheart Dryad".into()],
-            ..Game::default()
         }
     }
 
@@ -405,7 +404,7 @@ mod tests {
         let a = game(1_700_000_000, "ROGUE", Some(true));
         let mut b = a.clone();
         b.played_at += 1;
-        assert_eq!(append(&path, &[a.clone()]).expect("first"), 1);
+        assert_eq!(append(&path, std::slice::from_ref(&a)).expect("first"), 1);
         assert_eq!(append(&path, &[b]).expect("echo"), 0, "not a second game");
         assert_eq!(read(&path).expect("read"), vec![a]);
     }

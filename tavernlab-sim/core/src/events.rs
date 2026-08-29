@@ -222,6 +222,12 @@ impl Game {
         // Sample as (side, slot, card) rather than holding a reference: the
         // effects below take `&mut self`.
         let mut reactors: Inline<(Side, u8, CardId), { MAX_BOARD * 2 + 6 }> = Inline::new();
+        // "Does this card react?" asked of up to twenty cards per event, and
+        // an event fires on nearly every action in the game. The hook table
+        // answers it from a byte instead of a walk into `BEHAVIOURS`; the
+        // behaviour itself is fetched below, only for the few that do.
+        let hooks = crate::cards::hooks();
+        let reacts = |card: CardId| hooks[card.0 as usize] & crate::cards::HAS_TRIGGER != 0;
         for i in 0..2 {
             let side = Side::from_index(i);
             for (slot, m) in self.players[i].board.iter().enumerate() {
@@ -232,7 +238,7 @@ impl Game {
                 {
                     continue;
                 }
-                if m.active() && behaviour_of(m.card).and_then(|b| b.trigger).is_some() {
+                if m.active() && reacts(m.card) {
                     reactors.push((side, slot as u8, m.card));
                 }
             }
@@ -241,7 +247,7 @@ impl Game {
         // weapons than minions.
         for i in 0..2 {
             if let Some(w) = self.players[i].weapon
-                && behaviour_of(w.card).and_then(|b| b.trigger).is_some()
+                && reacts(w.card)
             {
                 reactors.push((Side::from_index(i), WEAPON_SLOT, w.card));
             }
@@ -252,19 +258,19 @@ impl Game {
         for i in 0..2 {
             let side = Side::from_index(i);
             if let Some((card, _)) = self.players[i].quest
-                && behaviour_of(card).and_then(|b| b.trigger).is_some()
+                && reacts(card)
             {
                 reactors.push((side, QUEST_SLOT, card));
             }
             if let Some((card, _)) = self.players[i].sidequest
-                && behaviour_of(card).and_then(|b| b.trigger).is_some()
+                && reacts(card)
             {
                 reactors.push((side, SIDE_QUEST_SLOT, card));
             }
             // And the Hero Power, for the same reason: it is always in play
             // and it is never on the board.
             let hp = self.players[i].hero_power;
-            if behaviour_of(hp).and_then(|b| b.trigger).is_some() {
+            if reacts(hp) {
                 reactors.push((side, HERO_POWER_SLOT, hp));
             }
         }

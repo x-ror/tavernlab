@@ -73,6 +73,37 @@ pub struct Ctx {
     pub mana_spent: i16,
 }
 
+impl Ctx {
+    /// A Ctx for an effect nobody played: a token cast on someone's behalf, a
+    /// Deathrattle fired with no body, a Start of Game hook.
+    ///
+    /// Thirteen call sites used to spell out the same eight fields, six of
+    /// them the same six defaults every time -- which meant that adding a
+    /// field to `Ctx` was thirteen edits, and that a site which wanted a
+    /// non-default was hard to spot among the ones that did not.
+    pub fn bare(card: CardId, side: Side) -> Ctx {
+        Ctx {
+            card,
+            side,
+            target: None,
+            source: None,
+            outcast: false,
+            centre: false,
+            dying: None,
+            marks: crate::state::Marks::NONE,
+            mana_spent: 0,
+        }
+    }
+
+    /// [`bare`](Self::bare) pointed at something.
+    pub fn at(card: CardId, side: Side, target: Option<Target>) -> Ctx {
+        Ctx {
+            target,
+            ..Ctx::bare(card, side)
+        }
+    }
+}
+
 /// A card effect. A `fn` pointer rather than a boxed closure, so the table is
 /// static and dispatch costs an indirect call.
 pub type Effect = fn(&mut Game, &Ctx);
@@ -309,6 +340,11 @@ const fn c(
     cost_delta: Option<CostFn>,
     start_of_game: Option<Effect>,
 ) -> Behaviour {
+    // The name is the key this whole table is built on, and the one part of a
+    // row nothing else would notice going wrong: a misspelling attaches the
+    // behaviour to no card at all. Resolving it here fails the build at the
+    // line that wrote it, the same way `token` does for an id.
+    let _ = super::named(name);
     Behaviour {
         name,
         target,
@@ -2080,17 +2116,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             };
             f(
                 g,
-                &Ctx {
-                    card: cata,
-                    side: c.side,
-                    target: None,
-                    source: None,
-                    outcast: false,
-                    centre: false,
-                    dying: None,
-                    marks: Marks::NONE,
-                    mana_spent: 0,
-                },
+                &Ctx::bare(cata, c.side),
             );
             g.sweep_deaths();
             if g.is_over() {
@@ -2862,17 +2888,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.player_mut(c.side).hand.remove(idx);
             f(
                 g,
-                &Ctx {
-                    card,
-                    side: c.side,
-                    target: None,
-                    source: None,
-                    outcast: false,
-                    centre: false,
-                    dying: None,
-                    marks: Marks::NONE,
-                    mana_spent: 0,
-                },
+                &Ctx::bare(card, c.side),
             );
         }
     }),
@@ -2893,7 +2909,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     }),
     // Both halves check the *deck* specifically, matching "while building
     // your deck" framing: a deck with no other minions gets Mug's Magic, one
-    // with no spells gets Zee's Might, each read back later by name from
+    // with no spells gets Zee's Might, each read back later by id from
     // `hero_power` -- see `Game::card_cost`/`play_card`/`legal_actions`. A
     // deck satisfying both (extremely degenerate) ends up with Zee's Might,
     // since it is checked second; not a real deckbuilding choice either way.
@@ -10289,14 +10305,7 @@ const AURAS: [CardId; 5] = [
 ];
 
 pub fn is_aura(card: CardId) -> bool {
-    let mut i = 0;
-    while i < AURAS.len() {
-        if AURAS[i].0 == card.0 {
-            return true;
-        }
-        i += 1;
-    }
-    false
+    names(&AURAS, card)
 }
 
 /// Cards implemented only in part, with what is missing.
@@ -10683,7 +10692,11 @@ pub const fn gift_keywords(gift: u8) -> Keywords {
 ///
 /// A name list for the same reason `CASTS_WHEN_DRAWN` is one -- the corpus
 /// carries no mechanic for "this changes how the game is set up".
-pub const GAME_SETUP: &[(&str, fn(&mut Game, Side))] = &[("Azalina Soulsever", azalina_setup)];
+/// What a `GAME_SETUP` hook does: change one player's opening before the
+/// first turn is dealt.
+pub type Setup = fn(&mut Game, Side);
+
+pub const GAME_SETUP: &[(&str, Setup)] = &[("Azalina Soulsever", azalina_setup)];
 
 /// "Your starting Health is 40. Your deck is 20 cards, plus 20 copied from
 /// your enemy."
@@ -10822,6 +10835,30 @@ pub fn combines(left: CardId, right: CardId) -> Option<CardId> {
 /// otherwise returns a fresh printing at one Health, so this is a rule the
 /// card prints and the mechanic has no room for -- a side list, like
 /// `AWAKENS` and `SHATTERS` above.
+/// Where `card` sits in `list`, if it is in it at all.
+///
+/// A dozen side lists name a handful of cards each -- the ones whose printed
+/// rule has no hook to hang a behaviour on, and which the engine therefore
+/// reads by identity. Each of them used to carry its own copy of this loop.
+/// It is a `while` rather than `iter().position()` because these are asked
+/// from `const` context as well as from the engine, and neither iterators nor
+/// `PartialEq` are available there.
+const fn place_in(list: &[CardId], card: CardId) -> Option<usize> {
+    let mut i = 0;
+    while i < list.len() {
+        if list[i].0 == card.0 {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Whether `list` names `card`.
+const fn names(list: &[CardId], card: CardId) -> bool {
+    place_in(list, card).is_some()
+}
+
 const REBORN_KEEPS_ALL: [CardId; 1] = [token("127060-sinful-steed")];
 
 /// Cards whose Deathrattle also fires when they are lost from hand or deck.
@@ -10845,7 +10882,7 @@ const RATTLES_ANYWHERE: [CardId; 1] = [token("JAIL_398")];
 const KHADGARS: [CardId; 2] = [token("CORE_DAL_575"), token("DAL_575")];
 
 pub fn doubles_summons(card: CardId) -> bool {
-    KHADGARS[0].0 == card.0 || KHADGARS[1].0 == card.0
+    names(&KHADGARS, card)
 }
 
 const LEYLINES: [CardId; 3] = [
@@ -10855,14 +10892,7 @@ const LEYLINES: [CardId; 3] = [
 ];
 
 pub fn is_leyline(card: CardId) -> bool {
-    let mut i = 0;
-    while i < LEYLINES.len() {
-        if LEYLINES[i].0 == card.0 {
-            return true;
-        }
-        i += 1;
-    }
-    false
+    names(&LEYLINES, card)
 }
 
 /// Cards that get better the longer they are held and are discarded once the
@@ -10874,25 +10904,11 @@ pub fn is_leyline(card: CardId) -> bool {
 const UPGRADES_WHILE_HELD: [CardId; 1] = [token("FIR_911")];
 
 pub fn upgrades_while_held(card: CardId) -> bool {
-    let mut i = 0;
-    while i < UPGRADES_WHILE_HELD.len() {
-        if UPGRADES_WHILE_HELD[i].0 == card.0 {
-            return true;
-        }
-        i += 1;
-    }
-    false
+    names(&UPGRADES_WHILE_HELD, card)
 }
 
 pub fn rattles_from_hand_or_deck(card: CardId) -> bool {
-    let mut i = 0;
-    while i < RATTLES_ANYWHERE.len() {
-        if RATTLES_ANYWHERE[i].0 == card.0 {
-            return true;
-        }
-        i += 1;
-    }
-    false
+    names(&RATTLES_ANYWHERE, card)
 }
 
 /// Cards whose whole rules text is a standing rule the engine reads for
@@ -10902,6 +10918,59 @@ pub fn rattles_from_hand_or_deck(card: CardId) -> bool {
 /// the rest. Quel'dorei Fletcher's "Your Hero Power costs (0) while your hand
 /// has 3 or less cards" lives in `Game::hero_power_cost`, and Niri of the
 /// Crater's spell half lives beside the other doubling rules in `play_card`.
+/// Cards the engine asks about by identity while they are in play.
+///
+/// A handful of rules are not effects a card fires but standing conditions
+/// something else reads -- "while you control X", "while this is your Hero
+/// Power". They were spelled as name comparisons, which is a string compare
+/// per board slot; these are the ids instead, resolved at compile time. Each
+/// list holds every printing, because what is being asked is "is this that
+/// card", and a card is its reprints too.
+pub mod controlled {
+    use super::{CardId, names, token};
+
+    const MORCHIE: [CardId; 1] = [token("END_036")];
+    const SINESTRA: [CardId; 1] = [token("CATA_154")];
+    const NIRI: [CardId; 1] = [token("TLC_836")];
+    const FLETCHER: [CardId; 1] = [token("TIME_606")];
+    const NARALEX: [CardId; 1] = [token("EDR_844")];
+    const ATIESH: [CardId; 1] = [token("TIME_890t")];
+    // The same two constants Mug'Zee's Start of Game assigns, so the write
+    // and the read cannot drift apart.
+    const MUGS_MAGIC: [CardId; 1] = [super::tokens::MUGS_MAGIC];
+    const ZEES_MIGHT: [CardId; 1] = [super::tokens::ZEES_MIGHT];
+
+    pub fn is_morchie(c: CardId) -> bool {
+        names(&MORCHIE, c)
+    }
+    pub fn is_sinestra(c: CardId) -> bool {
+        names(&SINESTRA, c)
+    }
+    pub fn is_niri(c: CardId) -> bool {
+        names(&NIRI, c)
+    }
+    pub fn is_fletcher(c: CardId) -> bool {
+        names(&FLETCHER, c)
+    }
+    pub fn is_naralex(c: CardId) -> bool {
+        names(&NARALEX, c)
+    }
+    /// The weapon, not a minion -- but the same question, asked from the
+    /// spell-damage path on every damaging spell in the game.
+    pub fn is_atiesh(c: CardId) -> bool {
+        names(&ATIESH, c)
+    }
+    /// Mug'Zee's two Passive Hero Powers, read from the Hero Power slot
+    /// rather than the board: which one a player got is decided once, at the
+    /// start of the game, from the shape of their deck.
+    pub fn is_mugs_magic(c: CardId) -> bool {
+        names(&MUGS_MAGIC, c)
+    }
+    pub fn is_zees_might(c: CardId) -> bool {
+        names(&ZEES_MIGHT, c)
+    }
+}
+
 const RULES_IN_THE_ENGINE: [CardId; 3] = [
     token("TIME_606"),     // Quel'dorei Fletcher
     token("TLC_836"),      // Niri of the Crater
@@ -10909,14 +10978,7 @@ const RULES_IN_THE_ENGINE: [CardId; 3] = [
 ];
 
 fn rule_lives_in_the_engine(card: CardId) -> bool {
-    let mut i = 0;
-    while i < RULES_IN_THE_ENGINE.len() {
-        if RULES_IN_THE_ENGINE[i].0 == card.0 {
-            return true;
-        }
-        i += 1;
-    }
-    false
+    names(&RULES_IN_THE_ENGINE, card)
 }
 
 /// The three Windrunner sisters, in the order `Player::rangers_played` holds
@@ -10933,14 +10995,7 @@ const WINDRUNNERS: [CardId; 3] = [
 
 /// The bit `card` sets in `Player::rangers_played`, if it is one of them.
 pub fn windrunner_bit(card: CardId) -> Option<u8> {
-    let mut i = 0;
-    while i < WINDRUNNERS.len() {
-        if WINDRUNNERS[i].0 == card.0 {
-            return Some(1 << i);
-        }
-        i += 1;
-    }
-    None
+    place_in(&WINDRUNNERS, card).map(|i| 1 << i)
 }
 
 /// How many of `card`'s two sisters have already been played -- the number
@@ -10959,25 +11014,11 @@ pub fn windrunner_sisters(g: &Game, side: Side, card: CardId) -> u32 {
 const IGNORES_TAUNT: [CardId; 2] = [token("BT_187"), token("CORE_BT_187")];
 
 pub fn lets_attacks_ignore_taunt(card: CardId) -> bool {
-    let mut i = 0;
-    while i < IGNORES_TAUNT.len() {
-        if IGNORES_TAUNT[i].0 == card.0 {
-            return true;
-        }
-        i += 1;
-    }
-    false
+    names(&IGNORES_TAUNT, card)
 }
 
 pub fn reborn_keeps_enchantments(card: CardId) -> bool {
-    let mut i = 0;
-    while i < REBORN_KEEPS_ALL.len() {
-        if REBORN_KEEPS_ALL[i].0 == card.0 {
-            return true;
-        }
-        i += 1;
-    }
-    false
+    names(&REBORN_KEEPS_ALL, card)
 }
 
 /// The two halves `card` splits into as it enters hand, left first.
@@ -11053,6 +11094,51 @@ pub fn acts_when_drawn(card: CardId) -> bool {
         i += 1;
     }
     false
+}
+
+/// Which of the three standing hooks a card has, one byte per `CardId`.
+///
+/// Two scans ask nothing else of a card. `recompute_auras` wants to know what
+/// carries an aura and what grants itself a bonus; `Game::fire` wants to know
+/// what reacts. Between them they run after every resolution point in the
+/// game -- well over a million board walks in a two-thousand-game batch, each
+/// asking the question of every minion on both boards.
+///
+/// Asking `BEHAVIOURS` means a random read into ninety kilobytes of card
+/// table per minion, which leaves L1 on the way in. Asking this is a read
+/// into one kilobyte, which does not.
+static HOOKS: OnceLock<Box<[u8]>> = OnceLock::new();
+
+/// The card carries a continuous aura.
+pub const HAS_AURA: u8 = 1;
+/// The card grants itself a conditional bonus.
+pub const HAS_BONUS: u8 = 2;
+/// The card reacts to events.
+pub const HAS_TRIGGER: u8 = 4;
+
+/// The hook table, built from `BEHAVIOURS` the first time it is asked for.
+/// Index it by `CardId`, the same as the behaviour index itself.
+pub fn hooks() -> &'static [u8] {
+    HOOKS.get_or_init(|| {
+        let index = index();
+        let mut out = vec![0u8; index.len()].into_boxed_slice();
+        for (i, &slot) in index.iter().enumerate() {
+            if slot == 0 {
+                continue;
+            }
+            let b = &BEHAVIOURS[slot as usize - 1];
+            if b.aura.is_some() {
+                out[i] |= HAS_AURA;
+            }
+            if b.bonus.is_some() {
+                out[i] |= HAS_BONUS;
+            }
+            if b.trigger.is_some() {
+                out[i] |= HAS_TRIGGER;
+            }
+        }
+        out
+    })
 }
 
 /// The behaviour attached to a card, if it has one.
@@ -11182,8 +11268,10 @@ mod tests {
 
     #[test]
     fn every_declared_card_exists_in_the_corpus() {
-        // Catches a typo in a name the moment it is written, rather than as a
-        // card that silently does nothing in a million games.
+        // The build already refuses a name the corpus does not carry -- `c`
+        // resolves every row's name through `cards::named`, which is a const
+        // fn. This cannot fail while that guard is there, and is here so that
+        // removing the guard does not quietly remove the rule with it.
         for b in BEHAVIOURS {
             assert!(by_name(b.name).is_some(), "no card named {:?}", b.name);
         }
