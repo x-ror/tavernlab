@@ -738,6 +738,7 @@ fn watch(args: &[String]) {
         me: None,
         once: false,
         quiet: false,
+        serve: None,
     };
     let mut format = "standard".to_string();
     let mut i = 0;
@@ -766,6 +767,17 @@ fn watch(args: &[String]) {
             "--history" => {
                 a.history = args.get(i + 1).map(std::path::PathBuf::from);
                 i += 1;
+            }
+            "--serve" => {
+                // The port is optional: `--serve` on its own takes the
+                // default, so the common case is one word.
+                a.serve = Some(match args.get(i + 1).and_then(|v| v.parse().ok()) {
+                    Some(port) => {
+                        i += 1;
+                        port
+                    }
+                    None => 8766,
+                });
             }
             "--no-history" => a.history = Some(std::path::PathBuf::new()),
             "--once" => a.once = true,

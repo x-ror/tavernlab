@@ -18,7 +18,7 @@
 //! and `/api/metrics` is a set of counters that never leave the machine.
 
 mod api;
-mod http;
+pub mod http;
 mod jobs;
 pub mod paths;
 pub mod state;

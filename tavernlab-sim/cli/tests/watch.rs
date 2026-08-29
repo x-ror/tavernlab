@@ -10,9 +10,10 @@
 //! prints the position it reconstructed precisely so that a mismatch against
 //! a real log is visible rather than silent.
 
-use std::io::Write;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const LOG: &str = "\
 D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME
@@ -75,6 +76,148 @@ fn before_the_first_turn_it_advises_the_mulligan() {
         !out.contains("ХІД\n"),
         "there is no turn to plan before the game starts: {out}"
     );
+}
+
+/// Start the watcher on a log file with the browser view on a free port, and
+/// stop it when the test ends.
+struct View {
+    child: std::process::Child,
+    port: u16,
+}
+
+impl Drop for View {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl View {
+    fn start(tag: &str, body: &str) -> View {
+        let home = home_for(tag);
+        let log = home.join("Power.log");
+        std::fs::write(&log, body).expect("write the log");
+        // Ask the OS for a free port and hand it straight over: a fixed one
+        // fails whenever the developer has the watcher running.
+        let port = TcpListener::bind(("127.0.0.1", 0))
+            .expect("a free port")
+            .local_addr()
+            .expect("its address")
+            .port();
+        let child = Command::new(env!("CARGO_BIN_EXE_tavernsim"))
+            .args([
+                "watch",
+                "--log",
+                log.to_str().expect("path"),
+                "--me",
+                "Me#1",
+                "--no-history",
+                "--serve",
+                &port.to_string(),
+            ])
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start the watcher");
+        let view = View { child, port };
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                return view;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("the view never started listening on {port}");
+    }
+
+    fn get(&self, path: &str) -> (u16, String) {
+        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .expect("timeout");
+        let head = format!(
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+            self.port
+        );
+        stream.write_all(head.as_bytes()).expect("write");
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).expect("read");
+        let text = String::from_utf8_lossy(&raw).into_owned();
+        let (head, body) = text.split_once("\r\n\r\n").expect("a complete response");
+        let status = head
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .expect("a status line");
+        (status, body.to_string())
+    }
+
+    /// The advice, once the watcher has read the log. It polls the file, so
+    /// the first request can land before the first report.
+    fn advice(&self) -> String {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let (status, body) = self.get("/advice.json");
+            assert_eq!(status, 200, "{body}");
+            if !body.contains("чекаю на гру") || Instant::now() > deadline {
+                return body;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+/// A legal thirty-card Standard Mage list, generated from the implemented
+/// pool by `deck::curve_deck` and encoded once. Regenerate it if the pool
+/// ever loses a card in it -- `deckstring::resolve` will say so by returning
+/// nothing, and the test below will fail rather than pass quietly.
+const MAGE_DECK: &str = "AAECAf0ECKiKBKqKBP6eBJSgBJegBJ2gBKOgBKfUBAumigT8ngT9ngShnwSmnwSrnwS1nwS9nwTnnwSaoATx0wQAAA==";
+
+#[test]
+fn without_a_deck_the_plan_says_a_draw_will_read_as_fatigue() {
+    // The rebuilt position has no deck unless the deck code supplies one, and
+    // an empty deck turns every draw effect into damage to your own hero --
+    // so the plan quietly refuses to play the card that draws. That is a real
+    // limit on the advice and it has to be said out loud.
+    let out = run("nodeck", &format!("{LOG}{AFTER_MULLIGAN}"), &["--me", "Me#1"]);
+    assert!(out.contains("колоду не відновлено"), "{out}");
+}
+
+#[test]
+fn with_a_deck_the_plan_is_drawn_over_a_real_library() {
+    let out = run(
+        "withdeck",
+        &format!("{LOG}{AFTER_MULLIGAN}"),
+        &["--me", "Me#1", "--deck", MAGE_DECK],
+    );
+    assert!(
+        !out.contains("колоду не відновлено"),
+        "the deck code was read, so the caveat does not apply: {out}"
+    );
+    // And the advice is still advice: the position has not changed.
+    assert!(out.contains("зіграти Chillwind Yeti"), "{out}");
+}
+
+#[test]
+fn the_browser_view_serves_the_same_advice_the_terminal_prints() {
+    // The wiring is the thing that breaks: a report built and never
+    // published, a page served from a path the script does not fetch. Both
+    // ends are checked here rather than trusted.
+    let view = View::start("view", &format!("{LOG}{AFTER_MULLIGAN}"));
+
+    let (status, page) = view.get("/");
+    assert_eq!(status, 200);
+    assert!(page.contains("advice.json"), "the page fetches the advice");
+
+    let body = view.advice();
+    assert!(body.contains("\"heading\":\"ХІД\""), "{body}");
+    assert!(body.contains("зіграти Chillwind Yeti"), "{body}");
+    assert!(body.contains("Bloodfen Raptor"), "the position is there too: {body}");
+
+    let (status, _) = view.get("/nope");
+    assert_eq!(status, 404, "an unknown path is not the page");
 }
 
 #[test]
