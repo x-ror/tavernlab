@@ -205,7 +205,19 @@ pub fn matchup(
     threads: usize,
     seed_base: u64,
 ) -> Record {
-    play_batch_parallel(a, b, &seeds(seed_base, per_pair), threads)
+    matchup_with(a, b, [crate::batch::Policy::Greedy; 2], per_pair, threads, seed_base)
+}
+
+/// [`matchup`] played by a named policy rather than the engine's greedy one.
+pub fn matchup_with(
+    a: Contender,
+    b: Contender,
+    policies: [crate::batch::Policy; 2],
+    per_pair: usize,
+    threads: usize,
+    seed_base: u64,
+) -> Record {
+    crate::batch::play_batch_parallel_with(a, b, policies, &seeds(seed_base, per_pair), threads)
 }
 
 /// The class a gauntlet file names, in Blizzard's spelling.

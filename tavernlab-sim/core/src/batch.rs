@@ -81,31 +81,40 @@ pub struct Contender<'a> {
     pub style: Style,
 }
 
-/// Play one game and return how it ended, with the turn it ended on.
-pub fn play_one_detailed(a: Contender, b: Contender, seed: u64, first: Side) -> (Outcome, u16) {
-    let mut g = match Game::new((a.class, a.cards), (b.class, b.cards), seed) {
-        Ok(g) => g,
-        Err(_) => return (Outcome::Draw, 0),
-    };
-    let mut sa = Scripted::new(a.style);
-    let mut sb = Scripted::new(b.style);
-    let mut agents: [&mut dyn crate::game::Agent; 2] = [&mut sa, &mut sb];
-    let o = g.run(first, &mut agents);
-    (o, g.turn)
-}
-
-/// Play one game and return how it ended.
-pub fn play_one(a: Contender, b: Contender, seed: u64, first: Side) -> Outcome {
+/// Play one game with a named policy on each side.
+///
+/// The one place a game is actually set up and run. Everything else here --
+/// a deck comparison, a policy duel, a whole tier table -- is this with the
+/// two axes fixed differently: a deck comparison varies the decks and holds
+/// the policy, a policy duel varies the policy and holds the deck.
+pub fn play_with(
+    a: Contender,
+    b: Contender,
+    policies: [Policy; 2],
+    seed: u64,
+    first: Side,
+) -> (Outcome, u16) {
     let mut g = match Game::new((a.class, a.cards), (b.class, b.cards), seed) {
         Ok(g) => g,
         // A class with no hero power cannot field a deck; report it as a draw
         // rather than panicking inside a worker thread.
-        Err(_) => return Outcome::Draw,
+        Err(_) => return (Outcome::Draw, 0),
     };
-    let mut sa = Scripted::new(a.style);
-    let mut sb = Scripted::new(b.style);
-    let mut agents: [&mut dyn crate::game::Agent; 2] = [&mut sa, &mut sb];
-    g.run(first, &mut agents)
+    let mut pa = policies[0].agent(a.style);
+    let mut pb = policies[1].agent(b.style);
+    let mut agents: [&mut dyn crate::game::Agent; 2] = [pa.as_mut(), pb.as_mut()];
+    let o = g.run(first, &mut agents);
+    (o, g.turn)
+}
+
+/// Play one game and return how it ended, with the turn it ended on.
+pub fn play_one_detailed(a: Contender, b: Contender, seed: u64, first: Side) -> (Outcome, u16) {
+    play_with(a, b, [Policy::Greedy; 2], seed, first)
+}
+
+/// Play one game and return how it ended.
+pub fn play_one(a: Contender, b: Contender, seed: u64, first: Side) -> Outcome {
+    play_one_detailed(a, b, seed, first).0
 }
 
 /// Play `seeds.len()` games on one thread.
@@ -134,9 +143,39 @@ pub fn play_batch(a: Contender, b: Contender, seeds: &[u64]) -> Record {
 /// Deterministic regardless of thread count: each game's result depends only
 /// on its seed and its index, never on which worker ran it.
 pub fn play_batch_parallel(a: Contender, b: Contender, seeds: &[u64], threads: usize) -> Record {
+    play_batch_parallel_with(a, b, [Policy::Greedy; 2], seeds, threads)
+}
+
+/// [`play_batch_parallel`] with the policy named rather than assumed.
+///
+/// The same deck comparison, played by something other than the engine's
+/// greedy policy -- which is how a ranking can be checked for depending on
+/// the policy that produced it.
+pub fn play_batch_parallel_with(
+    a: Contender,
+    b: Contender,
+    policies: [Policy; 2],
+    seeds: &[u64],
+    threads: usize,
+) -> Record {
     let threads = threads.max(1).min(seeds.len().max(1));
+    let run = |part: &[u64], base: usize| {
+        let mut rec = Record::default();
+        for (i, &seed) in part.iter().enumerate() {
+            // Alternating rather than rolling: over an even number of games
+            // each deck leads exactly half the time.
+            let first = if (base + i) % 2 == 0 {
+                Side::Player0
+            } else {
+                Side::Player1
+            };
+            let (o, turns) = play_with(a, b, policies, seed, first);
+            rec.record(o, turns);
+        }
+        rec
+    };
     if threads == 1 {
-        return play_batch(a, b, seeds);
+        return run(seeds, 0);
     }
     // Contiguous chunks keep each game's index — and therefore who leads —
     // identical to the single-threaded run.
@@ -145,19 +184,7 @@ pub fn play_batch_parallel(a: Contender, b: Contender, seeds: &[u64], threads: u
         let mut handles = Vec::with_capacity(threads);
         for (c, part) in seeds.chunks(chunk).enumerate() {
             let base = c * chunk;
-            handles.push(scope.spawn(move || {
-                let mut rec = Record::default();
-                for (i, &seed) in part.iter().enumerate() {
-                    let first = if (base + i) % 2 == 0 {
-                        Side::Player0
-                    } else {
-                        Side::Player1
-                    };
-                    let (o, turns) = play_one_detailed(a, b, seed, first);
-                    rec.record(o, turns);
-                }
-                rec
-            }));
+            handles.push(scope.spawn(move || run(part, base)));
         }
         handles
             .into_iter()
@@ -207,21 +234,8 @@ impl Policy {
 ///
 /// The decks are identical on purpose: with the list fixed, the only thing
 /// left to explain a win is how the cards were played.
-pub fn duel_one(
-    deck: Contender,
-    policies: [Policy; 2],
-    seed: u64,
-    first: Side,
-) -> (Outcome, u16) {
-    let mut g = match Game::new((deck.class, deck.cards), (deck.class, deck.cards), seed) {
-        Ok(g) => g,
-        Err(_) => return (Outcome::Draw, 0),
-    };
-    let mut pa = policies[0].agent(deck.style);
-    let mut pb = policies[1].agent(deck.style);
-    let mut agents: [&mut dyn crate::game::Agent; 2] = [pa.as_mut(), pb.as_mut()];
-    let o = g.run(first, &mut agents);
-    (o, g.turn)
+pub fn duel_one(deck: Contender, policies: [Policy; 2], seed: u64, first: Side) -> (Outcome, u16) {
+    play_with(deck, deck, policies, seed, first)
 }
 
 /// `seeds.len()` duels, spread across `threads`, and always in mirrored

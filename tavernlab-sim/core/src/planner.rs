@@ -9,8 +9,9 @@
 //!
 //! It exists to answer one question -- how much is the greedy policy leaving
 //! on the table? -- and the answer is a win rate against it on the same decks
-//! and the same seeds. Until that number is in, this is a measuring
-//! instrument and not the engine's policy.
+//! and the same seeds. It is +37.5 points, and this is still a measuring
+//! instrument rather than the engine's policy: two hundred times slower is a
+//! product decision, not a code one. See the README.
 //!
 //! ## What it is not allowed to know
 //!
@@ -30,10 +31,12 @@
 //! than *the* ones, which is what a player choosing without knowing has. The
 //! opponent's hand is never read by the evaluation at all.
 //!
-//! What that costs is real and worth stating: the search now chooses under a
+//! What that costs is real and worth stating: the search chooses under a
 //! single sample of the randomness rather than under its distribution.
-//! Averaging over several samples would be better, and is the obvious next
-//! thing to try if the number this produces justifies more work.
+//! Averaging over several samples looks like the fix and measures as nothing
+//! at all -- one, four and eight samples all read the same win rate for eight
+//! times the work, because within a single turn almost no randomness is
+//! resolved. `samples` is still a knob so that claim stays re-runnable.
 
 use crate::agent::{Scripted, Style, minion_value};
 use crate::game::{Action, Agent, MAX_ACTIONS};

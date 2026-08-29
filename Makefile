@@ -24,7 +24,7 @@ ENV  := $(DATA)/watch.env
 # kill. Nothing here is worth parallelising anyway; cargo does its own.
 .NOTPARALLEL:
 
-.PHONY: help build serve watch watch-start watch-stop watch-restart watch-status watch-log history bench callgrind policy
+.PHONY: help build serve watch watch-start watch-stop watch-restart watch-status watch-log history bench callgrind policy tiers
 
 help:
 	@echo "make watch          перезібрати й (пере)запустити запис ігор"
@@ -37,6 +37,7 @@ help:
 	@echo "make bench          пропускна здатність (див. tools/ab-bench.sh для порівнянь)"
 	@echo "make callgrind      підрахунок інструкцій (детермінований A/B)"
 	@echo "make policy         скільки віддає жадібний агент проти пошуку"
+	@echo "make tiers          чи їде тір-лист, коли політика міняється"
 	@echo
 	@echo "бойовий тег і тека логів — у $(ENV), не в репозиторії:"
 	@echo "  HS_ME='Ваш#12345'"
@@ -116,6 +117,12 @@ bench: build
 # Arguments are seeds per deck, node budget, depth, determinizations.
 policy: build
 	$(BIN) policy 200 4000 4 1
+
+# Whether the tier list is a statement about decks or about the policy: the
+# same table built twice, once by each. Slow -- the search side is ~200x the
+# greedy one -- so this is a deliberate run, not part of `make test`.
+tiers: build
+	$(BIN) tiers 400 data/gauntlet_standard.json
 
 # Instruction count instead of seconds: deterministic, so a 0.2% difference
 # is a real one and needs no control run. About ten seconds under valgrind.

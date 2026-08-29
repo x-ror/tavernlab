@@ -80,6 +80,27 @@ pub fn build(
     field: &[MetaDeck],
     games_per_pair: usize,
     threads: usize,
+    log: impl FnMut(String),
+) -> Table {
+    build_with(
+        field,
+        [crate::batch::Policy::Greedy; 2],
+        games_per_pair,
+        threads,
+        log,
+    )
+}
+
+/// [`build`] with the policy named rather than assumed.
+///
+/// A tier list is a statement about decks, and it is only that if it does not
+/// move when the policy behind it changes. Building the same table twice with
+/// two policies is how that gets checked.
+pub fn build_with(
+    field: &[MetaDeck],
+    policies: [crate::batch::Policy; 2],
+    games_per_pair: usize,
+    threads: usize,
     mut log: impl FnMut(String),
 ) -> Table {
     let playable: Vec<&MetaDeck> = field.iter().filter(|d| d.playable()).collect();
@@ -104,9 +125,10 @@ pub fn build(
             }
             // The seed base is derived from the pair, not from a counter, so
             // one deck's row does not depend on how many decks precede it.
-            let r = crate::gauntlet::matchup(
+            let r = crate::gauntlet::matchup_with(
                 deck.contender(),
                 other.contender(),
+                policies,
                 games_per_pair,
                 threads,
                 7,
@@ -178,6 +200,23 @@ mod tests {
             assert_eq!(r.vs.len(), 2, "{} should meet the other two", r.name);
             assert!(r.vs.iter().all(|(n, _)| *n != r.name), "a mirror leaked in");
             assert_eq!(r.tier, tier_for(r.winrate));
+        }
+    }
+
+    #[test]
+    fn naming_the_greedy_policy_is_the_same_as_not_naming_it() {
+        // `build` is `build_with` under the default policy, and the whole
+        // point of the pair is that a table can be rebuilt by a different
+        // one. If the delegation drifted, a policy comparison would be
+        // measuring the plumbing.
+        let f = field();
+        let plain = build(&f, 30, 2, |_| {});
+        let named = build_with(&f, [crate::batch::Policy::Greedy; 2], 30, 2, |_| {});
+        assert_eq!(plain.skipped, named.skipped);
+        assert_eq!(plain.rows.len(), named.rows.len());
+        for (a, b) in plain.rows.iter().zip(named.rows.iter()) {
+            assert_eq!(a.name, b.name);
+            assert_eq!(a.winrate, b.winrate);
         }
     }
 

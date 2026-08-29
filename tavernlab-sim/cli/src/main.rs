@@ -61,6 +61,7 @@ fn main() {
         "art-urls" => serve::art_urls(args.iter().any(|a| a == "--heroes")),
         "bench" => bench(num(1, 20_000), num(2, default_threads())),
         "matrix" => matrix(num(1, 200)),
+        "tiers" => tiers_by_policy(num(1, 100), args.get(2).map(String::as_str)),
         "policy" => policy(
             num(1, 200),
             num(2, 4000) as u32,
@@ -81,7 +82,7 @@ fn main() {
         other => {
             eprintln!("unknown command {other:?}");
             eprintln!(
-                "usage: tavernsim [serve|watch|history|bench|matrix|policy|demo|coverage|gauntlet|decks|backlog|art-urls] [args]"
+                "usage: tavernsim [serve|watch|history|bench|matrix|policy|tiers|demo|coverage|gauntlet|decks|backlog|art-urls] [args]"
             );
             std::process::exit(2);
         }
@@ -145,6 +146,80 @@ fn bench(games: usize, threads: usize) {
     );
     println!("average game length {:.1} turns", par.avg_turns());
     println!("serial and parallel results identical: {}", single == par);
+}
+
+/// Whether the tier list is a statement about decks or about the policy.
+///
+/// The same field, the same seeds, the same matchups -- built twice, once by
+/// the greedy policy and once by the turn-planning search. A tier list that
+/// says something about decks should not move much when the hands holding
+/// them get better; one that reorders was never measuring the decks.
+///
+/// Printed as the two rankings side by side with each deck's change in
+/// position, because a correlation on its own hides the case that matters:
+/// one deck moving a long way while the rest sit still.
+fn tiers_by_policy(per_pair: usize, path: Option<&str>) {
+    use tavernlab_core::batch::Policy;
+    use tavernlab_core::tiers;
+
+    let path = path.unwrap_or("../data/gauntlet_standard.json");
+    let field = serve::state::load_gauntlet(std::path::Path::new(path));
+    if field.is_empty() {
+        eprintln!("no decks read from {path}");
+        std::process::exit(1);
+    }
+    let threads = default_threads();
+    let plan = Policy::Plan {
+        budget: 4000,
+        depth: 4,
+        samples: 1,
+        iterative: true,
+    };
+
+    println!("{path}: {per_pair} боїв на пару, {threads} потоків\n");
+    let greedy = tiers::build_with(&field, [Policy::Greedy; 2], per_pair, threads, |_| {});
+    println!("жадібний готовий, рахую пошуком (це у ~200 разів повільніше)…");
+    let planned = tiers::build_with(&field, [plan; 2], per_pair, threads, |_| {});
+
+    // Position in each ranking, by deck name. `Table::rows` comes back in
+    // ranking order already.
+    let rank = |t: &tiers::Table, name: &str| t.rows.iter().position(|r| r.name == name);
+
+    println!(
+        "\n{:<28}{:>10}{:>10}{:>9}{:>8}",
+        "колода", "жадібний", "пошук", "різниця", "місць"
+    );
+    let mut moved = 0usize;
+    let mut worst = 0i32;
+    for (i, row) in greedy.rows.iter().enumerate() {
+        let Some(j) = rank(&planned, &row.name) else {
+            continue;
+        };
+        let other = &planned.rows[j];
+        let shift = i as i32 - j as i32;
+        if shift != 0 {
+            moved += 1;
+        }
+        worst = worst.max(shift.abs());
+        println!(
+            "{:<28}{:>9.1}%{:>9.1}%{:>+8.1}{:>8}",
+            row.name,
+            100.0 * row.winrate,
+            100.0 * other.winrate,
+            100.0 * (other.winrate - row.winrate),
+            if shift == 0 {
+                "—".to_string()
+            } else {
+                format!("{shift:+}")
+            }
+        );
+    }
+    let n = greedy.rows.len();
+    println!(
+        "\n{moved} з {n} колод змінили місце, найбільший зсув {worst}; \
+         похибка на {per_pair} боях ±{:.1} в.п.",
+        100.0 * tiers::margin(per_pair)
+    );
 }
 
 /// How much the greedy policy leaves on the table.
