@@ -24,9 +24,10 @@ ENV  := $(DATA)/watch.env
 # kill. Nothing here is worth parallelising anyway; cargo does its own.
 .NOTPARALLEL:
 
-.PHONY: help build serve watch watch-start watch-stop watch-restart watch-status watch-log history bench callgrind policy tiers
+.PHONY: help build serve live watch watch-start watch-stop watch-restart watch-status watch-log history bench callgrind policy tiers
 
 help:
+	@echo "make live           жива порада під час гри + сторінка в браузері"
 	@echo "make watch          перезібрати й (пере)запустити запис ігор"
 	@echo "make watch-stop     зупинити запис"
 	@echo "make watch-status   чи працює"
@@ -39,15 +40,31 @@ help:
 	@echo "make policy         скільки віддає жадібний агент проти пошуку"
 	@echo "make tiers          чи їде тір-лист, коли політика міняється"
 	@echo
-	@echo "бойовий тег і тека логів — у $(ENV), не в репозиторії:"
-	@echo "  HS_ME='Ваш#12345'"
+	@echo "тека логів — у $(ENV), не в репозиторії:"
 	@echo "  HS_LOGS='/шлях/до/Hearthstone/Logs'"
+	@echo "бойовий тег визначається з логу; HS_ME потрібен, лише якщо не вийшло"
+	@echo "деккод береться з налаштувань лабораторії або запам'ятовується з --deck"
 
 build:
 	cargo build --manifest-path $(MANIFEST) $(CARGOFLAGS)
 
 serve: build
 	$(BIN) serve
+
+# Advice while you play, in the foreground: the terminal report plus the page
+# at http://127.0.0.1:8766/ to leave open beside the client. Ctrl-C stops it.
+#
+# Foreground on purpose, unlike the recorder below. This one is watched while
+# it runs and stopped when the session ends, so a pid file and a start/stop
+# pair would be ceremony around something that lives as long as the terminal
+# it was typed in.
+#
+# Neither the battletag nor the deck is required: the first comes out of the
+# log, the second out of the lab's settings. HS_LOGS is, outside Windows,
+# because there is no standard place to look.
+live: build
+	@if [ -f "$(ENV)" ]; then set -a; . "$(ENV)"; set +a; fi; \
+	exec "$(CURDIR)/$(BIN)" watch --serve
 
 # Rebuild and (re)start. The command to run after a git pull.
 watch: watch-restart
@@ -61,14 +78,9 @@ watch-start: build
 		exit 0; \
 	fi; \
 	if [ -f "$(ENV)" ]; then set -a; . "$(ENV)"; set +a; fi; \
-	if [ -z "$$HS_ME" ]; then \
-		echo "немає бойового тега. Запишіть його в $(ENV):"; \
-		echo "  HS_ME='Ваш#12345'"; \
-		echo "  HS_LOGS='/шлях/до/Hearthstone/Logs'"; \
-		exit 2; \
-	fi; \
 	if [ -z "$$HS_LOGS" ]; then \
-		echo "немає теки логів. Допишіть HS_LOGS у $(ENV)."; \
+		echo "немає теки логів. Допишіть HS_LOGS у $(ENV):"; \
+		echo "  HS_LOGS='/шлях/до/Hearthstone/Logs'"; \
 		exit 2; \
 	fi; \
 	nohup env HS_ME="$$HS_ME" HS_LOGS="$$HS_LOGS" HS_DECK="$$HS_DECK" \
