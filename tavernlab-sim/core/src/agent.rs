@@ -26,7 +26,7 @@ pub enum Style {
 
 impl Style {
     /// Weight applied to damage dealt to the enemy hero.
-    fn face_weight(self) -> f32 {
+    pub(crate) fn face_weight(self) -> f32 {
         match self {
             Style::Aggro => 1.4,
             Style::Midrange => 0.9,
@@ -61,7 +61,7 @@ impl Scripted {
 /// Stats dominate; keywords add what they are roughly worth in stats. Kept
 /// crude on purpose — a finely tuned heuristic here would be a hidden second
 /// evaluation function competing with whatever search comes later.
-fn minion_value(m: &Permanent) -> f32 {
+pub(crate) fn minion_value(m: &Permanent) -> f32 {
     let mut v = m.atk as f32 + m.health() as f32;
     if m.has(Keywords::TAUNT) {
         v += 1.0;

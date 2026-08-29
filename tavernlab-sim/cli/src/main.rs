@@ -61,6 +61,12 @@ fn main() {
         "art-urls" => serve::art_urls(args.iter().any(|a| a == "--heroes")),
         "bench" => bench(num(1, 20_000), num(2, default_threads())),
         "matrix" => matrix(num(1, 200)),
+        "policy" => policy(
+            num(1, 200),
+            num(2, 4000) as u32,
+            num(3, 4) as u8,
+            num(4, 1) as u8,
+        ),
         "demo" => demo(num(1, 1) as u64),
         "coverage" => coverage(),
         "implemented" => list_implemented(match args.get(1).map(String::as_str) {
@@ -75,7 +81,7 @@ fn main() {
         other => {
             eprintln!("unknown command {other:?}");
             eprintln!(
-                "usage: tavernsim [serve|watch|history|bench|matrix|demo|coverage|gauntlet|decks|backlog|art-urls] [args]"
+                "usage: tavernsim [serve|watch|history|bench|matrix|policy|demo|coverage|gauntlet|decks|backlog|art-urls] [args]"
             );
             std::process::exit(2);
         }
@@ -139,6 +145,118 @@ fn bench(games: usize, threads: usize) {
     );
     println!("average game length {:.1} turns", par.avg_turns());
     println!("serial and parallel results identical: {}", single == par);
+}
+
+/// How much the greedy policy leaves on the table.
+///
+/// Plays the turn-planning policy against the greedy one on identical decks
+/// and identical seeds, one deck per class. The decks being the same on both
+/// sides is the point: with the list fixed, a win rate away from 50% is play
+/// and nothing else.
+///
+/// Every seed is played twice with the seats swapped (see `batch::duel`), so
+/// the number is not a seat advantage wearing a policy's name. The greedy
+/// policy against a second copy of itself is printed first, as the control:
+/// it must read 50.0%, and anything the planner gains has to clear whatever
+/// it does not.
+///
+/// `depth` is the knob that separates the two things a win could mean. At
+/// depth 1 the planner does not search at all -- it applies one action and
+/// scores the position -- so whatever it gains there is its *evaluation*
+/// being better than greedy's action scorer, not lookahead. Everything from
+/// depth 1 to depth 6 is the search.
+fn policy(per_deck: usize, budget: u32, depth: u8, samples: u8) {
+    use tavernlab_core::batch::{Policy, duel};
+
+    let decks: Vec<(Class, Vec<_>)> = PLAYABLE_CLASSES
+        .iter()
+        .filter_map(|&c| curve_deck(c, Formats::STANDARD).map(|d| (c, d)))
+        .collect();
+    let s = seeds(11, per_deck);
+    let threads = default_threads();
+    let plan = Policy::Plan {
+        budget,
+        depth,
+        samples,
+        iterative: true,
+    };
+    // The same search with the budget spent depth-first instead. Printed
+    // beside the planner so the deepening is a measured claim rather than an
+    // assertion in a comment.
+    let dfs = Policy::Plan {
+        budget,
+        depth,
+        samples,
+        iterative: false,
+    };
+
+    println!(
+        "{} decks, {per_deck} seeds each, every seed played from both seats\n\
+         planner budget {budget} positions per decision, depth {depth}\n",
+        decks.len()
+    );
+    println!(
+        "{:<14}{:>9}{:>14}{:>16}{:>9}",
+        "", "A/A", "vs greedy", "vs depth-first", "games"
+    );
+
+    let mut ctl_total = tavernlab_core::batch::Record::default();
+    let mut run_total = tavernlab_core::batch::Record::default();
+    let mut head_total = tavernlab_core::batch::Record::default();
+    for (class, cards) in &decks {
+        let deck = Contender {
+            class: *class,
+            cards,
+            style: Style::Midrange,
+        };
+        let control = duel(deck, [Policy::Greedy, Policy::Greedy], &s, threads);
+        let against = duel(deck, [plan, Policy::Greedy], &s, threads);
+        // Head to head at the same budget and the same depth, so the only
+        // difference left is how the budget was spent.
+        let head = duel(deck, [plan, dfs], &s, threads);
+        println!(
+            "{:<14}{:>8.1}%{:>13.1}%{:>15.1}%{:>9}",
+            tavernlab_core::gauntlet::class_name(*class),
+            100.0 * control.rate(Side::Player0),
+            100.0 * against.rate(Side::Player0),
+            100.0 * head.rate(Side::Player0),
+            against.total()
+        );
+        ctl_total = ctl_total.merge(control);
+        run_total = run_total.merge(against);
+        head_total = head_total.merge(head);
+    }
+    let n = run_total.total() as f64;
+    // Binomial standard error on the pooled rate, so the gap can be read
+    // against something rather than eyeballed.
+    let p = run_total.rate(Side::Player0);
+    let se = (p * (1.0 - p) / n).sqrt();
+    println!(
+        "\n{:<14}{:>8.1}%{:>13.1}%{:>15.1}%{:>9}",
+        "all",
+        100.0 * ctl_total.rate(Side::Player0),
+        100.0 * p,
+        100.0 * head_total.rate(Side::Player0),
+        run_total.total()
+    );
+    println!(
+        "\nplanner {:+.1} points over greedy, +/- {:.1} (1 s.e.); control reads {:+.1}",
+        100.0 * (p - 0.5),
+        100.0 * se,
+        100.0 * (ctl_total.rate(Side::Player0) - 0.5)
+    );
+    let h = head_total.rate(Side::Player0);
+    let hse = (h * (1.0 - h) / head_total.total() as f64).sqrt();
+    println!(
+        "deepening {:+.1} points over spending the same budget depth-first, +/- {:.1}",
+        100.0 * (h - 0.5),
+        100.0 * hse
+    );
+    println!(
+        "average game length: greedy mirror {:.1} turns, against the planner {:.1}",
+        ctl_total.avg_turns(),
+        run_total.avg_turns()
+    );
 }
 
 fn matrix(per_pair: usize) {

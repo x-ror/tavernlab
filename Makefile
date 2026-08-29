@@ -24,7 +24,7 @@ ENV  := $(DATA)/watch.env
 # kill. Nothing here is worth parallelising anyway; cargo does its own.
 .NOTPARALLEL:
 
-.PHONY: help build serve watch watch-start watch-stop watch-restart watch-status watch-log history bench callgrind
+.PHONY: help build serve watch watch-start watch-stop watch-restart watch-status watch-log history bench callgrind policy
 
 help:
 	@echo "make watch          перезібрати й (пере)запустити запис ігор"
@@ -36,6 +36,7 @@ help:
 	@echo "make build          лише зібрати (PROFILE=release для оптимізованого)"
 	@echo "make bench          пропускна здатність (див. tools/ab-bench.sh для порівнянь)"
 	@echo "make callgrind      підрахунок інструкцій (детермінований A/B)"
+	@echo "make policy         скільки віддає жадібний агент проти пошуку"
 	@echo
 	@echo "бойовий тег і тека логів — у $(ENV), не в репозиторії:"
 	@echo "  HS_ME='Ваш#12345'"
@@ -108,6 +109,13 @@ history: build
 # shared host reports a 2% regression for a binary against a copy of itself.
 bench: build
 	$(BIN) bench
+
+# How much the greedy policy gives up against a within-turn search. The A/A
+# control in the first column must read 50.0%; anything else means the seat
+# swap is broken and the columns beside it are not policy differences.
+# Arguments are seeds per deck, node budget, depth, determinizations.
+policy: build
+	$(BIN) policy 200 4000 4 1
 
 # Instruction count instead of seconds: deterministic, so a 0.2% difference
 # is a real one and needs no control run. About ten seconds under valgrind.
