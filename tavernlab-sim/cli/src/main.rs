@@ -813,15 +813,8 @@ fn watch(args: &[String]) {
         std::process::exit(1);
     };
     let app = serve::state::App::new(root, serve::paths::data_home(), default_threads());
-    // The deck the UI is already studying is the one the history should
-    // remember, when nothing was passed on the command line. An empty
-    // settings value is not a deck.
-    if a.deck.is_empty()
-        && let Some(code) = app.settings().get("deckstring")
-        && !code.is_empty()
-    {
-        a.deck = code.clone();
-    }
+    // Which deck, and whether to remember it, is `watch::run`'s to settle --
+    // it is the same question in both directions and belongs in one place.
     std::process::exit(watch_mod::run(&app, &format, a));
 }
 

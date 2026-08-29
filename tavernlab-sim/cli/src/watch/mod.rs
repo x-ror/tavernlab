@@ -612,8 +612,9 @@ fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice {
         (Some(left), Some(total)) => position.push(format!("мана {left}/{total}")),
         _ => {
             position.push(
-                "мана невідома — вкажіть --me <бойовий тег> або HS_ME, \
-                 інакше рядки RESOURCES нема до кого віднести"
+                "мана невідома — лог ще не написав рядка, у якому видно, \
+                 котрий з двох гравців ви; якщо так і не напише, вкажіть \
+                 --me <бойовий тег> або HS_ME"
                     .into(),
             );
             // The client does not always spell a battletag the way the
@@ -623,6 +624,12 @@ fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice {
                 position.push(format!("у лозі трапилися імена: {}", tr.names.join(", ")));
             }
         }
+    }
+    // A name the watcher worked out for itself is a claim, and a wrong one
+    // would attribute the opponent's mana to you. Printing it is how a
+    // reader can see it is right without having to know how it was found.
+    if tr.me_learned && let Some(me) = tr.me_name.as_deref() {
+        position.push(format!("ви: {me} (визначено з логу)"));
     }
     position.push(format!(
         "ваш герой {}{}, ворожий {}{}",
@@ -701,7 +708,42 @@ fn side_line(board: &[tracker::Body]) -> String {
     }
 }
 
-pub fn run(app: &App, format: &str, args: Args) -> i32 {
+/// Fill in what was not typed.
+///
+/// The deck code is the one thing the watcher needs that the log does not
+/// carry, and it is also the one thing the lab already knows: pasting a deck
+/// into the web UI stores it in `settings.json`, which is where this reads it
+/// from. A code given on the command line wins, and is written back -- so
+/// passing `--deck` once is enough, and after that neither flag is typed
+/// again.
+fn settle_deck(app: &App, args: &mut Args) -> Option<String> {
+    if !args.deck.is_empty() {
+        let stored = app.settings().get("deckstring").cloned().unwrap_or_default();
+        if stored != args.deck {
+            // Remembered, not validated here: `--deck` is already checked
+            // where it is used, and a code the watcher could not read should
+            // not stop it watching.
+            let _ = app.set_settings(&[("deckstring".to_string(), args.deck.clone())]);
+        }
+        return None;
+    }
+    let stored = app.settings().get("deckstring").cloned().unwrap_or_default();
+    if stored.is_empty() {
+        return None;
+    }
+    let name = app.settings().get("deck_name").cloned().unwrap_or_default();
+    args.deck = stored;
+    Some(if name.is_empty() {
+        "колода з лабораторії".to_string()
+    } else {
+        format!("колода з лабораторії: {name}")
+    })
+}
+
+pub fn run(app: &App, format: &str, mut args: Args) -> i32 {
+    if let Some(line) = settle_deck(app, &mut args) {
+        println!("{line}");
+    }
     if let Some(port) = args.serve {
         match live::start(port) {
             Ok(url) => println!("порада також тут: {url}"),

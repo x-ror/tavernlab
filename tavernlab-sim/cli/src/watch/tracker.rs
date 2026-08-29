@@ -169,6 +169,10 @@ pub struct Tracker {
     /// whose-turn-it-is lines cannot be attributed and are left unknown
     /// rather than guessed.
     pub me_name: Option<String>,
+    /// Whether `me_name` was read off the log rather than supplied. Printed,
+    /// because a name the watcher worked out for itself is a claim, and a
+    /// reader should be able to see which name it settled on.
+    pub me_learned: bool,
     pub classes: [Option<Class>; 2],
     /// My opening hand, in the order the log dealt it.
     pub opening: Vec<CardId>,
@@ -265,6 +269,30 @@ impl Tracker {
         !name.is_empty() && base(mine) == base(name)
     }
 
+    /// Work out which battletag is yours, from a line that says so.
+    ///
+    /// The log never states it in words, but it does state it in numbers:
+    /// zone lines say FRIENDLY or OPPOSING and carry `player=N`, which is
+    /// where `me` comes from, and a player's `TAG_CHANGE` written as a
+    /// bracketed descriptor carries both the name and the same `player=N`.
+    /// Put together, they name you.
+    ///
+    /// This is what `--me` was for. The flag still wins when it is given --
+    /// a person overriding a guess should not have to argue with it -- and
+    /// stays necessary for a log that only ever writes the bare-battletag
+    /// form, which carries no player number at all.
+    fn learn_me(&mut self, name: &str, player: Option<u8>) {
+        if self.me_name.is_some() || name.is_empty() {
+            return;
+        }
+        if let (Some(p), Some(me)) = (player, self.me)
+            && p == me
+        {
+            self.me_name = Some(name.to_string());
+            self.me_learned = true;
+        }
+    }
+
     fn note_name(&mut self, name: &str) {
         if !name.is_empty() && !self.names.iter().any(|n| n == name) {
             self.names.push(name.to_string());
@@ -285,8 +313,13 @@ impl Tracker {
                 }
             }
             Event::Started => self.started = true,
-            Event::Result { player_name, won } => {
+            Event::Result {
+                player_name,
+                player,
+                won,
+            } => {
                 self.note_name(&player_name);
+                self.learn_me(&player_name, player);
                 // The line names one player. Mine says it straight; theirs
                 // says the opposite, and only once a name has been matched --
                 // without `--me` neither is attributable and the game is
@@ -298,8 +331,10 @@ impl Tracker {
             }
             Event::CurrentPlayer {
                 player_name,
+                player,
                 current,
             } => {
+                self.learn_me(&player_name, player);
                 self.note_name(&player_name);
                 if self.me_name.is_none() {
                     return;
@@ -312,10 +347,12 @@ impl Tracker {
             }
             Event::Resources {
                 player_name,
+                player,
                 total,
                 used,
             } => {
                 self.note_name(&player_name);
+                self.learn_me(&player_name, player);
                 // Only my own crystals are actionable, and telling the two
                 // players apart needs the name.
                 if !self.is_me(&player_name) {
@@ -614,6 +651,54 @@ mod tests {
         assert_eq!(t.heroes[0].armor, 0);
         assert_eq!(t.heroes[1].health(), 30);
         assert_eq!(t.heroes[1].armor, 5);
+    }
+
+    #[test]
+    fn the_battletag_is_read_off_the_log_rather_than_asked_for() {
+        // FRIENDLY zone lines say which player number you are; a player's
+        // TAG_CHANGE written as a descriptor carries the same number next to
+        // the name. Between them the log names you, and `--me` becomes an
+        // override rather than a requirement.
+        let mut t = Tracker::new(None);
+        t.feed(parse(
+            "D [Zone] ZoneChangeList.ProcessChanges() - id=1 local=False \
+             [entityName=Jaina Proudmoore id=64 zone=PLAY zonePos=0 \
+             cardId=HERO_08 player=1] zone from  -> FRIENDLY PLAY (Hero)",
+        )
+        .expect("a zone line"));
+        assert_eq!(t.me, Some(1), "FRIENDLY named the player number");
+        assert!(t.me_name.is_none(), "and nothing has named the player yet");
+
+        t.feed(
+            parse(
+                "D [Power] TAG_CHANGE Entity=[entityName=xror id=2 zone=PLAY \
+                 zonePos=0 cardId= player=1] tag=RESOURCES value=7",
+            )
+            .expect("a resources line"),
+        );
+        assert_eq!(t.me_name.as_deref(), Some("xror"));
+        assert!(t.me_learned);
+        assert_eq!(t.crystals, Some(7), "and the mana is attributed");
+    }
+
+    #[test]
+    fn the_other_players_descriptor_is_not_mistaken_for_yours() {
+        let mut t = Tracker::new(None);
+        t.feed(parse(
+            "D [Zone] ZoneChangeList.ProcessChanges() - id=1 local=False \
+             [entityName=Jaina Proudmoore id=64 zone=PLAY zonePos=0 \
+             cardId=HERO_08 player=1] zone from  -> FRIENDLY PLAY (Hero)",
+        )
+        .expect("a zone line"));
+        t.feed(
+            parse(
+                "D [Power] TAG_CHANGE Entity=[entityName=them id=3 zone=PLAY \
+                 zonePos=0 cardId= player=2] tag=RESOURCES value=9",
+            )
+            .expect("a resources line"),
+        );
+        assert!(t.me_name.is_none(), "player 2 is not player 1");
+        assert_eq!(t.crystals, None, "and their mana is not yours");
     }
 
     #[test]

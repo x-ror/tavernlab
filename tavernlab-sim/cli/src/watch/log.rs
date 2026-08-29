@@ -24,11 +24,29 @@ pub enum Event {
     /// The turn counter moved.
     Turn(u16),
     /// Mana crystals owned, and mana spent so far this turn, for one player.
-    Resources { player_name: String, total: i16, used: i16 },
+    ///
+    /// `player` is the player number, when the line wrote the entity as a
+    /// bracketed descriptor -- those carry `player=N` and the bare-battletag
+    /// form does not. It is what lets the watcher work out which of the two
+    /// names is yours instead of being told.
+    Resources {
+        player_name: String,
+        player: Option<u8>,
+        total: i16,
+        used: i16,
+    },
     /// Whose turn it is, by player name and whether they are now current.
-    CurrentPlayer { player_name: String, current: bool },
+    CurrentPlayer {
+        player_name: String,
+        player: Option<u8>,
+        current: bool,
+    },
     /// The game ended for one player.
-    Result { player_name: String, won: bool },
+    Result {
+        player_name: String,
+        player: Option<u8>,
+        won: bool,
+    },
     /// Mulligan is over: `STEP=MAIN_READY`. Turn 1 is set at `CREATE_GAME`,
     /// so a turn counter is not this — treating it as such made every real
     /// log skip the opening hand.
@@ -261,6 +279,7 @@ pub fn parse(line: &str) -> Option<Event> {
         "RESOURCES" => {
             return Some(Event::Resources {
                 player_name: player_name(who)?.to_string(),
+                player: player_number(who),
                 total: value.parse().ok()?,
                 used: -1,
             });
@@ -268,6 +287,7 @@ pub fn parse(line: &str) -> Option<Event> {
         "RESOURCES_USED" => {
             return Some(Event::Resources {
                 player_name: player_name(who)?.to_string(),
+                player: player_number(who),
                 total: -1,
                 used: value.parse().ok()?,
             });
@@ -275,12 +295,14 @@ pub fn parse(line: &str) -> Option<Event> {
         "CURRENT_PLAYER" => {
             return Some(Event::CurrentPlayer {
                 player_name: player_name(who)?.to_string(),
+                player: player_number(who),
                 current: value == "1",
             });
         }
         "PLAYSTATE" if value == "WON" || value == "LOST" => {
             return Some(Event::Result {
                 player_name: player_name(who)?.to_string(),
+                player: player_number(who),
                 won: value == "WON",
             });
         }
@@ -317,6 +339,19 @@ fn player_name(who: &str) -> Option<&str> {
         return None;
     }
     Some(who)
+}
+
+/// The player number out of an `Entity=` field, if it carries one.
+///
+/// Only the bracketed descriptor does: `Entity=[entityName=xror id=2 ...
+/// player=1]`. A bare battletag is just a name, and the log never says
+/// anywhere else which of the two names belongs to the client that wrote it
+/// -- so this field is the whole of the evidence.
+fn player_number(who: &str) -> Option<u8> {
+    if !who.starts_with('[') {
+        return None;
+    }
+    field(who, "player=")?.parse().ok()
 }
 
 /// The entity id out of an `Entity=` field, if it carries one.
@@ -383,6 +418,26 @@ mod tests {
             parse(line),
             Some(Event::Resources {
                 player_name: "xror".into(),
+                // The descriptor carries the player number, which is what
+                // lets the watcher work out which battletag is yours.
+                player: Some(1),
+                total: 7,
+                used: -1,
+            })
+        );
+    }
+
+    #[test]
+    fn a_bare_battletag_carries_no_player_number() {
+        // The other shape the same tag arrives in. It names a player and says
+        // nothing about which one, so the field is `None` rather than a
+        // guess -- and the watcher waits for a descriptor instead of picking.
+        let line = "D [Power] TAG_CHANGE Entity=xror#21652 tag=RESOURCES value=7";
+        assert_eq!(
+            parse(line),
+            Some(Event::Resources {
+                player_name: "xror#21652".into(),
+                player: None,
                 total: 7,
                 used: -1,
             })
@@ -450,6 +505,7 @@ mod tests {
             parse("D [Power] TAG_CHANGE Entity=Player#12345 tag=RESOURCES value=7"),
             Some(Event::Resources {
                 player_name: "Player#12345".into(),
+                player: None,
                 total: 7,
                 used: -1
             })
@@ -458,6 +514,7 @@ mod tests {
             parse("D [Power] TAG_CHANGE Entity=Player#12345 tag=RESOURCES_USED value=3"),
             Some(Event::Resources {
                 player_name: "Player#12345".into(),
+                player: None,
                 total: -1,
                 used: 3
             })
@@ -466,6 +523,7 @@ mod tests {
             parse("D [Power] TAG_CHANGE Entity=Player#12345 tag=CURRENT_PLAYER value=1"),
             Some(Event::CurrentPlayer {
                 player_name: "Player#12345".into(),
+                player: None,
                 current: true
             })
         );
@@ -494,6 +552,7 @@ mod tests {
             parse("D [Power] TAG_CHANGE Entity=Player#12345 tag=PLAYSTATE value=WON"),
             Some(Event::Result {
                 player_name: "Player#12345".into(),
+                player: None,
                 won: true
             })
         );
@@ -564,6 +623,7 @@ mod tests {
             ),
             Some(Event::Result {
                 player_name: "xror#21652".into(),
+                player: None,
                 won: true
             })
         );
