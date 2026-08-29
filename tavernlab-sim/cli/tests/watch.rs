@@ -175,6 +175,74 @@ impl View {
 /// nothing, and the test below will fail rather than pass quietly.
 const MAGE_DECK: &str = "AAECAf0ECKiKBKqKBP6eBJSgBJegBJ2gBKOgBKfUBAumigT8ngT9ngShnwSmnwSrnwS1nwS9nwTnnwSaoATx0wQAAA==";
 
+/// The same opening, but with the player's tags written as descriptors --
+/// the shape that carries `player=`, and the one the game writes for most of
+/// a real session.
+const AFTER_MULLIGAN_DESCRIBED: &str = "\
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=xror id=2 zone=PLAY zonePos=0 cardId= player=1] tag=RESOURCES value=4
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=xror id=2 zone=PLAY zonePos=0 cardId= player=1] tag=RESOURCES_USED value=0
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7
+D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=xror id=2 zone=PLAY zonePos=0 cardId= player=1] tag=CURRENT_PLAYER value=1
+D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=6 local=False [entityName=Bloodfen Raptor id=20 zone=HAND zonePos=1 cardId=CS2_172 player=2] zone from OPPOSING HAND -> OPPOSING PLAY
+";
+
+#[test]
+fn the_battletag_does_not_have_to_be_typed() {
+    // No `--me`. The log says which player number is FRIENDLY and, on a
+    // descriptor line, which name holds that number -- so the mana is
+    // attributed without being told whose it is.
+    let out = run(
+        "autome",
+        &format!("{LOG}{AFTER_MULLIGAN_DESCRIBED}"),
+        &[],
+    );
+    assert!(out.contains("мана 4/4"), "the mana was attributed: {out}");
+    assert!(
+        out.contains("ви: xror (визначено з логу)"),
+        "and it says which name it settled on: {out}"
+    );
+}
+
+#[test]
+fn a_deck_passed_once_is_remembered() {
+    // The lab already fills the deck in from its settings; this is the other
+    // direction, so that a code typed on the command line does not have to be
+    // typed again.
+    let home = home_for("remembered");
+    let log = home.join("Power.log");
+    std::fs::write(&log, format!("{LOG}{AFTER_MULLIGAN_DESCRIBED}")).expect("write the log");
+    let once = Command::new(env!("CARGO_BIN_EXE_tavernsim"))
+        .args(["watch", "--log"])
+        .arg(&log)
+        .args(["--once", "--no-history", "--deck", MAGE_DECK])
+        .env("TAVERNLAB_HOME", &home)
+        .env_remove("HS_DECK")
+        .env_remove("HS_ME")
+        .output()
+        .expect("run with the deck");
+    let once = String::from_utf8_lossy(&once.stdout).to_string();
+    assert!(!once.contains("колоду не відновлено"), "{once}");
+
+    let again = Command::new(env!("CARGO_BIN_EXE_tavernsim"))
+        .args(["watch", "--log"])
+        .arg(&log)
+        .args(["--once", "--no-history"])
+        .env("TAVERNLAB_HOME", &home)
+        .env_remove("HS_DECK")
+        .env_remove("HS_ME")
+        .output()
+        .expect("run without it");
+    let again = String::from_utf8_lossy(&again.stdout).to_string();
+    assert!(
+        again.contains("колода з лабораторії"),
+        "the second run says where the deck came from: {again}"
+    );
+    assert!(
+        !again.contains("колоду не відновлено"),
+        "and it really has one: {again}"
+    );
+}
+
 #[test]
 fn without_a_deck_the_plan_says_a_draw_will_read_as_fatigue() {
     // The rebuilt position has no deck unless the deck code supplies one, and
