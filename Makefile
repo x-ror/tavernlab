@@ -112,9 +112,10 @@ bench: build
 
 # How much the greedy policy gives up against a within-turn search. The A/A
 # control in the first column must read 50.0%; anything else means the seat
-# swap is broken and the second column is not a policy difference.
+# swap is broken and the columns beside it are not policy differences.
+# Arguments are seeds per deck, node budget, depth, determinizations.
 policy: build
-	$(BIN) policy 200 4000 4
+	$(BIN) policy 200 4000 4 1
 
 # Instruction count instead of seconds: deterministic, so a 0.2% difference
 # is a real one and needs no control run. About ten seconds under valgrind.

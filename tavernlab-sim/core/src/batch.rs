@@ -176,17 +176,29 @@ pub fn play_batch_parallel(a: Contender, b: Contender, seeds: &[u64], threads: u
 pub enum Policy {
     /// The engine's own greedy scorer.
     Greedy,
-    /// Search over the rest of the turn, `budget` positions per decision.
-    Plan { budget: u32, depth: u8 },
+    /// Search over the rest of the turn, `budget` positions per decision,
+    /// averaged over `samples` determinizations. `iterative` deepens a level
+    /// at a time instead of running one depth-first pass to exhaustion.
+    Plan {
+        budget: u32,
+        depth: u8,
+        samples: u8,
+        iterative: bool,
+    },
 }
 
 impl Policy {
     fn agent(self, style: Style) -> Box<dyn crate::game::Agent> {
         match self {
             Policy::Greedy => Box::new(Scripted::new(style)),
-            Policy::Plan { budget, depth } => {
-                Box::new(crate::planner::Planner::new(style, budget, depth))
-            }
+            Policy::Plan {
+                budget,
+                depth,
+                samples,
+                iterative,
+            } => Box::new(crate::planner::Planner::tuned(
+                style, budget, depth, samples, iterative,
+            )),
         }
     }
 }
@@ -440,6 +452,8 @@ mod tests {
         let plan = Policy::Plan {
             budget: 600,
             depth: 4,
+            samples: 1,
+            iterative: true,
         };
         let r = duel(deck, [plan, Policy::Greedy], &s, 1);
         assert!(
@@ -448,6 +462,29 @@ mod tests {
             100.0 * r.rate(Side::Player0),
             r.total()
         );
+    }
+
+    #[test]
+    fn a_budget_too_small_to_finish_a_level_still_plays() {
+        // Deepening keeps only levels that finished, so a budget that cannot
+        // finish even the first one leaves it with nothing scored. It must
+        // still return a legal action rather than stalling the turn -- and
+        // the games must still play out.
+        let cards = test_deck(Class::Warrior);
+        let deck = Contender {
+            class: Class::Warrior,
+            cards: &cards,
+            style: Style::Midrange,
+        };
+        let starved = Policy::Plan {
+            budget: 1,
+            depth: 4,
+            samples: 1,
+            iterative: true,
+        };
+        let r = duel(deck, [starved, Policy::Greedy], &seeds(4, 10), 1);
+        assert_eq!(r.total(), 20);
+        assert!(r.avg_turns() > 1.0, "games did not actually play out");
     }
 
     #[test]
@@ -462,6 +499,8 @@ mod tests {
         let plan = Policy::Plan {
             budget: 400,
             depth: 3,
+            samples: 1,
+            iterative: true,
         };
         let a = duel(deck, [plan, Policy::Greedy], &s, 1);
         let b = duel(deck, [plan, Policy::Greedy], &s, 1);
