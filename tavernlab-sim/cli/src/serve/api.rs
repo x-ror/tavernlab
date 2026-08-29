@@ -21,7 +21,7 @@
 use std::sync::Arc;
 
 use tavernlab_core::agent::Style;
-use tavernlab_core::batch::Contender;
+use tavernlab_core::batch::{Contender, Policy};
 use tavernlab_core::cards::{CardId, Class, Formats, Kind, by_name, is_implemented};
 use tavernlab_core::deckstring::{self, Resolved};
 use tavernlab_core::gauntlet::{self, MetaDeck, Unfieldable, class_name};
@@ -979,20 +979,46 @@ fn hero_dbf(class: Class) -> Option<u32> {
     tavernlab_core::cards::by_id(id).map(|c| c.info().dbf)
 }
 
-/// `GET /api/tiers?format=` — the cached table, or `null`. Never a
+/// Which policy plays a tier table, by the name the API uses for it.
+///
+/// The tier list is the one screen that ranks decks against each other, and
+/// it is measurably a claim about the policy as well as about the decks:
+/// three of twelve decks change tier between these two, and Quest Hunter
+/// crosses four bands. See the README.
+///
+/// An unknown name is greedy rather than an error -- the table it produces
+/// is the one this endpoint always produced, so an old client keeps working.
+fn tiers_policy(name: &str) -> (&'static str, Policy) {
+    match name {
+        "search" => (
+            "search",
+            Policy::Plan {
+                budget: 4000,
+                depth: 4,
+                samples: 1,
+                iterative: true,
+            },
+        ),
+        _ => ("greedy", Policy::Greedy),
+    }
+}
+
+/// `GET /api/tiers?format=&policy=` — the cached table, or `null`. Never a
 /// computation on a GET: the matrix is quadratic.
 pub fn tiers_read(app: &App, req: &Request) -> Response {
     let format_name = req.param("format").unwrap_or("standard");
     let Some((format_name, _)) = format_by_name(format_name) else {
         return Response::error(400, "unknown format");
     };
-    match std::fs::read_to_string(app.tiers_path(format_name)) {
+    let (policy_name, _) = tiers_policy(req.param("policy").unwrap_or("greedy"));
+    match std::fs::read_to_string(app.tiers_path(format_name, policy_name)) {
         Ok(body) if Json::parse(&body).is_ok() => Response::json(200, body),
         _ => Response::json(
             200,
             to_string(|o| {
                 o.obj(|o| {
                     o.str_field("format", format_name);
+                    o.str_field("policy", policy_name);
                     o.field("decks", |v| v.null());
                 })
             }),
@@ -1005,13 +1031,19 @@ pub fn tiers_start(app: &Arc<App>, req: &Request) -> Response {
     let payload = body(req);
     let (format_name, _) = format_of(&payload);
     let games = clamped(&payload, "games", 200, TIERS_MIN, TIERS_MAX);
+    let (policy_name, policy) = tiers_policy(field_str(&payload, "policy"));
     let app = Arc::clone(app);
     let id = app.clone().jobs.start(move |p| {
         let field = app.gauntlet(format_name);
         if field.is_empty() {
             return Err(format!("no gauntlet for {format_name}"));
         }
-        let table = tiers::build(&field, games, app.threads, |line| p.say(line));
+        if policy_name == "search" {
+            // Two hundred times the work of the greedy table, and the page
+            // that started it has a progress log to read while it runs.
+            p.say("рахую пошуком — це надовго, хвилини замість секунд".to_string());
+        }
+        let table = tiers::build_with(&field, [policy; 2], games, app.threads, |line| p.say(line));
         if table.rows.is_empty() {
             return Err("not one deck in the gauntlet could be fielded".into());
         }
@@ -1027,6 +1059,10 @@ pub fn tiers_start(app: &Arc<App>, req: &Request) -> Response {
         let body = to_string(|o| {
             o.obj(|o| {
                 o.str_field("format", format_name);
+                // Stamped into the table itself, not just the file name: a
+                // ranking that does not say what played it can be read as
+                // policy-free, and this one is not.
+                o.str_field("policy", policy_name);
                 o.int_field("computed_at", computed_at);
                 o.int_field("games_per_pair", table.games_per_pair as i64);
                 o.field("margin", |v| v.round(table.margin, 4));
@@ -1075,7 +1111,7 @@ pub fn tiers_start(app: &Arc<App>, req: &Request) -> Response {
         });
         // Cached so nobody has to re-run a quadratic matrix to look at a
         // table they already computed.
-        let path = app.tiers_path(format_name);
+        let path = app.tiers_path(format_name, policy_name);
         if let Err(e) = std::fs::write(&path, &body) {
             p.say(format!("could not save {}: {e}", path.display()));
         }

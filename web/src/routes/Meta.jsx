@@ -34,25 +34,35 @@ export default function Meta() {
   const [fmt, setFmt] = useState(analysis?.format || deckInfo?.format || 'standard')
   const [data, setData] = useState(undefined) // undefined = loading
   const [games, setGames] = useState('200')
+  // Which policy plays the matrix. The tier list is the one screen that
+  // ranks decks against each other, and it is measurably a claim about the
+  // policy as well: 3 of 12 decks change tier between these two. Greedy
+  // stays the default because it is what the button has always done and it
+  // answers in seconds; the search is a deliberate, slower second opinion.
+  const [policy, setPolicy] = useState('greedy')
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState([])
   const [error, setError] = useState(null)
   const field = useMetaDecks(fmt)
   const playable = (field || []).filter((d) => d.playable !== false).length
 
-  const load = useCallback(async (which) => {
+  const load = useCallback(async (which, how) => {
     setData(undefined)
     try {
-      const d = await api.get(`/api/tiers?format=${encodeURIComponent(which)}`)
+      const d = await api.get(
+        `/api/tiers?format=${encodeURIComponent(which)}&policy=${encodeURIComponent(how)}`,
+      )
       setData(d?.decks ? d : null)
     } catch {
       setData(null)
     }
   }, [])
 
+  // Each policy has its own cached table, so switching the picker shows the
+  // one that was actually computed rather than relabelling the other.
   useEffect(() => {
-    load(fmt)
-  }, [fmt, load])
+    load(fmt, policy)
+  }, [fmt, policy, load])
 
   async function run() {
     setError(null)
@@ -61,7 +71,7 @@ export default function Meta() {
     try {
       const result = await api.runJob(
         '/api/tiers',
-        { format: fmt, games: Number(games) },
+        { format: fmt, games: Number(games), policy },
         setProgress,
       )
       setData(result)
@@ -84,6 +94,10 @@ export default function Meta() {
       ? t('meta.caveat_noisy', { games: data.games_per_pair, margin: marginPts })
       : null,
     t('meta.caveat_not_ladder'),
+    // Which policy played it, and what that costs the ranking. Said against
+    // the table on screen rather than the picker, because a cached table can
+    // have been played by the other one.
+    data?.policy === 'search' ? t('meta.caveat_search_policy') : t('meta.caveat_greedy_policy'),
     t('meta.caveat_scripted_ai'),
     t('meta.caveat_small_field'),
   ].filter(Boolean)
@@ -114,6 +128,19 @@ export default function Meta() {
           <Item key="200">200</Item>
           <Item key="500">500</Item>
         </Picker>
+        <Picker
+          label={t('ui.tiers.policy')}
+          items={[
+            { id: 'greedy', name: t('ui.tiers.policy_greedy') },
+            { id: 'search', name: t('ui.tiers.policy_search') },
+          ]}
+          selectedKey={policy}
+          onSelectionChange={(k) => setPolicy(String(k))}
+          isDisabled={busy}
+          width="size-2400"
+        >
+          {(item) => <Item>{item.name}</Item>}
+        </Picker>
         <span style={{ flex: '1 1 auto' }} />
         <Button variant="accent" isPending={busy} isDisabled={busy} onPress={run}>
           {data ? t('ui.tiers.rerun') : t('ui.tiers.run')}
@@ -142,6 +169,7 @@ export default function Meta() {
               games: data.games_per_pair ?? '—',
             })}
             {marginPts !== null ? ` · ±${marginPts}` : ''}
+            {` · ${data.policy === 'search' ? t('ui.tiers.by_search') : t('ui.tiers.by_greedy')}`}
           </Text>
         )}
         <Caveats items={caveats} />

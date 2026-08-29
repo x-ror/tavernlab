@@ -29,9 +29,11 @@
  "common.loading": "Loading…",
  "deck.label": "Your deck code (in game: Deck → Copy)",
  "deck.ph": "AAECAf0E…",
+ "meta.caveat_greedy_policy": "This table was played by the greedy policy — the one that loses two games in three to the search. That measurably moves the order: on this same field 3 of 12 decks change tier, and Quest Hunter falls from S to D. Decks that reward sequencing are marked down here. Recompute with the “search” policy to see the other order.",
  "meta.caveat_noisy": "At {games} games per pair a single matchup carries roughly ±{margin} points of noise, which is wider than the tier bands. Treat this run as a shape, not a ranking — raise the games per pair to narrow it.",
  "meta.caveat_not_ladder": "This is the simulator playing itself, not the ladder. TavernLab does not scrape HSReplay or Untapped for winrates, so it cannot tell you what is strong in ranked play.",
  "meta.caveat_scripted_ai": "The AI is scripted. Combo and value-engine decks come out below their real strength; treat their numbers as a lower bound.",
+ "meta.caveat_search_policy": "This table was played by the search, the policy that beats greedy by 37.5 points. That is closer to how decks are actually piloted, but it is not proven: there is nothing to check it against, because TavernLab does not collect real winrates. Read it as a second opinion rather than as a corrected table.",
  "meta.caveat_skipped": "{n} deck(s) are outside this table because the simulator cannot field them: {decks}.",
  "meta.caveat_small_field": "The field is the gauntlet, not a ladder’s long tail. A deck that beats it is not thereby the best deck in the game.",
  "mull.hand_label": "Your opening hand (start typing a name for suggestions)",
@@ -59,5 +61,10 @@
  "settings.lang_uk": "Українська",
  "settings.language": "Language",
  "settings.save": "Save",
- "settings.saved": "Saved."
+ "settings.saved": "Saved.",
+ "ui.tiers.by_greedy": "played by the greedy policy",
+ "ui.tiers.by_search": "played by the search",
+ "ui.tiers.policy": "Policy",
+ "ui.tiers.policy_greedy": "greedy (seconds)",
+ "ui.tiers.policy_search": "search (minutes)"
 }
