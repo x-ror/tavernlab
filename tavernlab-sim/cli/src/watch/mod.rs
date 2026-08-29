@@ -20,15 +20,17 @@
 //! measurement is a batch of simulations, and a daemon that is only keeping
 //! score should not run one on every turn.
 
+mod live;
 pub mod log;
 pub mod tracker;
 
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use tavernlab_core::agent::{Scripted, Style};
+use tavernlab_core::agent::Style;
 use tavernlab_core::cards::{CardId, Class, Keywords};
 use tavernlab_core::game::{Action, Agent, hero_power_for};
+use tavernlab_core::planner::Planner;
 use tavernlab_core::state::{Game, HandCard, Permanent};
 
 use crate::history;
@@ -229,7 +231,42 @@ fn class_name(c: Class) -> &'static str {
 /// so the rebuilt game has an empty one, and the advice is worth exactly what
 /// a read of the board is worth. Health and armour are not tracked, so both
 /// heroes start whole — which is why this prints the position it used.
-fn plan(tr: &Tracker) -> Vec<String> {
+/// What is left of your deck, as far as the deck code and the log together
+/// can say.
+///
+/// This matters more than it looks. Without it the rebuilt game has an empty
+/// deck, and every draw effect in your hand reads as fatigue damage to your
+/// own hero -- so the advice quietly refuses to play the card that draws. The
+/// greedy policy scored one action at a time and mostly did not notice; a
+/// search plays the line out and notices every time.
+///
+/// The subtraction is approximate, and approximate in the safe direction. A
+/// card played from hand has left the deck and a card in hand is not in it,
+/// so both come off; a body summoned straight out of the deck by something
+/// else does not, and is counted twice as present. The result is a deck of
+/// roughly the right size holding roughly the right cards, which is all the
+/// plan needs -- it is there to stop a draw being fatigue, not to predict the
+/// top card. The search shuffles it before reading it anyway, exactly so that
+/// it cannot plan around a card it has no business knowing.
+fn remaining_deck(tr: &Tracker, deck: &str) -> Vec<CardId> {
+    let Ok(resolved) = tavernlab_core::deckstring::resolve(deck) else {
+        return Vec::new();
+    };
+    let mut left = resolved.ids;
+    for seen in tr
+        .hand
+        .iter()
+        .map(|b| b.card)
+        .chain(tr.played[0].iter().copied())
+    {
+        if let Some(i) = left.iter().position(|c| *c == seen) {
+            left.remove(i);
+        }
+    }
+    left
+}
+
+fn plan(tr: &Tracker, deck: &str) -> Vec<String> {
     let (Some(mine), Some(theirs)) = (tr.my_class(), tr.opponent_class()) else {
         return vec!["не видно обох класів — ще нема з чого будувати позицію".into()];
     };
@@ -287,9 +324,24 @@ fn plan(tr: &Tracker) -> Vec<String> {
     for b in tr.hand.iter() {
         g.players[0].hand.push(HandCard::new(b.card));
     }
+    let deck_known = {
+        let left = remaining_deck(tr, deck);
+        let known = !left.is_empty();
+        for card in left {
+            g.players[0]
+                .deck
+                .push(tavernlab_core::state::DeckCard::new(card));
+        }
+        known
+    };
     g.recompute_auras();
 
-    let mut agent = Scripted::new(Style::Midrange);
+    // The search, not the greedy policy. Live advice is one decision at a
+    // time rather than a batch of two thousand games, so the two hundredfold
+    // cost that keeps the search out of the engine buys, here, the difference
+    // between the policy that loses two games in three and the one that wins
+    // them. See the README on how that was measured.
+    let mut agent = Planner::new(Style::Midrange, 4000, 4);
     let mut out = Vec::new();
     let mut legal: tavernlab_core::inline::Inline<Action, 512> =
         tavernlab_core::inline::Inline::new();
@@ -326,9 +378,17 @@ fn plan(tr: &Tracker) -> Vec<String> {
     // number unless this line is here.
     if tr.crystals.is_none() {
         out.push(format!(
-            "(мана невідома — рахував як {}; вкажіть --me <бойовий тег>, щоб було точно)",
+ "(мана невідома — рахував як {}; вкажіть --me <бойовий тег>, щоб було точно)",
             g.players[0].crystals
         ));
+    }
+    // An empty deck is fatigue, and fatigue makes the plan avoid every card
+    // that draws. Silence about it would read as advice.
+    if !deck_known {
+        out.push(
+ "(колоду не відновлено — без --deck добір рахується як втома, тож карти, що тягнуть, план обходить)"
+                .into(),
+        );
     }
     out
 }
@@ -496,89 +556,120 @@ pub struct Args {
     /// of simulations; a daemon that is only keeping history should not pay
     /// that on every turn.
     pub quiet: bool,
+    /// Also serve the advice as a page on this loopback port, for reading
+    /// beside the client instead of alt-tabbing to a terminal.
+    pub serve: Option<u16>,
 }
 
-/// Print everything the tracker can currently say.
-fn report(app: &App, format: &str, tr: &Tracker, deck: &str) {
+/// Everything the tracker can currently say, built once so that the terminal
+/// and the browser view cannot drift apart.
+///
+/// A heading with no lines under it is dropped rather than printed empty: an
+/// empty section reads as "nothing to advise", which is a different claim
+/// from "this does not apply right now".
+pub struct Advice {
+    pub title: String,
+    pub sections: Vec<(&'static str, Vec<String>)>,
+}
+
+fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice {
     // Straight after a `CREATE_GAME` there is a moment where nothing at all
     // has been read. A full block of empty boards and two untouched heroes
     // says nothing and reads like a position; one line is the honest size of
     // what is known.
     if tr.my_class().is_none() && tr.opponent_class().is_none() && tr.opening.is_empty() {
-        println!("\n─── нова гра — ще нічого не видно");
-        return;
+        return Advice {
+            title: "нова гра — ще нічого не видно".into(),
+            sections: Vec::new(),
+        };
     }
-    println!("\n─── хід {} {}", tr.turn, if tr.my_turn { "(ваш)" } else { "" });
+    let mut title = format!("хід {}{}", tr.turn, if tr.my_turn { " (ваш)" } else { "" });
     match (tr.my_class(), tr.opponent_class()) {
-        (Some(a), Some(b)) => println!("  {} проти {}", class_name(a), class_name(b)),
-        (Some(a), None) => println!("  {} проти ?", class_name(a)),
-        _ => println!("  класи ще не видно"),
+        (Some(a), Some(b)) => title.push_str(&format!(" — {} проти {}", class_name(a), class_name(b))),
+        (Some(a), None) => title.push_str(&format!(" — {} проти ?", class_name(a))),
+        _ => title.push_str(" — класи ще не видно"),
     }
     if tr.over {
-        println!("  гру завершено");
+        title.push_str(" — гру завершено");
     }
 
+    let mut sections: Vec<(&'static str, Vec<String>)> = Vec::new();
     if !tr.started && !tr.opening.is_empty() {
-        println!("\n  МУЛІГАН");
-        for line in mulligan(app, format, tr, deck) {
-            println!("    {line}");
-        }
-        return;
+        sections.push(("МУЛІГАН", mulligan(app, format, tr, deck)));
+        return Advice { title, sections };
     }
 
-    println!("\n  СУПЕРНИК");
-    for line in opponent_read(app, format, tr) {
-        println!("    {line}");
+    // The turn first: it is the thing being looked up mid-game, and a reader
+    // glancing at a browser window beside the client should not have to
+    // scroll past the board they can already see.
+    if tr.my_turn && !tr.over {
+        sections.push(("ХІД", plan(tr, deck)));
     }
+    sections.push(("СУПЕРНИК", opponent_read(app, format, tr)));
 
-    println!("\n  ПОЗИЦІЯ (те, що вдалося прочитати з логу)");
+    let mut position = Vec::new();
     match (tr.mana_left(), tr.crystals) {
-        (Some(left), Some(total)) => println!("    мана {left}/{total}"),
+        (Some(left), Some(total)) => position.push(format!("мана {left}/{total}")),
         _ => {
-            println!(
-                "    мана невідома — вкажіть --me <бойовий тег> або HS_ME, \
+            position.push(
+                "мана невідома — вкажіть --me <бойовий тег> або HS_ME, \
                  інакше рядки RESOURCES нема до кого віднести"
+                    .into(),
             );
             // The client does not always spell a battletag the way the
             // launcher shows it, and guessing is the one thing this must not
             // do -- so print what it actually wrote and let the user pick.
             if !tr.names.is_empty() {
-                println!("      у лозі трапилися імена: {}", tr.names.join(", "));
+                position.push(format!("у лозі трапилися імена: {}", tr.names.join(", ")));
             }
         }
     }
-    println!(
-        "    ваш герой {}{}, ворожий {}{}",
+    position.push(format!(
+        "ваш герой {}{}, ворожий {}{}",
         tr.heroes[0].health(),
         armour(tr.heroes[0].armor),
         tr.heroes[1].health(),
         armour(tr.heroes[1].armor),
-    );
-    print_side("    ваша дошка", &tr.board[0]);
-    print_side("    ворожа дошка", &tr.board[1]);
+    ));
+    position.push(format!("ваша дошка: {}", side_line(&tr.board[0])));
+    position.push(format!("ворожа дошка: {}", side_line(&tr.board[1])));
     let hand: Vec<&str> = tr.hand.iter().map(|b| b.card.name()).collect();
-    println!(
-        "    рука: {}",
+    position.push(format!(
+        "рука: {}",
         if hand.is_empty() {
             "порожня".to_string()
         } else {
             hand.join(", ")
         }
-    );
+    ));
+    sections.push(("ПОЗИЦІЯ (те, що вдалося прочитати з логу)", position));
 
-    if tr.my_turn && !tr.over {
-        println!("\n  ХІД");
-        for line in plan(tr) {
+    Advice { title, sections }
+}
+
+/// Print everything the tracker can currently say, and hand the same thing to
+/// the browser view if one is running.
+fn report(app: &App, format: &str, tr: &Tracker, deck: &str) {
+    let advice = build_advice(app, format, tr, deck);
+    println!("\n─── {}", advice.title);
+    for (heading, lines) in &advice.sections {
+        if lines.is_empty() {
+            continue;
+        }
+        println!("\n  {heading}");
+        for line in lines {
             println!("    {line}");
         }
     }
+    live::publish(&advice);
 }
 
 fn armour(n: i16) -> String {
     if n > 0 { format!(" (+{n} броні)") } else { String::new() }
 }
 
-fn print_side(label: &str, board: &[tracker::Body]) {
+/// One board as a line, or "порожня".
+fn side_line(board: &[tracker::Body]) -> String {
     let names: Vec<String> = board
         .iter()
         // Same rule as the plan: a body at zero health is already dead, and
@@ -603,17 +694,23 @@ fn print_side(label: &str, board: &[tracker::Body]) {
             s
         })
         .collect();
-    println!(
-        "{label}: {}",
-        if names.is_empty() {
-            "порожня".to_string()
-        } else {
-            names.join(", ")
-        }
-    );
+    if names.is_empty() {
+        "порожня".to_string()
+    } else {
+        names.join(", ")
+    }
 }
 
 pub fn run(app: &App, format: &str, args: Args) -> i32 {
+    if let Some(port) = args.serve {
+        match live::start(port) {
+            Ok(url) => println!("порада також тут: {url}"),
+            // Not fatal: the terminal report is the primary output and the
+            // page is a convenience. A busy port should not stop a game
+            // being watched.
+            Err(e) => eprintln!("не вдалося відкрити сторінку на порту {port}: {e}"),
+        }
+    }
     if let Some(one) = args.log_file.clone() {
         return follow(app, format, &args, vec![one], args.once);
     }
