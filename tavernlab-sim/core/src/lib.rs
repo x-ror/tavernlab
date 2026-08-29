@@ -47,6 +47,7 @@ pub mod events;
 pub mod game;
 pub mod inline;
 pub mod optimize;
+pub mod planner;
 pub mod rng;
 pub mod state;
 pub mod telemetry;

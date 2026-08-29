@@ -166,6 +166,116 @@ pub fn play_batch_parallel(a: Contender, b: Contender, seeds: &[u64], threads: u
     })
 }
 
+/// Which policy plays a side, for a duel that varies the policy rather than
+/// the deck.
+///
+/// An enum rather than a borrowed `dyn Agent` so that a worker thread can
+/// build its own -- an agent is cheap to construct and carries per-game
+/// state, so sharing one across games would be wrong even if it were `Sync`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Policy {
+    /// The engine's own greedy scorer.
+    Greedy,
+    /// Search over the rest of the turn, `budget` positions per decision.
+    Plan { budget: u32, depth: u8 },
+}
+
+impl Policy {
+    fn agent(self, style: Style) -> Box<dyn crate::game::Agent> {
+        match self {
+            Policy::Greedy => Box::new(Scripted::new(style)),
+            Policy::Plan { budget, depth } => {
+                Box::new(crate::planner::Planner::new(style, budget, depth))
+            }
+        }
+    }
+}
+
+/// One game of the same deck against itself, one policy on each side.
+///
+/// The decks are identical on purpose: with the list fixed, the only thing
+/// left to explain a win is how the cards were played.
+pub fn duel_one(
+    deck: Contender,
+    policies: [Policy; 2],
+    seed: u64,
+    first: Side,
+) -> (Outcome, u16) {
+    let mut g = match Game::new((deck.class, deck.cards), (deck.class, deck.cards), seed) {
+        Ok(g) => g,
+        Err(_) => return (Outcome::Draw, 0),
+    };
+    let mut pa = policies[0].agent(deck.style);
+    let mut pb = policies[1].agent(deck.style);
+    let mut agents: [&mut dyn crate::game::Agent; 2] = [pa.as_mut(), pb.as_mut()];
+    let o = g.run(first, &mut agents);
+    (o, g.turn)
+}
+
+/// `seeds.len()` duels, spread across `threads`, and always in mirrored
+/// pairs.
+///
+/// Two biases have to go before a policy difference is readable, and both are
+/// handled here rather than left to the caller, for the same reason
+/// [`play_batch`] handles its own:
+///
+/// * **who leads** -- alternated, exactly as in a deck comparison;
+/// * **which side the policy sits on** -- every seed is played twice, once
+///   with the policies swapped, so a seat advantage cancels instead of being
+///   attributed to the policy sitting in it.
+///
+/// The returned record is from the point of view of `policies[0]`.
+pub fn duel(
+    deck: Contender,
+    policies: [Policy; 2],
+    seeds: &[u64],
+    threads: usize,
+) -> Record {
+    let threads = threads.max(1).min(seeds.len().max(1));
+    let run = |part: &[u64], base: usize| {
+        let mut rec = Record::default();
+        for (i, &seed) in part.iter().enumerate() {
+            let idx = base + i;
+            let first = if idx % 2 == 0 {
+                Side::Player0
+            } else {
+                Side::Player1
+            };
+            for swapped in [false, true] {
+                let seats = if swapped {
+                    [policies[1], policies[0]]
+                } else {
+                    policies
+                };
+                let (o, turns) = duel_one(deck, seats, seed, first);
+                // Re-read the outcome as "did policies[0] win", which is the
+                // only thing the caller asked about.
+                let o = match (o, swapped) {
+                    (Outcome::Win(s), true) => Outcome::Win(s.other()),
+                    (other, _) => other,
+                };
+                rec.record(o, turns);
+            }
+        }
+        rec
+    };
+    if threads == 1 {
+        return run(seeds, 0);
+    }
+    let chunk = seeds.len().div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(threads);
+        for (c, part) in seeds.chunks(chunk).enumerate() {
+            let base = c * chunk;
+            handles.push(scope.spawn(move || run(part, base)));
+        }
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_default())
+            .fold(Record::default(), Record::merge)
+    })
+}
+
 /// A reproducible seed list for a run.
 ///
 /// Deriving seeds from one number keeps a whole evaluation describable by a
@@ -287,6 +397,78 @@ mod tests {
                 "{threads} threads"
             );
         }
+    }
+
+    #[test]
+    fn a_policy_against_a_copy_of_itself_reads_exactly_even() {
+        // The control the whole policy measurement rests on. `duel` plays
+        // every seed from both seats, so identical policies must cancel to
+        // the game -- not approximately, exactly. A drift here means the
+        // swap is wrong and every policy number taken with it is a seat
+        // advantage in disguise.
+        let cards = test_deck(Class::Mage);
+        let deck = Contender {
+            class: Class::Mage,
+            cards: &cards,
+            style: Style::Midrange,
+        };
+        let s = seeds(3, 40);
+        let r = duel(deck, [Policy::Greedy, Policy::Greedy], &s, 1);
+        assert_eq!(r.total(), 80, "every seed is played from both seats");
+        assert_eq!(
+            r.wins[0], r.wins[1],
+            "a policy against itself must split the wins exactly"
+        );
+        assert!((r.rate(Side::Player0) - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn the_planner_beats_greedy_on_the_same_deck() {
+        // Not a tuning target -- a guard. The planner exists to measure what
+        // greedy gives up, and a planner that stopped winning would mean
+        // either that it broke or that the search is no longer reaching the
+        // positions it was reading. Either way the measurement is void, and
+        // the threshold is set far below what it actually scores so that
+        // ordinary rules changes do not trip it.
+        let cards = test_deck(Class::Mage);
+        let deck = Contender {
+            class: Class::Mage,
+            cards: &cards,
+            style: Style::Midrange,
+        };
+        let s = seeds(5, 30);
+        let plan = Policy::Plan {
+            budget: 600,
+            depth: 4,
+        };
+        let r = duel(deck, [plan, Policy::Greedy], &s, 1);
+        assert!(
+            r.rate(Side::Player0) > 0.6,
+            "planner won only {:.1}% of {} games",
+            100.0 * r.rate(Side::Player0),
+            r.total()
+        );
+    }
+
+    #[test]
+    fn a_duel_is_reproducible() {
+        let cards = test_deck(Class::Druid);
+        let deck = Contender {
+            class: Class::Druid,
+            cards: &cards,
+            style: Style::Midrange,
+        };
+        let s = seeds(9, 20);
+        let plan = Policy::Plan {
+            budget: 400,
+            depth: 3,
+        };
+        let a = duel(deck, [plan, Policy::Greedy], &s, 1);
+        let b = duel(deck, [plan, Policy::Greedy], &s, 1);
+        assert_eq!(a, b, "the planner must not depend on anything but the seed");
+        // And the thread count must not change the answer either, the same
+        // rule `play_batch_parallel` holds to.
+        assert_eq!(a, duel(deck, [plan, Policy::Greedy], &s, 4));
     }
 
     #[test]
