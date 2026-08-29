@@ -186,10 +186,11 @@ fn tiers_by_policy(per_pair: usize, path: Option<&str>) {
     let rank = |t: &tiers::Table, name: &str| t.rows.iter().position(|r| r.name == name);
 
     println!(
-        "\n{:<28}{:>10}{:>10}{:>9}{:>8}",
-        "колода", "жадібний", "пошук", "різниця", "місць"
+        "\n{:<28}{:>10}{:>10}{:>9}{:>8}{:>8}",
+        "колода", "жадібний", "пошук", "різниця", "місць", "тір"
     );
     let mut moved = 0usize;
+    let mut retiered = 0usize;
     let mut worst = 0i32;
     for (i, row) in greedy.rows.iter().enumerate() {
         let Some(j) = rank(&planned, &row.name) else {
@@ -201,8 +202,14 @@ fn tiers_by_policy(per_pair: usize, path: Option<&str>) {
             moved += 1;
         }
         worst = worst.max(shift.abs());
+        // The tier is what a reader actually takes away, so a deck that
+        // crosses a band is the finding -- a win rate that moved inside one
+        // is not.
+        if row.tier != other.tier {
+            retiered += 1;
+        }
         println!(
-            "{:<28}{:>9.1}%{:>9.1}%{:>+8.1}{:>8}",
+            "{:<28}{:>9.1}%{:>9.1}%{:>+8.1}{:>8}{:>8}",
             row.name,
             100.0 * row.winrate,
             100.0 * other.winrate,
@@ -211,13 +218,18 @@ fn tiers_by_policy(per_pair: usize, path: Option<&str>) {
                 "—".to_string()
             } else {
                 format!("{shift:+}")
+            },
+            if row.tier == other.tier {
+                row.tier.to_string()
+            } else {
+                format!("{}→{}", row.tier, other.tier)
             }
         );
     }
     let n = greedy.rows.len();
     println!(
-        "\n{moved} з {n} колод змінили місце, найбільший зсув {worst}; \
-         похибка на {per_pair} боях ±{:.1} в.п.",
+        "\n{moved} з {n} колод змінили місце, {retiered} змінили тір, \
+         найбільший зсув {worst}; похибка на {per_pair} боях ±{:.1} в.п.",
         100.0 * tiers::margin(per_pair)
     );
 }
