@@ -199,18 +199,22 @@ pub fn play_batch_parallel_with(
 /// An enum rather than a borrowed `dyn Agent` so that a worker thread can
 /// build its own -- an agent is cheap to construct and carries per-game
 /// state, so sharing one across games would be wrong even if it were `Sync`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// Not `Eq`: the evaluator's weights are floats, and a policy carrying them
+// cannot claim the reflexivity `Eq` promises. Nothing here needs it.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Policy {
     /// The engine's own greedy scorer.
     Greedy,
     /// Search over the rest of the turn, `budget` positions per decision,
     /// averaged over `samples` determinizations. `iterative` deepens a level
-    /// at a time instead of running one depth-first pass to exhaustion.
+    /// at a time instead of running one depth-first pass to exhaustion, and
+    /// `weights` is what its evaluation weighs a position by.
     Plan {
         budget: u32,
         depth: u8,
         samples: u8,
         iterative: bool,
+        weights: crate::planner::Weights,
     },
 }
 
@@ -223,8 +227,9 @@ impl Policy {
                 depth,
                 samples,
                 iterative,
+                weights,
             } => Box::new(crate::planner::Planner::tuned(
-                style, budget, depth, samples, iterative,
+                style, budget, depth, samples, iterative, weights,
             )),
         }
     }
@@ -468,6 +473,7 @@ mod tests {
             depth: 4,
             samples: 1,
             iterative: true,
+            weights: crate::planner::Weights::default(),
         };
         let r = duel(deck, [plan, Policy::Greedy], &s, 1);
         assert!(
@@ -495,6 +501,7 @@ mod tests {
             depth: 4,
             samples: 1,
             iterative: true,
+            weights: crate::planner::Weights::default(),
         };
         let r = duel(deck, [starved, Policy::Greedy], &seeds(4, 10), 1);
         assert_eq!(r.total(), 20);
@@ -515,6 +522,7 @@ mod tests {
             depth: 3,
             samples: 1,
             iterative: true,
+            weights: crate::planner::Weights::default(),
         };
         let a = duel(deck, [plan, Policy::Greedy], &s, 1);
         let b = duel(deck, [plan, Policy::Greedy], &s, 1);

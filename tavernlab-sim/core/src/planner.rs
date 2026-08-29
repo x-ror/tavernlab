@@ -43,6 +43,67 @@ use crate::game::{Action, Agent, MAX_ACTIONS};
 use crate::inline::Inline;
 use crate::state::{Game, Outcome, Side};
 
+/// The numbers the evaluation weighs a position by, against one point of
+/// board -- `minion_value` is the unit, so it has no weight of its own.
+///
+/// These were invented. Three of them were picked by hand when the search
+/// was written, to see whether searching helped at all, and the answer to
+/// that (+37.5 points) says nothing about whether they are the right three
+/// numbers. They are a parameter so that they can be measured against each
+/// other in the same head-to-head the rest of the search was measured in --
+/// see the README, and `tavernsim weights`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Weights {
+    /// A point of my own hero's health or armour.
+    ///
+    /// The enemy hero's is weighted by `Style::face_weight` instead, which
+    /// is what makes an aggro planner race and a control one trade -- that
+    /// one is the archetype knob and is not swept here.
+    pub own_health: f32,
+    /// A card still in hand. Worth something, but less than a body on the
+    /// board, or the search would rather hold than play.
+    pub card: f32,
+    /// Charged per mana crystal left unspent when the turn ends. Mana that
+    /// ends the turn unspent bought nothing.
+    pub unspent: f32,
+}
+
+impl Weights {
+    /// The three numbers as they were first written, by hand, to find out
+    /// whether searching helped at all. Kept because the sweep is stated
+    /// against them: `card` was 0.5, and moving it to 2.0 is worth +2.6
+    /// points on the class decks and +2.1 on the real gauntlet.
+    pub const GUESSED: Weights = Weights {
+        own_health: 0.35,
+        card: 0.5,
+        unspent: 0.15,
+    };
+
+    /// What `tavernsim weights` settled on, and what the search runs with.
+    ///
+    /// Only `card` moved. `own_health` measures as worth nothing anywhere
+    /// from 0 to 1, and `unspent` the same -- within one turn both are
+    /// nearly constant across the sibling lines being compared, so they
+    /// cancel rather than decide. Two thirds of this struct is therefore
+    /// documented as not mattering, which is more useful to know than a
+    /// number nobody questioned.
+    ///
+    /// `card` has a narrow peak: 1.5 and 2.5 measure as nothing, 2.0 is
+    /// +2.6, and 3.0 is already worse. Not chased further -- a peak that
+    /// sharp is a number to hold loosely -- but it does replicate on the
+    /// real gauntlet as well as on the class decks it was found with.
+    pub const MEASURED: Weights = Weights {
+        card: 2.0,
+        ..Weights::GUESSED
+    };
+}
+
+impl Default for Weights {
+    fn default() -> Weights {
+        Weights::MEASURED
+    }
+}
+
 /// A turn-planning policy.
 #[derive(Clone, Copy, Debug)]
 pub struct Planner {
@@ -69,6 +130,8 @@ pub struct Planner {
     /// the two is the whole reason this was rewritten, and a claim about it
     /// should stay reproducible from the code that makes it.
     pub iterative: bool,
+    /// What the evaluation weighs a position by.
+    pub weights: Weights,
     /// Falls back to greedy for the mulligan, which is a different question
     /// and not one a within-turn search can answer.
     greedy: Scripted,
@@ -87,16 +150,25 @@ impl Planner {
             depth,
             samples: 1,
             iterative: true,
+            weights: Weights::default(),
             greedy: Scripted::new(style),
             nonce: 0,
         }
     }
 
     /// Every knob spelled out, for the runs that compare them.
-    pub fn tuned(style: Style, budget: u32, depth: u8, samples: u8, iterative: bool) -> Self {
+    pub fn tuned(
+        style: Style,
+        budget: u32,
+        depth: u8,
+        samples: u8,
+        iterative: bool,
+        weights: Weights,
+    ) -> Self {
         Self {
             samples: samples.max(1),
             iterative,
+            weights,
             ..Self::new(style, budget, depth)
         }
     }
@@ -147,12 +219,9 @@ impl Planner {
         // against each other, where a shared offset cancels.
         let face = self.style.face_weight();
         v -= face * (g.player(foe).hero_hp + g.player(foe).armor) as f32;
-        v += 0.35 * (g.player(me).hero_hp + g.player(me).armor) as f32;
-        // A card still in hand is a card, but worth less than a body on the
-        // board -- otherwise the search would rather hold than play.
-        v += 0.5 * g.player(me).hand.len() as f32;
-        // Mana that ends the turn unspent bought nothing.
-        v -= 0.15 * g.player(me).mana as f32;
+        v += self.weights.own_health * (g.player(me).hero_hp + g.player(me).armor) as f32;
+        v += self.weights.card * g.player(me).hand.len() as f32;
+        v -= self.weights.unspent * g.player(me).mana as f32;
         v
     }
 

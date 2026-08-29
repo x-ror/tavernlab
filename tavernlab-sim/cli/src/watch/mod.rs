@@ -596,6 +596,21 @@ fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice {
     let mut sections: Vec<(&'static str, Vec<String>)> = Vec::new();
     if !tr.started && !tr.opening.is_empty() {
         sections.push(("МУЛІГАН", mulligan(app, format, tr, deck)));
+        // The mulligan being on does not mean the turn is not. "Started" is
+        // `STEP=MAIN_READY`, or a turn counter past one -- and the first turn
+        // of the player who goes first is turn one, so on it the watcher had
+        // the mulligan on screen and nothing at all about what to play. It
+        // knew: the heading already said "(ваш)".
+        //
+        // The plan is added rather than the mulligan replaced, and `started`
+        // is deliberately left alone. It also decides what counts as the
+        // opening hand, and setting it from "someone is the current player"
+        // would empty every recorded opening if that line ever arrives before
+        // the deal. Showing both costs a few seconds of a stale mulligan in
+        // that case; the other way round costs the data.
+        if tr.my_turn && !tr.over {
+            sections.push(("ХІД", plan(tr, deck)));
+        }
         return Advice { title, sections };
     }
 

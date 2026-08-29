@@ -186,6 +186,34 @@ D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName
 D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=6 local=False [entityName=Bloodfen Raptor id=20 zone=HAND zonePos=1 cardId=CS2_172 player=2] zone from OPPOSING HAND -> OPPOSING PLAY
 ";
 
+/// The player who goes first, on turn one, with a one-drop in hand. The
+/// mulligan is over but the turn counter has not moved past one and no
+/// MAIN_READY has arrived -- which is exactly the position the watcher used
+/// to have nothing to say about.
+const FIRST_TURN: &str = "\
+D 09:00:00.3 [Zone] ZoneChangeList.ProcessChanges() - id=5 local=False [entityName=Wolfrider id=12 zone=DECK zonePos=0 cardId=CS2_124 player=1] zone from FRIENDLY DECK -> FRIENDLY HAND
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=xror id=2 zone=PLAY zonePos=0 cardId= player=1] tag=RESOURCES value=3
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=xror id=2 zone=PLAY zonePos=0 cardId= player=1] tag=RESOURCES_USED value=0
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=1
+D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=xror id=2 zone=PLAY zonePos=0 cardId= player=1] tag=CURRENT_PLAYER value=1
+";
+
+#[test]
+fn the_first_turn_gets_a_plan_and_not_only_a_mulligan() {
+    // Reported from a real game: going first, nothing told you what to play.
+    // "Started" is MAIN_READY or a turn past one, and the first turn of the
+    // player who leads is turn one -- so the report stopped at the mulligan
+    // even though its own heading said the turn was yours.
+    let out = run("firstturn", &format!("{LOG}{FIRST_TURN}"), &[]);
+    assert!(out.contains("хід 1 (ваш)"), "{out}");
+    assert!(out.contains("МУЛІГАН"), "the mulligan is still there: {out}");
+    assert!(out.contains("ХІД"), "and now so is the turn: {out}");
+    assert!(
+        out.contains("зіграти Wolfrider"),
+        "three mana buys the one-drop: {out}"
+    );
+}
+
 #[test]
 fn the_battletag_does_not_have_to_be_typed() {
     // No `--me`. The log says which player number is FRIENDLY and, on a
