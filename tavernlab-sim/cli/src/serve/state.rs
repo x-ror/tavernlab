@@ -268,8 +268,19 @@ impl App {
     }
 
     /// Where the cached tier table for a format lives.
-    pub fn tiers_path(&self, format: &str) -> PathBuf {
-        self.home.join(format!("tiers_{format}.json"))
+    /// Where a computed tier table is cached.
+    ///
+    /// Keyed by the policy as well as the format. A table played by the
+    /// greedy policy and one played by the search are different answers to
+    /// the same question -- three of twelve decks change tier between them --
+    /// so one must not overwrite the other and be read as the other. The
+    /// greedy table keeps the original path, so a cache written before this
+    /// existed still reads.
+    pub fn tiers_path(&self, format: &str, policy: &str) -> PathBuf {
+        if policy == "greedy" {
+            return self.home.join(format!("tiers_{format}.json"));
+        }
+        self.home.join(format!("tiers_{format}_{policy}.json"))
     }
 }
 
