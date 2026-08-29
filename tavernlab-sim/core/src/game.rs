@@ -195,17 +195,7 @@ impl Game {
             if let Some(f) = behaviour_of(card).and_then(|b| b.start_of_game) {
                 f(
                     self,
-                    &Ctx {
-                        card,
-                        side,
-                        target: None,
-                        source: None,
-                        outcast: false,
-                        centre: false,
-                        dying: None,
-                        marks: Marks::NONE,
-                        mana_spent: 0,
-                    },
+                    &Ctx::bare(card, side),
                 );
             }
         }
@@ -300,7 +290,7 @@ impl Game {
         if hc.card.def().kind() == Kind::Minion
             && self.turn >= 3
             && !self.player(side).first_minion_discounted_turn
-            && self.player(side).hero_power.name() == "Mug's Magic"
+            && crate::cards::controlled::is_mugs_magic(self.player(side).hero_power)
         {
             cost -= 2;
         }
@@ -315,7 +305,7 @@ impl Game {
                 .player(side)
                 .board
                 .iter()
-                .any(|m| m.card.name() == "Naralex, Herald of the Flights")
+                .any(|m| crate::cards::controlled::is_naralex(m.card))
         {
             cost = 1;
         }
@@ -1145,7 +1135,7 @@ impl Game {
         self.player(side)
             .board
             .iter()
-            .any(|m| m.active() && m.card.name() == "Morchie")
+            .any(|m| m.active() && crate::cards::controlled::is_morchie(m.card))
     }
 
     /// Play a card, and if it has Rewind, decide whether to keep what
@@ -1260,7 +1250,7 @@ impl Game {
             {
                 return false;
             }
-            Kind::Hero if !beh.is_some_and(|b| b.battlecry.is_some()) => return false,
+            Kind::Hero if beh.is_none_or(|b| b.battlecry.is_none()) => return false,
             Kind::HeroPower => return false,
             _ => {}
         }
@@ -1352,7 +1342,7 @@ impl Game {
             if def.races.any(Races::DRAGON)
                 && p.board
                     .iter()
-                    .any(|m| m.card.name() == "Naralex, Herald of the Flights")
+                    .any(|m| crate::cards::controlled::is_naralex(m.card))
             {
                 p.dragon_discounted_turn = true;
             }
@@ -1483,7 +1473,7 @@ impl Game {
         // minion played triggers its own Battlecry a second time. Read once,
         // before either effect below can change the board under it.
         let double_battlecry = def.kind() == Kind::Minion
-            && ((self.player(side).hero_power.name() == "Zee's Might"
+            && ((crate::cards::controlled::is_zees_might(self.player(side).hero_power)
                 && self.player(side).minions_played_total % 5 == 0)
                 // Rude Awakening: "This minion's Battlecries trigger twice."
                 || hc.gift == 7)
@@ -1501,7 +1491,7 @@ impl Game {
                     .player(side)
                     .board
                     .iter()
-                    .any(|m| m.card.name() == "Sinestra"))
+                    .any(|m| crate::cards::controlled::is_sinestra(m.card)))
                 // Morchie, the same way as the Battlecry half above.
                 || (def.keywords.has(Keywords::REWIND)
                     && self.keeps_both_rewind_outcomes(side))
@@ -1514,41 +1504,26 @@ impl Game {
                         .player(side)
                         .board
                         .iter()
-                        .any(|m| m.active() && m.card.name() == "Niri of the Crater")));
+                        .any(|m| m.active() && crate::cards::controlled::is_niri(m.card))));
 
-        if let Some(mode) = chosen {
-            let ctx = Ctx {
-                card: hc.card,
-                side,
-                target,
-                source: slot,
-                outcast,
-                centre,
-                dying: None,
-                marks: hc.marks,
-                mana_spent: hc.mana_spent_while_held,
-            };
-            if def.kind() == Kind::Spell {
-                self.countered = false;
-                self.fire(Event::SpellCasting {
-                    side,
-                    card: hc.card,
-                });
-                let countered = self.countered;
-                self.countered = false;
-                if !countered {
-                    (mode.effect)(self, &ctx);
-                    if double_spell {
-                        (mode.effect)(self, &ctx);
-                    }
+        // A chosen mode and a plain behaviour row differ only in where the
+        // effect comes from. Everything after that -- the Ctx, Counterspell's
+        // window, the doubling -- is the same for both, so resolve the
+        // function first and write the resolution once.
+        let effect = match chosen {
+            Some(mode) => Some(mode.effect),
+            None => beh.and_then(|b| {
+                if def.kind() == Kind::Spell {
+                    b.spell
+                } else {
+                    b.battlecry
                 }
-            } else {
-                (mode.effect)(self, &ctx);
-                if double_battlecry {
-                    (mode.effect)(self, &ctx);
-                }
-            }
-        } else if let Some(b) = beh {
+            }),
+        };
+        // A card with a behaviour row still opens Counterspell's window even
+        // if the row has no effect for this half, so the guard is "the card
+        // declares something", not "there is a function to call".
+        if chosen.is_some() || beh.is_some() {
             let ctx = Ctx {
                 card: hc.card,
                 side,
@@ -1569,7 +1544,7 @@ impl Game {
                 });
                 let countered = self.countered;
                 self.countered = false;
-                if let Some(f) = b.spell
+                if let Some(f) = effect
                     && !countered
                 {
                     f(self, &ctx);
@@ -1577,7 +1552,7 @@ impl Game {
                         f(self, &ctx);
                     }
                 }
-            } else if let Some(f) = b.battlecry {
+            } else if let Some(f) = effect {
                 f(self, &ctx);
                 if double_battlecry {
                     f(self, &ctx);
@@ -2409,15 +2384,9 @@ impl Game {
                     f(
                         self,
                         &Ctx {
-                            card: body.granted_rattle,
-                            side,
-                            target: None,
                             source: Some(slot),
-                            outcast: false,
-                            centre: false,
                             dying: Some(body),
-                            marks: Marks::NONE,
-                            mana_spent: 0,
+                            ..Ctx::bare(body.granted_rattle, side)
                         },
                     );
                     if self.is_over() {
@@ -2428,15 +2397,9 @@ impl Game {
                     f(
                         self,
                         &Ctx {
-                            card,
-                            side,
-                            target: None,
                             source: Some(slot),
-                            outcast: false,
-                            centre: false,
                             dying: Some(body),
-                            marks: Marks::NONE,
-                            mana_spent: 0,
+                            ..Ctx::bare(card, side)
                         },
                     );
                 }
@@ -2532,15 +2495,8 @@ impl Game {
             f(
                 self,
                 &Ctx {
-                    card: w.card,
-                    side,
-                    target: None,
                     source: Some(crate::events::WEAPON_SLOT),
-                    outcast: false,
-                    centre: false,
-                    dying: None,
-                    marks: Marks::NONE,
-                    mana_spent: 0,
+                    ..Ctx::bare(w.card, side)
                 },
             );
         }
@@ -2576,7 +2532,7 @@ impl Game {
         if p.hand.len() <= 3
             && p.board
                 .iter()
-                .any(|m| m.active() && m.card.name() == "Quel'dorei Fletcher")
+                .any(|m| m.active() && crate::cards::controlled::is_fletcher(m.card))
         {
             return 0;
         }
@@ -2793,17 +2749,7 @@ impl Game {
         if let Some(f) = behaviour_of(card).and_then(|b| b.spell) {
             f(
                 self,
-                &Ctx {
-                    card,
-                    side,
-                    target: None,
-                    source: None,
-                    outcast: false,
-                    centre: false,
-                    dying: None,
-                    marks: Marks::NONE,
-                    mana_spent: 0,
-                },
+                &Ctx::bare(card, side),
             );
             self.sweep_deaths();
         }
@@ -2831,17 +2777,7 @@ impl Game {
         };
         f(
             self,
-            &Ctx {
-                card,
-                side,
-                target,
-                source: None,
-                outcast: false,
-                centre: false,
-                dying: None,
-                marks: Marks::NONE,
-                mana_spent: 0,
-            },
+            &Ctx::at(card, side, target),
         );
         self.sweep_deaths();
     }
@@ -2864,15 +2800,8 @@ impl Game {
                     f(
                         self,
                         &Ctx {
-                            card,
-                            side,
-                            target: None,
                             source: Some(slot),
-                            outcast: false,
-                            centre: false,
-                            dying: None,
-                            marks: Marks::NONE,
-                            mana_spent: 0,
+                            ..Ctx::bare(card, side)
                         },
                     );
                     self.sweep_deaths();
@@ -2978,15 +2907,8 @@ impl Game {
         f(
             self,
             &Ctx {
-                card: loc.card,
-                side,
-                target,
                 source: Some(slot as u8),
-                outcast: false,
-                centre: false,
-                dying: None,
-                marks: Marks::NONE,
-                mana_spent: 0,
+                ..Ctx::at(loc.card, side, target)
             },
         );
         self.board_dirty = true;

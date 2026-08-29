@@ -743,37 +743,6 @@ fn stamp(unix: i64) -> String {
     )
 }
 
-#[cfg(test)]
-mod stamp_tests {
-    use super::{games_word, stamp};
-
-    #[test]
-    fn ukrainian_counts_three_ways() {
-        assert_eq!(games_word(1), "бій");
-        assert_eq!(games_word(2), "бої");
-        assert_eq!(games_word(5), "боїв");
-        assert_eq!(games_word(11), "боїв", "eleven is not one");
-        assert_eq!(games_word(12), "боїв");
-        assert_eq!(games_word(21), "бій");
-        assert_eq!(games_word(22), "бої");
-        assert_eq!(games_word(111), "боїв");
-        assert_eq!(games_word(0), "боїв");
-    }
-
-    #[test]
-    fn the_civil_date_is_right_at_the_awkward_days() {
-        // The epoch, a leap day, the century that is not a leap year, the one
-        // that is, and a second before midnight.
-        assert_eq!(stamp(0), "1970-01-01 00:00");
-        assert_eq!(stamp(951_782_400), "2000-02-29 00:00");
-        assert_eq!(stamp(4_107_542_400), "2100-03-01 00:00");
-        assert_eq!(stamp(1_709_164_800), "2024-02-29 00:00");
-        assert_eq!(stamp(1_756_425_599), "2025-08-28 23:59");
-        // Before the epoch, which a clock skewed backwards can produce.
-        assert_eq!(stamp(-1), "1969-12-31 23:59");
-    }
-}
-
 fn gauntlet(path: Option<&str>) {
     use tavernlab_core::cards::by_name;
     use tavernlab_core::deck::resolve_slots;
@@ -838,4 +807,35 @@ fn pairs(v: Option<&Json>) -> Vec<(&str, u32)> {
             Some((name, count.max(0) as u32))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod stamp_tests {
+    use super::{games_word, stamp};
+
+    #[test]
+    fn ukrainian_counts_three_ways() {
+        assert_eq!(games_word(1), "бій");
+        assert_eq!(games_word(2), "бої");
+        assert_eq!(games_word(5), "боїв");
+        assert_eq!(games_word(11), "боїв", "eleven is not one");
+        assert_eq!(games_word(12), "боїв");
+        assert_eq!(games_word(21), "бій");
+        assert_eq!(games_word(22), "бої");
+        assert_eq!(games_word(111), "боїв");
+        assert_eq!(games_word(0), "боїв");
+    }
+
+    #[test]
+    fn the_civil_date_is_right_at_the_awkward_days() {
+        // The epoch, a leap day, the century that is not a leap year, the one
+        // that is, and a second before midnight.
+        assert_eq!(stamp(0), "1970-01-01 00:00");
+        assert_eq!(stamp(951_782_400), "2000-02-29 00:00");
+        assert_eq!(stamp(4_107_542_400), "2100-03-01 00:00");
+        assert_eq!(stamp(1_709_164_800), "2024-02-29 00:00");
+        assert_eq!(stamp(1_756_425_599), "2025-08-28 23:59");
+        // Before the epoch, which a clock skewed backwards can produce.
+        assert_eq!(stamp(-1), "1969-12-31 23:59");
+    }
 }

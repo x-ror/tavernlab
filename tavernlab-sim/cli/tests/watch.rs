@@ -446,7 +446,7 @@ D 09:00:02.1 [Zone] ZoneChangeList.ProcessChanges() - id=9 local=False [entityNa
         .map(str::trim)
         .collect();
     assert!(
-        plan.iter().any(|l| *l == "зіграти Corpse Cannon"),
+        plan.contains(&"зіграти Corpse Cannon"),
         "the weapon is worth equipping once: {out}"
     );
     assert!(

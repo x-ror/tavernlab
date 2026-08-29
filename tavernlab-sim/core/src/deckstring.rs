@@ -714,7 +714,7 @@ mod tests {
         // The length prefix of a corrupt code is attacker-shaped input even
         // on loopback: it says "read four billion varints".
         let bad = b64_encode(&[0x00, 0x01, 0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F]);
-        assert!(matches!(parse(&b64_decode(&bad).unwrap()), Err(_)));
+        assert!(parse(&b64_decode(&bad).unwrap()).is_err());
     }
 
     #[test]

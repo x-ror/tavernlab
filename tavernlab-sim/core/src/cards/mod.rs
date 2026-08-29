@@ -15,9 +15,10 @@ mod table;
 
 pub use behaviour::{
     APPROXIMATE, Aura, Behaviour, Ctx, DARK_GIFTS, TargetSpec, acts_when_drawn,
-    apply_game_setup, behaviour_of, gift_card, gift_keywords, gift_stats,
+    apply_game_setup, behaviour_of, controlled, gift_card, gift_keywords, gift_stats,
     awakened_by_dragon, drawn_acts_for_opponent, is_approximate, is_implemented,
     combines, is_aura, lets_attacks_ignore_taunt, pirate_damage_bonus,
+    HAS_AURA, HAS_BONUS, HAS_TRIGGER, hooks,
     doubles_summons, is_leyline, rattles_from_hand_or_deck, reborn_keeps_enchantments, recombines, shatters_into,
     upgrades_while_held,
     windrunner_bit, windrunner_sisters,

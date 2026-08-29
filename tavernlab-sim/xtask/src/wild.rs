@@ -22,10 +22,14 @@ use std::path::Path;
 use tavernlab_core::cards::{Class, Formats, PLAYABLE_CLASSES};
 use tavernlab_core::deck::curve_deck;
 
+/// One generated deck on its way to the file: the name it will carry, the
+/// class it belongs to, and its cards as (name, count).
+type Entry = (String, Class, Vec<(&'static str, u32)>);
+
 /// Write `data/gauntlet_wild.json`. Returns a summary for the console.
 pub fn generate(root: &Path) -> Result<String, String> {
     let path = root.join("data/gauntlet_wild.json");
-    let mut decks: Vec<(String, Class, Vec<(&'static str, u32)>)> = Vec::new();
+    let mut decks: Vec<Entry> = Vec::new();
     let mut skipped: Vec<Class> = Vec::new();
 
     for class in PLAYABLE_CLASSES {
@@ -62,9 +66,9 @@ pub fn generate(root: &Path) -> Result<String, String> {
             tavernlab_json::escape(tavernlab_core::gauntlet::class_name(*class))
         );
         for (j, (card, n)) in cards.iter().enumerate() {
-            let _ = write!(
+            let _ = writeln!(
                 out,
-                "   [{}, {n}]{}\n",
+                "   [{}, {n}]{}",
                 tavernlab_json::escape(card),
                 if j + 1 == cards.len() { "" } else { "," }
             );
