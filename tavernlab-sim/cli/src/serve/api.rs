@@ -997,6 +997,7 @@ fn tiers_policy(name: &str) -> (&'static str, Policy) {
                 depth: 4,
                 samples: 1,
                 iterative: true,
+                weights: tavernlab_core::planner::Weights::default(),
             },
         ),
         _ => ("greedy", Policy::Greedy),

@@ -174,6 +174,7 @@ fn tiers_by_policy(per_pair: usize, path: Option<&str>) {
         depth: 4,
         samples: 1,
         iterative: true,
+        weights: tavernlab_core::planner::Weights::default(),
     };
 
     println!("{path}: {per_pair} боїв на пару, {threads} потоків\n");
@@ -266,6 +267,7 @@ fn policy(per_deck: usize, budget: u32, depth: u8, samples: u8) {
         depth,
         samples,
         iterative: true,
+        weights: tavernlab_core::planner::Weights::default(),
     };
     // The same search with the budget spent depth-first instead. Printed
     // beside the planner so the deepening is a measured claim rather than an
@@ -275,6 +277,7 @@ fn policy(per_deck: usize, budget: u32, depth: u8, samples: u8) {
         depth,
         samples,
         iterative: false,
+        weights: tavernlab_core::planner::Weights::default(),
     };
 
     println!(
