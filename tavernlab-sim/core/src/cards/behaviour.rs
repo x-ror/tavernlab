@@ -340,6 +340,11 @@ const fn c(
     cost_delta: Option<CostFn>,
     start_of_game: Option<Effect>,
 ) -> Behaviour {
+    // The name is the key this whole table is built on, and the one part of a
+    // row nothing else would notice going wrong: a misspelling attaches the
+    // behaviour to no card at all. Resolving it here fails the build at the
+    // line that wrote it, the same way `token` does for an id.
+    let _ = super::named(name);
     Behaviour {
         name,
         target,
@@ -11263,8 +11268,10 @@ mod tests {
 
     #[test]
     fn every_declared_card_exists_in_the_corpus() {
-        // Catches a typo in a name the moment it is written, rather than as a
-        // card that silently does nothing in a million games.
+        // The build already refuses a name the corpus does not carry -- `c`
+        // resolves every row's name through `cards::named`, which is a const
+        // fn. This cannot fail while that guard is there, and is here so that
+        // removing the guard does not quietly remove the rule with it.
         for b in BEHAVIOURS {
             assert!(by_name(b.name).is_some(), "no card named {:?}", b.name);
         }

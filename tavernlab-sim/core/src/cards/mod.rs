@@ -400,6 +400,53 @@ const fn str_eq(a: &str, b: &str) -> bool {
     true
 }
 
+/// Byte order for two strings, in a form a `const fn` can use. Negative if
+/// `a` sorts first, zero if they are equal, positive if `b` does -- the same
+/// order `str`'s own `Ord` gives, which is what `BY_NAME` is sorted by.
+const fn str_cmp(a: &str, b: &str) -> i8 {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut i = 0;
+    while i < a.len() && i < b.len() {
+        if a[i] != b[i] {
+            return if a[i] < b[i] { -1 } else { 1 };
+        }
+        i += 1;
+    }
+    if a.len() == b.len() {
+        0
+    } else if a.len() < b.len() {
+        -1
+    } else {
+        1
+    }
+}
+
+/// The card with this name, resolved at compile time.
+///
+/// [`token`] does this for ids and exists for the same reason: a name that no
+/// longer resolves stops the build at the line that writes it, rather than
+/// becoming a behaviour row that silently attaches to nothing. The behaviour
+/// table is keyed by name -- a behaviour belongs to a card, and a card is its
+/// reprints too -- so the name is the one part of a row that nothing else
+/// checks.
+///
+/// A binary search rather than [`token`]'s linear scan, because this runs
+/// once per row of a thousand-row table rather than a couple of hundred times
+/// in total, and twelve thousand const-evaluated comparisons per call is a
+/// cost the build would notice.
+pub const fn named(name: &str) -> CardId {
+    let (mut lo, mut hi) = (0usize, BY_NAME.len());
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        match str_cmp(BY_NAME[mid].0, name) {
+            0 => return CardId(BY_NAME[mid].1),
+            c if c < 0 => lo = mid + 1,
+            _ => hi = mid,
+        }
+    }
+    panic!("no card in the corpus has this name")
+}
+
 /// The card with this string id, resolved at compile time.
 ///
 /// The point of this over [`by_id`] is the failure mode. A token id that no
@@ -409,8 +456,10 @@ const fn str_eq(a: &str, b: &str) -> bool {
 /// mentions", walked by a test, did the same job for exactly as long as whoever
 /// added a token remembered to add it there too.
 ///
-/// The scan is linear over a sorted array because a binary search buys nothing
-/// at compile time and this reads the same as the table it searches.
+/// The scan is linear over a sorted array: at a couple of hundred call sites
+/// it costs the build nothing measurable, and it reads the same as the table
+/// it searches. [`named`] does binary-search the names, because it runs a
+/// thousand times rather than a couple of hundred.
 pub const fn token(id: &str) -> CardId {
     let mut i = 0;
     while i < BY_ID.len() {
