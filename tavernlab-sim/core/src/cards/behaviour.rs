@@ -2708,7 +2708,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         if g.is_over() {
             return;
         }
-        let drawn = &g.player(c.side).hand.as_slice()[before..];
+        let drawn = drawn_since(g, c.side, before);
         let both_minions =
             drawn.len() == 2 && drawn.iter().all(|hc| hc.card.def().kind() == super::Kind::Minion);
         if both_minions
@@ -2819,17 +2819,21 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.refresh_hero_power(side);
         }
     }),
+    // "Draw 3 cards. Pick one to give to your opponent." The cheapest of the
+    // three stands in for the pick: it is the one a player gives up most
+    // readily, and picking the dearest would be modelling a mistake.
     spell("Dark Bribe", T::None, |g, c| {
         let before = g.player(c.side).hand.len();
         g.draw_cards(c.side, 3);
         if g.is_over() {
             return;
         }
-        let cheapest = g.player(c.side).hand.as_slice()[before..]
+        let from = before.min(g.player(c.side).hand.len());
+        let cheapest = drawn_since(g, c.side, before)
             .iter()
             .enumerate()
             .min_by_key(|(_, hc)| hc.card.def().cost)
-            .map(|(i, _)| before + i);
+            .map(|(i, _)| from + i);
         if let Some(idx) = cheapest
             && let Some(hc) = g.player_mut(c.side).hand.remove(idx)
         {
@@ -10512,6 +10516,25 @@ pub const GRANTED_RATTLES: &[&str] = &[
     "Sheep Mask",
 ];
 
+/// The cards a draw actually added to `side`'s hand, given where the hand
+/// ended before it.
+///
+/// The obvious `hand[before..]` is wrong, and wrong by panicking. A draw does
+/// not simply append: a "Casts When Drawn" card resolves on the way out of
+/// the deck and never arrives, a full hand burns what it cannot hold, and
+/// both `act_from_draw` and the `CardDrawn` event it fires can run effects
+/// that *discard* -- so the hand can be shorter afterwards than it was
+/// before. Found by the turn-planning search reaching a line greedy never
+/// played: hand of eight, draw three, seven cards left, slice from index
+/// eight.
+///
+/// A card that asks "what did I just draw?" is asking about the tail of the
+/// hand, and the honest answer when the tail is gone is "nothing".
+fn drawn_since(g: &Game, side: Side, before: usize) -> &[crate::state::HandCard] {
+    let hand = &g.player(side).hand;
+    &hand.as_slice()[before.min(hand.len())..]
+}
+
 /// Point a minion's `granted_rattle` at `carrier`.
 fn grant_rattle(g: &mut Game, t: Option<Target>, carrier: CardId) {
     if let Some(Target::Minion(s, i)) = t
@@ -11184,6 +11207,31 @@ pub fn is_implemented(card: CardId) -> bool {
 mod tests {
     use super::super::by_name;
     use super::*;
+
+    #[test]
+    fn a_card_that_asks_what_it_drew_survives_a_hand_that_shrank() {
+        // The bug `drawn_since` exists for. A draw runs arbitrary effects --
+        // a Casts When Drawn card resolves on the way out of the deck, and
+        // the `CardDrawn` event it fires reaches every trigger in play -- so
+        // the hand can be *shorter* when the draw returns than it was when
+        // the card snapshotted its length. Indexing with that snapshot
+        // panicked; the honest answer is that nothing was drawn.
+        let mut g = crate::state::Game::new(
+            (super::super::Class::Mage, &[]),
+            (super::super::Class::Mage, &[]),
+            1,
+        )
+        .expect("a mage can field an empty list for this");
+        let side = Side::Player0;
+        g.player_mut(side).hand.clear();
+        for _ in 0..3 {
+            g.give_card(side, by_name("Fireball").expect("Fireball"));
+        }
+        assert_eq!(drawn_since(&g, side, 1).len(), 2, "the ordinary case");
+        assert_eq!(drawn_since(&g, side, 3).len(), 0, "nothing new");
+        // The case that used to panic: a mark past the end of the hand.
+        assert_eq!(drawn_since(&g, side, 9).len(), 0, "a hand that shrank");
+    }
 
     #[test]
     fn the_dark_gift_pool_is_the_one_the_corpus_lists() {
