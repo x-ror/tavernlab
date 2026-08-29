@@ -69,19 +69,38 @@ pub struct Weights {
 }
 
 impl Weights {
-    /// What the search has been running with. Not a measured optimum -- the
-    /// name says where they came from, and the sweep says what happened when
-    /// they were questioned.
+    /// The three numbers as they were first written, by hand, to find out
+    /// whether searching helped at all. Kept because the sweep is stated
+    /// against them: `card` was 0.5, and moving it to 2.0 is worth +2.6
+    /// points on the class decks and +2.1 on the real gauntlet.
     pub const GUESSED: Weights = Weights {
         own_health: 0.35,
         card: 0.5,
         unspent: 0.15,
     };
+
+    /// What `tavernsim weights` settled on, and what the search runs with.
+    ///
+    /// Only `card` moved. `own_health` measures as worth nothing anywhere
+    /// from 0 to 1, and `unspent` the same -- within one turn both are
+    /// nearly constant across the sibling lines being compared, so they
+    /// cancel rather than decide. Two thirds of this struct is therefore
+    /// documented as not mattering, which is more useful to know than a
+    /// number nobody questioned.
+    ///
+    /// `card` has a narrow peak: 1.5 and 2.5 measure as nothing, 2.0 is
+    /// +2.6, and 3.0 is already worse. Not chased further -- a peak that
+    /// sharp is a number to hold loosely -- but it does replicate on the
+    /// real gauntlet as well as on the class decks it was found with.
+    pub const MEASURED: Weights = Weights {
+        card: 2.0,
+        ..Weights::GUESSED
+    };
 }
 
 impl Default for Weights {
     fn default() -> Weights {
-        Weights::GUESSED
+        Weights::MEASURED
     }
 }
 

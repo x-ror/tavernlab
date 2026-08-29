@@ -18,6 +18,7 @@
 use std::time::Instant;
 
 use tavernlab_core::agent::{Scripted, Style};
+use tavernlab_core::planner::Weights;
 use tavernlab_core::batch::{Contender, play_batch, play_batch_parallel, seeds};
 use tavernlab_core::cards::{Class, Formats, PLAYABLE_CLASSES};
 use tavernlab_core::deck::curve_deck;
@@ -68,6 +69,7 @@ fn main() {
             num(3, 4) as u8,
             num(4, 1) as u8,
         ),
+        "weights" => weights(num(1, 200), num(2, 4000) as u32, args.get(3).map(String::as_str)),
         "demo" => demo(num(1, 1) as u64),
         "coverage" => coverage(),
         "implemented" => list_implemented(match args.get(1).map(String::as_str) {
@@ -82,7 +84,7 @@ fn main() {
         other => {
             eprintln!("unknown command {other:?}");
             eprintln!(
-                "usage: tavernsim [serve|watch|history|bench|matrix|policy|tiers|demo|coverage|gauntlet|decks|backlog|art-urls] [args]"
+                "usage: tavernsim [serve|watch|history|bench|matrix|policy|weights|tiers|demo|coverage|gauntlet|decks|backlog|art-urls] [args]"
             );
             std::process::exit(2);
         }
@@ -146,6 +148,127 @@ fn bench(games: usize, threads: usize) {
     );
     println!("average game length {:.1} turns", par.avg_turns());
     println!("serial and parallel results identical: {}", single == par);
+}
+
+/// One weight in the evaluation, and the values to try for it.
+///
+/// A function rather than a field index because there is no way to name a
+/// struct field at runtime, and three closures read better than the macro
+/// that would avoid them.
+type Sweep = (&'static str, fn(Weights, f32) -> Weights, &'static [f32]);
+
+const SWEEPS: [Sweep; 3] = [
+    (
+        "own_health",
+        |w, v| Weights { own_health: v, ..w },
+        &[0.0, 0.15, 0.6, 1.0],
+    ),
+    ("card", |w, v| Weights { card: v, ..w }, &[0.5, 1.0, 1.5, 2.5, 3.0]),
+    (
+        "unspent",
+        |w, v| Weights { unspent: v, ..w },
+        &[0.0, 0.05, 0.4, 1.0],
+    ),
+];
+
+/// Are the evaluation's numbers the right numbers?
+///
+/// Three of them were picked by hand when the search was written, to find
+/// out whether searching helped at all. That it does (+37.5 points) says
+/// nothing about whether 0.35, 0.5 and 0.15 are right, and those three
+/// numbers now decide what the tool advises mid-game and what the Meta tab
+/// prints. So each is played against the value it has, one weight at a time,
+/// on identical decks and identical seeds -- the same head-to-head that gave
+/// deepening its +10.2 and averaging its nothing.
+///
+/// One at a time on purpose. A joint sweep over three axes would need many
+/// times the games to say anything, and the question here is not "what is
+/// the optimum" but "is any of these three visibly wrong".
+fn weights(per_deck: usize, budget: u32, gauntlet: Option<&str>) {
+    use tavernlab_core::batch::{Policy, duel};
+
+    // A weight found on one population and shipped to another is how an
+    // overfit happens, so the same sweep can be pointed at the real gauntlet
+    // -- which is the population the Meta tab actually ranks.
+    let decks: Vec<(Class, Vec<_>)> = match gauntlet {
+        Some(path) => serve::state::load_gauntlet(std::path::Path::new(path))
+            .into_iter()
+            .filter(|d| d.playable())
+            .map(|d| (d.class, d.ids.clone()))
+            .collect(),
+        None => PLAYABLE_CLASSES
+            .iter()
+            .filter_map(|&c| curve_deck(c, Formats::STANDARD).map(|d| (c, d)))
+            .collect(),
+    };
+    if decks.is_empty() {
+        eprintln!("жодної колоди, з якою можна міряти");
+        std::process::exit(1);
+    }
+    let s = seeds(23, per_deck);
+    let threads = default_threads();
+    let base = Weights::default();
+    let plan = |w: Weights| Policy::Plan {
+        budget,
+        depth: 4,
+        samples: 1,
+        iterative: true,
+        weights: w,
+    };
+
+    // Both sides search, so this is twice the work of a run against greedy.
+    let run = |w: Weights| {
+        let mut rec = tavernlab_core::batch::Record::default();
+        for (class, cards) in &decks {
+            let deck = Contender {
+                class: *class,
+                cards,
+                style: Style::Midrange,
+            };
+            rec = rec.merge(duel(deck, [plan(w), plan(base)], &s, threads));
+        }
+        rec
+    };
+    let report = |label: String, rec: &tavernlab_core::batch::Record| {
+        let p = rec.rate(Side::Player0);
+        let se = (p * (1.0 - p) / rec.total() as f64).sqrt();
+        // Two standard errors, so "beats the bar" means something a single
+        // lucky run does not clear.
+        let verdict = if (p - 0.5).abs() > 2.0 * se {
+            if p > 0.5 { "краще" } else { "гірше" }
+        } else {
+            "—"
+        };
+        println!(
+            "{label:<22}{:>9.1}%{:>8.1}{:>10}{:>9}",
+            100.0 * p,
+            100.0 * se,
+            verdict,
+            rec.total()
+        );
+    };
+
+    println!(
+        "{} колод, {per_deck} сідів кожна, обидва боки шукають (бюджет {budget}, глибина 4)\n\
+         базові ваги: own_health {}, card {}, unspent {}\n",
+        decks.len(),
+        base.own_health,
+        base.card,
+        base.unspent
+    );
+    println!(
+        "{:<22}{:>10}{:>8}{:>10}{:>9}",
+        "вага = значення", "проти базових", "±1 s.e.", "вердикт", "ігор"
+    );
+    // The control first, and it must read 50.0%: the same weights on both
+    // sides cannot differ, so anything else means the harness is measuring
+    // itself rather than the weights.
+    report("контроль (ті самі)".to_string(), &run(base));
+    for (name, apply, values) in SWEEPS {
+        for &v in values {
+            report(format!("{name} = {v}"), &run(apply(base, v)));
+        }
+    }
 }
 
 /// Whether the tier list is a statement about decks or about the policy.

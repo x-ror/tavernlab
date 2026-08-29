@@ -24,7 +24,7 @@ ENV  := $(DATA)/watch.env
 # kill. Nothing here is worth parallelising anyway; cargo does its own.
 .NOTPARALLEL:
 
-.PHONY: help build serve live watch watch-start watch-stop watch-restart watch-status watch-log history bench callgrind policy tiers
+.PHONY: help build serve live watch watch-start watch-stop watch-restart watch-status watch-log history bench callgrind policy weights tiers
 
 help:
 	@echo "make live           жива порада під час гри + сторінка в браузері"
@@ -38,6 +38,7 @@ help:
 	@echo "make bench          пропускна здатність (див. tools/ab-bench.sh для порівнянь)"
 	@echo "make callgrind      підрахунок інструкцій (детермінований A/B)"
 	@echo "make policy         скільки віддає жадібний агент проти пошуку"
+	@echo "make weights        чи ті числа стоять в оцінці позиції"
 	@echo "make tiers          чи їде тір-лист, коли політика міняється"
 	@echo
 	@echo "тека логів — у $(ENV), не в репозиторії:"
@@ -129,6 +130,12 @@ bench: build
 # Arguments are seeds per deck, node budget, depth, determinizations.
 policy: build
 	$(BIN) policy 200 4000 4 1
+
+# One weight of the evaluation at a time, against the value it has. The
+# control in the first row must read 50.0%: the same weights on both sides
+# cannot differ, and anything else means the harness is measuring itself.
+weights: build
+	$(BIN) weights 400 4000
 
 # Whether the tier list is a statement about decks or about the policy: the
 # same table built twice, once by each. Slow -- the search side is ~200x the
