@@ -71,7 +71,13 @@ fn main() {
             num(3, 4) as u8,
             num(4, 1) as u8,
         ),
-        "weights" => weights(num(1, 200), num(2, 4000) as u32, args.get(3).map(String::as_str)),
+        "weights" => weights(
+            num(1, 200),
+            num(2, 4000) as u32,
+            args.get(3).filter(|a| !a.starts_with("--")).map(String::as_str),
+            args.iter()
+                .find_map(|a| a.strip_prefix("--only=")),
+        ),
         "mulligan" => mulligan_bias(
             num(1, 300),
             args.get(2).filter(|a| !a.starts_with("--")).map(String::as_str),
@@ -183,7 +189,7 @@ const SWEEPS: [Sweep; 4] = [
     (
         "secret",
         |w, v| Weights { secret: v, ..w },
-        &[0.5, 1.0, 2.0, 4.0],
+        &[0.5, 1.0, 2.0, 4.0, 6.0, 8.0, 12.0],
     ),
 ];
 
@@ -193,7 +199,7 @@ const SWEEPS: [Sweep; 4] = [
 /// sweep over three axes would need many times the games to say anything,
 /// and the question is not what the optimum is but whether any of the three
 /// is visibly wrong.
-fn weights(per_deck: usize, budget: u32, gauntlet: Option<&str>) {
+fn weights(per_deck: usize, budget: u32, gauntlet: Option<&str>, only: Option<&str>) {
     use tavernlab_core::batch::{Policy, duel};
 
     // A weight found on one population and shipped to another is how an
@@ -288,6 +294,12 @@ fn weights(per_deck: usize, budget: u32, gauntlet: Option<&str>) {
     let mut rows: Vec<(String, Vec<(Class, tavernlab_core::batch::Record)>)> =
         vec![("контроль".to_string(), control_decks)];
     for (name, apply, values) in SWEEPS {
+        // Re-measuring one weight should not cost the other three. The
+        // control still runs, because a sweep without it is a column of
+        // numbers with nothing to be a number against.
+        if only.is_some_and(|want| want != name) {
+            continue;
+        }
         for &v in values {
             let (merged, per_deck) = run(apply(base, v));
             let label = format!("{name} = {v}");
