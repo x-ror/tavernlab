@@ -72,6 +72,13 @@ pub enum EntityTag {
     Armor(i16),
     /// How many times it has attacked this turn.
     Attacks(u8),
+    /// A weapon's remaining durability.
+    ///
+    /// Its own tag rather than folded into [`Health`](Self::Health): the two
+    /// mean the same thing on a weapon and different things on everything
+    /// else, and a reader that cannot tell them apart cannot tell a buffed
+    /// minion from an equipped axe. The tracker accepts either on a weapon.
+    Durability(i16),
     /// A keyword granted or taken away, by the log's own name for it. A
     /// `&'static str` from the table below rather than the parsed slice, so
     /// reading a tag never allocates.
@@ -314,6 +321,7 @@ pub fn parse(line: &str) -> Option<Event> {
         "DAMAGE" => EntityTag::Damage(n? as i16),
         "ARMOR" => EntityTag::Armor(n? as i16),
         "NUM_ATTACKS_THIS_TURN" => EntityTag::Attacks(n?.clamp(0, 255) as u8),
+        "DURABILITY" => EntityTag::Durability(n? as i16),
         other => {
             // Mega-Windfury writes `value=3`, so "on" is anything but zero
             // rather than exactly one.
