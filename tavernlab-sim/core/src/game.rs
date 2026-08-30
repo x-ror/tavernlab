@@ -2508,6 +2508,21 @@ impl Game {
         if self.outcome.is_some() {
             return;
         }
+        // A Deathrattle on the hero pays before the game is called. This is
+        // the only place a player is declared dead, so it is the only place
+        // the hero can be brought back -- and being brought back mid-
+        // resolution is what a Deathrattle does.
+        for i in 0..2 {
+            if self.players[i].is_dead() && self.players[i].hero_rises_from_corpses {
+                // Spent whether or not it buys anything: a Deathrattle fires
+                // when its owner dies, and dying with no Corpses is coming
+                // back with no Health, which is not coming back.
+                self.players[i].hero_rises_from_corpses = false;
+                let paid = self.players[i].corpses.clamp(0, 20);
+                self.players[i].corpses -= paid;
+                self.players[i].hero_hp = paid;
+            }
+        }
         let dead0 = self.players[0].is_dead();
         let dead1 = self.players[1].is_dead();
         self.outcome = match (dead0, dead1) {

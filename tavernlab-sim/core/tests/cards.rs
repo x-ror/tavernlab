@@ -1750,6 +1750,121 @@ fn body_bagger_gains_a_corpse() {
 }
 
 #[test]
+fn hematurge_spends_a_corpse_and_discovers_blood() {
+    let mut f = Fix::new();
+    f.g.players[0].corpses = 1;
+    let before = f.g.players[0].hand.len();
+    f.play("Hematurge", None);
+    assert_eq!(f.g.players[0].corpses, 0, "the Corpse is spent");
+    assert_eq!(
+        f.g.players[0].hand.len(),
+        before + 1,
+        "and a card is Discovered"
+    );
+    let got = f.g.players[0].hand.last().expect("the Discovered card").card;
+    let r = got.def().runes;
+    assert!(
+        r.blood() > 0 && r.frost() == 0 && r.unholy() == 0,
+        "{} is not a pure Blood card: B{} F{} U{}",
+        got.name(),
+        r.blood(),
+        r.frost(),
+        r.unholy()
+    );
+}
+
+#[test]
+fn hematurge_with_no_corpse_discovers_nothing() {
+    // "Spend a Corpse to Discover" -- the Discover is what the Corpse buys,
+    // so with none to spend the Battlecry does nothing rather than going
+    // into debt for it.
+    let mut f = Fix::new();
+    f.g.players[0].corpses = 0;
+    let before = f.g.players[0].hand.len();
+    f.play("Hematurge", None);
+    assert_eq!(f.g.players[0].corpses, 0, "no debt");
+    assert_eq!(f.g.players[0].hand.len(), before, "and no card");
+}
+
+#[test]
+fn husk_brings_the_hero_back_for_the_corpses_it_has() {
+    let mut f = Fix::new();
+    f.play("Husk, Eternal Reaper", None);
+    f.g.players[0].corpses = 7;
+    f.g.players[0].hero_hp = 3;
+    f.g.spell_damage(FOE, Some(Target::Hero(ME)), 9);
+    assert!(f.g.outcome.is_none(), "the game is not over: {:?}", f.g.outcome);
+    assert_eq!(f.g.players[0].hero_hp, 7, "back with the Corpses it had");
+    assert_eq!(f.g.players[0].corpses, 0, "and they are spent");
+}
+
+#[test]
+fn husk_pays_at_most_twenty() {
+    let mut f = Fix::new();
+    f.play("Husk, Eternal Reaper", None);
+    f.g.players[0].corpses = 31;
+    f.g.players[0].hero_hp = 5;
+    f.g.spell_damage(FOE, Some(Target::Hero(ME)), 20);
+    assert_eq!(f.g.players[0].hero_hp, 20, "\"up to 20\"");
+    assert_eq!(f.g.players[0].corpses, 11, "the rest stay banked");
+}
+
+#[test]
+fn husk_fires_once_and_not_with_nothing_to_spend() {
+    let mut f = Fix::new();
+    f.play("Husk, Eternal Reaper", None);
+    f.g.players[0].corpses = 0;
+    f.g.players[0].hero_hp = 4;
+    f.g.spell_damage(FOE, Some(Target::Hero(ME)), 8);
+    assert_eq!(
+        f.g.outcome,
+        Some(tavernlab_core::state::Outcome::Win(FOE)),
+        "no Corpses is no Health, which is not coming back"
+    );
+    assert!(
+        !f.g.players[0].hero_rises_from_corpses,
+        "and a Deathrattle fires once whether or not it bought anything"
+    );
+}
+
+#[test]
+fn two_husks_are_still_one_resurrection() {
+    // The wiki's own ruling: "It is not possible to have multiple copies of
+    // Husk's Deathrattle on the player's hero." A flag says that by
+    // construction where a counter would quietly grant two lives -- and the
+    // rest of the ruling, "additional triggers require playing another Husk
+    // after resurrection", is the same flag being set again.
+    let mut f = Fix::new();
+    f.play("Husk, Eternal Reaper", None);
+    f.play("Husk, Eternal Reaper", None);
+    f.g.players[0].corpses = 4;
+    f.g.players[0].hero_hp = 2;
+    f.g.spell_damage(FOE, Some(Target::Hero(ME)), 6);
+    assert_eq!(f.g.players[0].hero_hp, 4, "the first death is paid for");
+
+    f.g.players[0].corpses = 9;
+    f.g.spell_damage(FOE, Some(Target::Hero(ME)), 9);
+    assert_eq!(
+        f.g.outcome,
+        Some(tavernlab_core::state::Outcome::Win(FOE)),
+        "and the second Husk was never a second life"
+    );
+    assert_eq!(f.g.players[0].corpses, 9, "so nothing was spent on it");
+
+    // Playing another one after the resurrection does arm it again.
+    let mut f = Fix::new();
+    f.play("Husk, Eternal Reaper", None);
+    f.g.players[0].corpses = 3;
+    f.g.players[0].hero_hp = 1;
+    f.g.spell_damage(FOE, Some(Target::Hero(ME)), 5);
+    assert_eq!(f.g.players[0].hero_hp, 3);
+    f.play("Husk, Eternal Reaper", None);
+    f.g.players[0].corpses = 6;
+    f.g.spell_damage(FOE, Some(Target::Hero(ME)), 8);
+    assert_eq!(f.g.players[0].hero_hp, 6, "the new one carries the next death");
+}
+
+#[test]
 fn frostbitten_imp_freezes_itself() {
     let mut f = Fix::new();
     f.play("Frostbitten Imp", None);

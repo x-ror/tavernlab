@@ -700,6 +700,16 @@ pub struct Player {
     /// Absorbs the next instance of damage to this hero, the same way a
     /// minion's Divine Shield does (Hardlight Protector).
     pub hero_divine_shield: bool,
+    /// A Deathrattle on the hero itself: when it would die, spend up to
+    /// twenty Corpses and come back with that much Health (Husk, Eternal
+    /// Reaper).
+    ///
+    /// A flag rather than a granted card id, the way a minion carries
+    /// `granted_rattle`, because one card grants it and the effect is not a
+    /// card's own -- and because the hero having a Deathrattle at all is a
+    /// thing the kernel has to know about at the one place it decides the
+    /// game is over.
+    pub hero_rises_from_corpses: bool,
     pub mana: i16,
     /// Mana crystals owned, capped at [`MAX_MANA`].
     pub crystals: i16,
@@ -1003,6 +1013,7 @@ impl Player {
             hero_frozen: false,
             hero_froze_this_turn: false,
             hero_divine_shield: false,
+            hero_rises_from_corpses: false,
             mana: 0,
             crystals: 0,
             overload_now: 0,
