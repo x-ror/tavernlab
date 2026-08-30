@@ -1787,6 +1787,47 @@ fn hematurge_with_no_corpse_discovers_nothing() {
 }
 
 #[test]
+fn husk_brings_the_hero_back_for_the_corpses_it_has() {
+    let mut f = Fix::new();
+    f.play("Husk, Eternal Reaper", None);
+    f.g.players[0].corpses = 7;
+    f.g.players[0].hero_hp = 3;
+    f.g.spell_damage(FOE, Some(Target::Hero(ME)), 9);
+    assert!(f.g.outcome.is_none(), "the game is not over: {:?}", f.g.outcome);
+    assert_eq!(f.g.players[0].hero_hp, 7, "back with the Corpses it had");
+    assert_eq!(f.g.players[0].corpses, 0, "and they are spent");
+}
+
+#[test]
+fn husk_pays_at_most_twenty() {
+    let mut f = Fix::new();
+    f.play("Husk, Eternal Reaper", None);
+    f.g.players[0].corpses = 31;
+    f.g.players[0].hero_hp = 5;
+    f.g.spell_damage(FOE, Some(Target::Hero(ME)), 20);
+    assert_eq!(f.g.players[0].hero_hp, 20, "\"up to 20\"");
+    assert_eq!(f.g.players[0].corpses, 11, "the rest stay banked");
+}
+
+#[test]
+fn husk_fires_once_and_not_with_nothing_to_spend() {
+    let mut f = Fix::new();
+    f.play("Husk, Eternal Reaper", None);
+    f.g.players[0].corpses = 0;
+    f.g.players[0].hero_hp = 4;
+    f.g.spell_damage(FOE, Some(Target::Hero(ME)), 8);
+    assert_eq!(
+        f.g.outcome,
+        Some(tavernlab_core::state::Outcome::Win(FOE)),
+        "no Corpses is no Health, which is not coming back"
+    );
+    assert!(
+        !f.g.players[0].hero_rises_from_corpses,
+        "and a Deathrattle fires once whether or not it bought anything"
+    );
+}
+
+#[test]
 fn frostbitten_imp_freezes_itself() {
     let mut f = Fix::new();
     f.play("Frostbitten Imp", None);

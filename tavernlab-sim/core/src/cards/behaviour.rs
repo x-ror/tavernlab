@@ -6419,6 +6419,14 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     //
     // `discover_pool` already keeps to collectible, deckable, implemented
     // cards, so nothing here has to say so again.
+    // "Give your hero \"Deathrattle: Spend up to 20 Corpses to resurrect with
+    // that much Health.\"" The kernel owns the rest: `check_over` is the one
+    // place a player is declared dead, so it is the one place the hero comes
+    // back.
+    battlecry("Husk, Eternal Reaper", T::None, |g, c| {
+        g.player_mut(c.side).hero_rises_from_corpses = true;
+    }),
+
     battlecry("Hematurge", T::None, |g, c| {
         // "Spend a Corpse to Discover": no corpse, no Discover.
         if g.spend_corpses(c.side, 1) {
