@@ -306,6 +306,12 @@ pub(crate) fn position(tr: &Tracker, deck: &str) -> Result<(Game, bool), Line> {
         // A hero that has already swung cannot swing again, and a plan that
         // offers the attack twice is offering one that does not exist.
         g.players[i].hero_attacks_done = tr.heroes[i].attacks;
+        // A Hero Power already pressed this turn is not a play the plan may
+        // offer again. The log writes `EXHAUSTED` on the power's own entity;
+        // without it every position looked freshly untouched.
+        if tr.hero_powers[i].as_ref().is_some_and(|p| p.exhausted) {
+            g.players[i].hero_power_uses = 1;
+        }
         // The weapon as the log has it: the printed card where it said
         // nothing, what it said where it did. Without this the rebuilt hero
         // has bare hands, and the plan never suggests the swing -- which for
@@ -392,7 +398,14 @@ pub(crate) fn position(tr: &Tracker, deck: &str) -> Result<(Game, bool), Line> {
         }
     }
     for b in tr.hand.iter() {
-        g.players[0].hand.push(HandCard::new(b.card));
+        let mut hc = HandCard::new(b.card);
+        // What the client says it costs now, over what the card prints:
+        // discounts and taxes are already folded into the logged number, and
+        // the engine carries the difference per copy.
+        if let Some(cost) = b.cost {
+            hc.cost_delta = cost - b.card.def().cost;
+        }
+        g.players[0].hand.push(hc);
     }
     let deck_known = {
         let left = remaining_deck(tr, deck);
@@ -1424,6 +1437,44 @@ mod position_tests {
             .find(|m| m.card.name() == "Bloodfen Raptor")
             .expect("the Raptor is on the board");
         assert_eq!(raptor.atk, 4, "printed 3 and the Raid Leader's +1");
+    }
+
+    /// A discounted card in hand is discounted in the plan.
+    ///
+    /// The log writes what a card costs now, taxes and discounts folded in.
+    /// The plan used to read the printed cost, so it either refused a play
+    /// the turn could afford or offered one it could not.
+    #[test]
+    fn the_cost_the_log_wrote_is_the_cost_the_plan_pays() {
+        let mut lines = HEROES.to_vec();
+        lines.push("D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7");
+        lines.push("D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=9 local=False [entityName=Fireball id=30 zone=DECK zonePos=0 cardId=CS2_029 player=1] zone from FRIENDLY DECK -> FRIENDLY HAND");
+        lines.push("D 09:00:02.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=Fireball id=30 zone=HAND zonePos=1 cardId=CS2_029 player=1] tag=COST value=1");
+        let tr = tracked(&lines);
+        let (g, _) = position(&tr, "").expect("a position");
+        let hc = g.players[0].hand.first().expect("Fireball in hand");
+        assert_eq!(hc.card.name(), "Fireball");
+        assert_eq!(
+            hc.card.def().cost + hc.cost_delta,
+            1,
+            "printed four, the log says one"
+        );
+    }
+
+    /// A Hero Power already pressed is not a play the plan may offer again.
+    #[test]
+    fn a_spent_hero_power_is_spent_in_the_position() {
+        let mut lines = HEROES.to_vec();
+        lines.push("D 09:00:00.5 [Zone] ZoneChangeList.ProcessChanges() - id=5 local=False [entityName=Fireblast id=66 zone=PLAY zonePos=0 cardId=CS2_034 player=1] zone from  -> FRIENDLY PLAY (Hero Power)");
+        lines.push("D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7");
+        let fresh = tracked(&lines);
+        let (g, _) = position(&fresh, "").expect("a position");
+        assert_eq!(g.players[0].hero_power_uses, 0, "not pressed yet");
+
+        lines.push("D 09:00:01.5 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=Fireblast id=66 zone=PLAY zonePos=0 cardId=CS2_034 player=1] tag=EXHAUSTED value=1");
+        let spent = tracked(&lines);
+        let (g, _) = position(&spent, "").expect("a position");
+        assert_eq!(g.players[0].hero_power_uses, 1, "the log said it was used");
     }
 
     /// The Corpses the log banked reach the game the search runs on.

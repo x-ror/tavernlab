@@ -79,6 +79,12 @@ pub enum EntityTag {
     Armor(i16),
     /// How many times it has attacked this turn.
     Attacks(u8),
+    /// What a card in hand costs right now, which is not always what it
+    /// prints: discounts and taxes are already in the number the log writes.
+    Cost(i16),
+    /// Spent for this turn -- a minion that has attacked its fill, or a Hero
+    /// Power that has been used.
+    Exhausted(bool),
     /// A weapon's remaining durability.
     ///
     /// Its own tag rather than folded into [`Health`](Self::Health): the two
@@ -336,6 +342,8 @@ pub fn parse(line: &str) -> Option<Event> {
         "ARMOR" => EntityTag::Armor(n? as i16),
         "NUM_ATTACKS_THIS_TURN" => EntityTag::Attacks(n?.clamp(0, 255) as u8),
         "DURABILITY" => EntityTag::Durability(n? as i16),
+        "COST" => EntityTag::Cost(n? as i16),
+        "EXHAUSTED" => EntityTag::Exhausted(n? != 0),
         other => {
             // Mega-Windfury writes `value=3`, so "on" is anything but zero
             // rather than exactly one.

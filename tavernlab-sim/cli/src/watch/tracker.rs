@@ -34,6 +34,12 @@ pub struct Body {
     pub keywords: Keywords,
     pub frozen: bool,
     pub attacks: u8,
+    /// What this copy costs right now, when the log has said. Discounts and
+    /// taxes are already in that number; the printed cost is not.
+    pub cost: Option<i16>,
+    /// Spent for this turn. On a minion this is what `attacks` already says;
+    /// on a Hero Power it is the whole of it.
+    pub exhausted: bool,
 }
 
 impl Body {
@@ -48,6 +54,8 @@ impl Body {
             keywords: card.def().keywords,
             frozen: false,
             attacks: 0,
+            cost: None,
+            exhausted: false,
         }
     }
 
@@ -79,6 +87,8 @@ impl Body {
             EntityTag::Health(n) => self.hp = Some(n),
             EntityTag::Damage(n) => self.damage = n,
             EntityTag::Attacks(n) => self.attacks = n,
+            EntityTag::Cost(n) => self.cost = Some(n),
+            EntityTag::Exhausted(on) => self.exhausted = on,
             // Neither belongs on a minion. Dropped rather than guessed at:
             // a durability tag on a body is not a fact about that body.
             EntityTag::Armor(_) | EntityTag::Durability(_) => {}
@@ -241,6 +251,9 @@ pub struct Tracker {
     pub weapons: [Option<Weapon>; 2],
     /// Secrets in play, yours named and theirs not.
     pub secrets: [Vec<Secret>; 2],
+    /// Each side's Hero Power entity, once a zone line has named it. Carried
+    /// for the one tag that matters: whether it has been used this turn.
+    pub hero_powers: [Option<Body>; 2],
     /// Every player name the log has used on a line that needs one, in the
     /// order they first appeared. Printed when `me_name` matched none of
     /// them, because the fix is to pass one of these and the user cannot
@@ -550,6 +563,12 @@ impl Tracker {
                         return;
                     }
                 }
+                for p in self.hero_powers.iter_mut().flatten() {
+                    if p.entity == entity {
+                        p.apply(what);
+                        return;
+                    }
+                }
                 for side in 0..2 {
                     for b in self.board[side].iter_mut() {
                         if b.entity == entity {
@@ -604,8 +623,15 @@ impl Tracker {
             }
             return;
         }
+        // The Hero Power's own entity, so the `EXHAUSTED` written on it can
+        // be found. Which power it is comes from the class; whether it has
+        // been used this turn is only knowable from this line's id.
+        if kind == Some("Hero Power") {
+            self.hero_powers[i] = Some(Body::new(entity, card.unwrap_or_default(), self.turn));
+            return;
+        }
         if kind.is_some() && kind != Some("Weapon") {
-            return; // Hero Power, and anything else parenthesised.
+            return; // anything else parenthesised.
         }
 
         // Leaving a zone: drop it from wherever it was. A weapon leaves when
