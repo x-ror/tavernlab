@@ -18,6 +18,7 @@ use tavernlab_json::Json;
 
 mod decks;
 mod history;
+mod names;
 mod serve;
 #[path = "watch/mod.rs"]
 mod watch_mod;
@@ -900,12 +901,13 @@ fn demo(seed: u64) {
             }
         }
         let board = |s: Side| {
-            g.player(s)
-                .board
-                .iter()
-                .map(|m| format!("{} {}/{}", m.card.name(), m.atk, m.health()))
-                .collect::<Vec<_>>()
-                .join(", ")
+            names::list(
+                &g.player(s)
+                    .board
+                    .iter()
+                    .map(|m| format!("{} {}/{}", m.card.name(), m.atk, m.health()))
+                    .collect::<Vec<_>>(),
+            )
         };
         println!("        board P0: [{}]", board(Side::Player0));
         println!("        board P1: [{}]", board(Side::Player1));

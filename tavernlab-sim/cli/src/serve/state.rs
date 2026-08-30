@@ -171,7 +171,7 @@ impl App {
             .map_err(|e| Line::new("live.mull.bad_deck").with("why", e.to_string()))?;
         if !resolved.unimplemented.is_empty() {
             return Err(Line::new("live.mull.unimplemented")
-                .with("cards", resolved.unimplemented.join(", ")));
+                .with("cards", crate::names::list(&resolved.unimplemented)));
         }
         let field = self.gauntlet(format);
         let Some(opp) = field

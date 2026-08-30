@@ -118,13 +118,13 @@ fn load(app: &App, code: &str) -> Result<Loaded, String> {
                 .format
                 .map(super::state::format_name)
                 .unwrap_or("this format"),
-            resolved.illegal.join(", ")
+            crate::names::list(&resolved.illegal)
         ));
     }
     if !resolved.unimplemented.is_empty() {
         return Err(format!(
             "the simulator cannot play these cards: {}",
-            resolved.unimplemented.join(", ")
+            crate::names::list(&resolved.unimplemented)
         ));
     }
     if !resolved.missing.is_empty() {
@@ -141,7 +141,7 @@ fn load(app: &App, code: &str) -> Result<Loaded, String> {
     if !resolved.not_deckable.is_empty() {
         return Err(format!(
             "these cannot go in a deck: {}",
-            resolved.not_deckable.join(", ")
+            crate::names::list(&resolved.not_deckable)
         ));
     }
     let assumed_format = resolved.format.is_none();
@@ -339,7 +339,7 @@ pub fn analyze(app: &Arc<App>, req: &Request) -> Response {
             p.say(format!(
                 "{} deck(s) not fielded: {}",
                 rates.skipped.len(),
-                rates.skipped.join(", ")
+                crate::names::list(&rates.skipped)
             ));
         }
         p.say(format!("done: {:.1}%", avg * 100.0));

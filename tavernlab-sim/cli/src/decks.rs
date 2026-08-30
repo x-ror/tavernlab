@@ -89,13 +89,13 @@ pub fn run(path: Option<&str>) {
             Ok(r) => {
                 let mut why: Vec<String> = Vec::new();
                 if !r.illegal.is_empty() {
-                    why.push(format!("не в форматі: {}", r.illegal.join(", ")));
+                    why.push(format!("не в форматі: {}", crate::names::list(&r.illegal)));
                 }
                 if !r.unimplemented.is_empty() {
                     for c in &r.unimplemented {
                         *blocks.entry(c.to_string()).or_default() += 1;
                     }
-                    why.push(r.unimplemented.join(", "));
+                    why.push(crate::names::list(&r.unimplemented));
                 }
                 if why.is_empty() {
                     fieldable += 1;

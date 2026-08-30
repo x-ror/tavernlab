@@ -556,7 +556,7 @@ fn opponent_read(app: &App, format: &str, tr: &Tracker) -> Vec<Line> {
                 .take(4)
                 .map(|c| format!("({}) {}", c.def().cost, c.name()))
                 .collect();
-            line.with("threats", names.join(", "))
+            line.with("threats", crate::names::list(&names))
         };
         out.push(line);
     }
@@ -585,7 +585,7 @@ fn mulligan(app: &App, format: &str, tr: &Tracker, deck: &str) -> Vec<Line> {
             .iter()
             .map(|c| format!("({}) {}", c.def().cost, c.name()))
             .collect();
-        return vec![Line::new("live.mull.no_opp_class").with("hand", listed.join(", "))];
+        return vec![Line::new("live.mull.no_opp_class").with("hand", crate::names::list(&listed))];
     };
     match app.mulligan_advice(format, deck, class, &tr.opening) {
         Ok(rows) => rows,
@@ -755,7 +755,7 @@ pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice
     if !tr.secrets[0].is_empty() {
         let named: Vec<&str> = tr.secrets[0].iter().filter_map(|s| s.card).map(|c| c.name()).collect();
         position.push(match named.len() == tr.secrets[0].len() {
-            true => Line::new("live.pos.my_secrets").with("secrets", named.join(", ")),
+            true => Line::new("live.pos.my_secrets").with("secrets", crate::names::list(&named)),
             false => Line::new("live.pos.my_secrets_count").with("n", tr.secrets[0].len() as i64),
         });
     }
@@ -767,7 +767,7 @@ pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice
     let hand: Vec<&str> = tr.hand.iter().map(|b| b.card.name()).collect();
     position.push(match hand.is_empty() {
         true => Line::new("live.pos.hand").with("hand", Arg::Key("live.pos.empty")),
-        false => Line::new("live.pos.hand").with("hand", hand.join(", ")),
+        false => Line::new("live.pos.hand").with("hand", crate::names::list(&hand)),
     });
     sections.push(section("live.head.position", position));
 
@@ -838,7 +838,7 @@ fn side_line(board: &[tracker::Body]) -> Arg {
     if names.is_empty() {
         Arg::Key("live.pos.empty")
     } else {
-        Arg::Text(names.join(", "))
+        Arg::Text(crate::names::list(&names))
     }
 }
 
