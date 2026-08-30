@@ -47,12 +47,26 @@ pub fn default_logs_dir() -> Option<PathBuf> {
         return Some(PathBuf::from(dir));
     }
     let local = std::env::var("LOCALAPPDATA").ok()?;
-    Some(
+    Some(resolve_logs_dir(
         Path::new(&local)
             .join("Blizzard")
             .join("Hearthstone")
             .join("Logs"),
-    )
+    ))
+}
+
+/// The directory that actually holds `Hearthstone_YYYY_…` session folders.
+///
+/// The client writes those under `Logs/`. `log.config` sits beside that
+/// folder, so the path people paste is often the install root. Follow
+/// `Logs/` when it is there; leave an already-correct path alone.
+pub fn resolve_logs_dir(dir: PathBuf) -> PathBuf {
+    let nested = dir.join("Logs");
+    if nested.is_dir() {
+        nested
+    } else {
+        dir
+    }
 }
 
 /// Real verbose logging runs to hundreds of kilobytes per game. A tiny
@@ -881,7 +895,12 @@ pub fn run(app: &App, format: &str, mut args: Args) -> i32 {
     if let Some(one) = args.log_file.clone() {
         return follow(app, format, &args, vec![one], args.once);
     }
-    let Some(dir) = args.logs_dir.clone().or_else(default_logs_dir) else {
+    let Some(dir) = args
+        .logs_dir
+        .clone()
+        .or_else(default_logs_dir)
+        .map(resolve_logs_dir)
+    else {
         eprintln!(
             "не знаю, де логи гри. Вкажіть --logs <тека> або змінну HS_LOGS.\n\
              Логування вмикається у log.config поруч із теками Logs."
@@ -1011,7 +1030,7 @@ pub enum Tick {
 impl Runner {
     pub fn new(dir: PathBuf, me: Option<String>) -> Runner {
         Runner {
-            dir,
+            dir: resolve_logs_dir(dir),
             files: Vec::new(),
             offsets: Vec::new(),
             tr: Tracker::new(me.clone()),
@@ -1324,5 +1343,19 @@ mod session_tests {
             all[0].0.display()
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_install_root_is_followed_into_logs() {
+        let root = scratch("install");
+        let logs = root.join("Logs");
+        write_power(&logs, "real", "CREATE_GAME\n", true);
+        let (power, _) =
+            newest_logs(&resolve_logs_dir(root.clone())).expect("session under Logs");
+        assert!(power.starts_with(&logs), "{}", power.display());
+        let (again, _) =
+            newest_logs(&resolve_logs_dir(logs.clone())).expect("already the Logs dir");
+        assert_eq!(power, again);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

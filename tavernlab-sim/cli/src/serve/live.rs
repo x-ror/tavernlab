@@ -86,12 +86,14 @@ impl Live {
 /// environment says, else the usual place on this platform.
 pub fn logs_dir(app: &App) -> Option<PathBuf> {
     let set = app.settings().get("logs_dir").cloned().unwrap_or_default();
-    if !set.is_empty() {
-        return Some(PathBuf::from(set));
-    }
-    std::env::var_os("HS_LOGS")
-        .map(PathBuf::from)
-        .or_else(watch::default_logs_dir)
+    let dir = if !set.is_empty() {
+        PathBuf::from(set)
+    } else {
+        std::env::var_os("HS_LOGS")
+            .map(PathBuf::from)
+            .or_else(watch::default_logs_dir)?
+    };
+    Some(watch::resolve_logs_dir(dir))
 }
 
 /// Start watching, and answer with the directory it settled on.
