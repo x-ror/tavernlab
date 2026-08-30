@@ -268,7 +268,55 @@ pub struct CardDef {
     pub races: Races,
     pub keywords: Keywords,
     pub formats: Formats,
+    /// Rune cost, on the Death Knight cards that carry one.
+    pub runes: Runes,
     pub collectible: bool,
+}
+
+/// What a Death Knight card demands of a deck's three rune slots.
+///
+/// Runes are a Death Knight feature and appear on no other class; a deck
+/// spends three slots across the colours, and a card can be put in only where
+/// its own cost fits. Most Death Knight cards ask for none, and every card of
+/// every other class asks for none.
+///
+/// Packed two bits per colour because none of them exceeds three -- a deck
+/// only has three slots, so a card asking for four could never be played.
+///
+/// The counts come from Blizzard's own card API, which serves
+/// `runeCost: {blood, frost, unholy}` per card; the corpus carries them
+/// through unchanged.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Runes(pub u8);
+
+impl Runes {
+    pub const NONE: Runes = Runes(0);
+
+    pub const fn new(blood: u8, frost: u8, unholy: u8) -> Runes {
+        Runes(blood | (frost << 2) | (unholy << 4))
+    }
+
+    pub const fn blood(self) -> u8 {
+        self.0 & 0b11
+    }
+
+    pub const fn frost(self) -> u8 {
+        (self.0 >> 2) & 0b11
+    }
+
+    pub const fn unholy(self) -> u8 {
+        (self.0 >> 4) & 0b11
+    }
+
+    /// Whether the card asks for anything at all.
+    pub const fn any(self) -> bool {
+        self.0 != 0
+    }
+
+    /// Slots used in total. A deck has three.
+    pub const fn total(self) -> u8 {
+        self.blood() + self.frost() + self.unholy()
+    }
 }
 
 impl CardDef {

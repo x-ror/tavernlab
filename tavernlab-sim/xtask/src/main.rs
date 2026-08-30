@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use tavernlab_json::Json;
 
 mod backfill;
+mod runes;
 mod sets;
 mod wild;
 
@@ -278,8 +279,24 @@ fn main() {
                 }
             }
         }
+        Some("runes") => {
+            let Some(dump) = args.next() else {
+                eprintln!("usage: cargo run -p xtask -- runes <dump.json>");
+                eprintln!("see the module docs in xtask/src/runes.rs for the fetch");
+                std::process::exit(2);
+            };
+            match runes::run(&repo_root(), Path::new(&dump)) {
+                Ok(msg) => println!("{msg}"),
+                Err(e) => {
+                    eprintln!("xtask runes: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         other => {
-            eprintln!("usage: cargo run -p xtask -- [cards|wild-gauntlet|backfill <dump>]");
+            eprintln!(
+                "usage: cargo run -p xtask -- [cards|wild-gauntlet|backfill <dump>|runes <dump>]"
+            );
             if let Some(o) = other {
                 eprintln!("unknown command: {o}");
             }
@@ -289,6 +306,29 @@ fn main() {
 }
 
 /// Repository root, found by walking up from this crate.
+/// `data/runes.json`, packed two bits per colour and keyed by dbf id.
+fn read_rune_costs(path: &Path) -> Result<BTreeMap<u32, u8>, String> {
+    let src = std::fs::read_to_string(path).map_err(|e| {
+        format!(
+            "{}: {e}\nrun `cargo run -p xtask -- runes <dump.json>` first; \
+             see xtask/src/runes.rs for the fetch",
+            path.display()
+        )
+    })?;
+    let doc = Json::parse(&src).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut out = BTreeMap::new();
+    for (k, v) in doc.as_object().unwrap_or_default() {
+        // The file carries one prose entry saying where it came from.
+        let Ok(dbf) = k.parse::<u32>() else { continue };
+        let get = |name: &str| v.i64_or_zero(name).clamp(0, 3) as u8;
+        out.insert(dbf, get("b") | (get("f") << 2) | (get("u") << 4));
+    }
+    if out.is_empty() {
+        return Err(format!("{} names no rune costs", path.display()));
+    }
+    Ok(out)
+}
+
 fn repo_root() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop(); // tavernlab-sim
@@ -318,6 +358,9 @@ struct Card {
     dormant: i8,
     collectible: bool,
     formats: u8,
+    /// Blood, Frost and Unholy, packed two bits each. Death Knight cards
+    /// only; everything else is zero.
+    runes: u8,
     /// dbf ids of the tokens this card creates, resolved to table indices in
     /// [`render`] once every card has one.
     children: Vec<u32>,
@@ -347,6 +390,12 @@ fn generate_cards() -> Result<String, String> {
     // it.
     let has_sd = raw.values().any(|e| e.get("sd").is_some());
     let has_ovl = raw.values().any(|e| e.get("ovl").is_some());
+
+    // Rune costs live beside the corpus rather than inside it -- see
+    // `xtask/src/runes.rs`. Missing entirely is a corpus with no Death Knight
+    // rune data, which generates a table where every card asks for none: that
+    // is wrong quietly, so it is an error rather than a default.
+    let rune_costs = read_rune_costs(&root.join("data/runes.json"))?;
 
     let mut unknown_mech: BTreeMap<String, usize> = BTreeMap::new();
     let mut unknown_race: BTreeMap<String, usize> = BTreeMap::new();
@@ -409,6 +458,15 @@ fn generate_cards() -> Result<String, String> {
             }
         }
 
+        // Blood, Frost and Unholy, two bits each, joined by dbf id against
+        // `data/runes.json`. A card the file does not name asks for none,
+        // which is every card of every class but Death Knight and most Death
+        // Knight cards besides.
+        let runes = rune_costs
+            .get(&(e.i64_or_zero("dbf") as u32))
+            .copied()
+            .unwrap_or(0);
+
         let mut formats = 0u8;
         if sets::STANDARD.contains(&set.as_str()) {
             formats |= 1;
@@ -431,6 +489,7 @@ fn generate_cards() -> Result<String, String> {
             dur,
             armor: e.i64_or_zero("armor") as i16,
             races,
+            runes,
             spell_damage: if has_sd {
                 e.i64_or_zero("sd") as i8
             } else {
@@ -716,7 +775,7 @@ fn render(cards: &[Card]) -> (String, usize) {
          // Regenerate after refreshing the HearthstoneJSON corpora. The bit\n\
          // constants below are emitted alongside the table that uses them, so the\n\
          // encoding and the engine's view of it cannot drift apart.\n\n\
-         use super::{CardDef, CardId, CardInfo, Formats, Keywords, Races};\n\n",
+         use super::{CardDef, CardId, CardInfo, Formats, Keywords, Races, Runes};\n\n",
     );
 
     // ---- bit constants ------------------------------------------------
@@ -777,7 +836,7 @@ fn render(cards: &[Card]) -> (String, usize) {
             "    CardDef {{ kind: {}, class: {}, rarity: {}, school: {}, \
              cost: {}, atk: {}, hp: {}, dur: {}, armor: {}, spell_damage: {}, overload: {}, \
              dormant: {}, races: Races({}), keywords: Keywords({}), formats: Formats({}), \
-             collectible: {} }},",
+             runes: Runes({}), collectible: {} }},",
             c.kind,
             c.class,
             c.rarity,
@@ -793,6 +852,7 @@ fn render(cards: &[Card]) -> (String, usize) {
             c.races,
             c.keywords,
             c.formats,
+            c.runes,
             c.collectible
         );
     }
