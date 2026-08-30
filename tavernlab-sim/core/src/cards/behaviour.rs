@@ -6423,6 +6423,11 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     // that much Health.\"" The kernel owns the rest: `check_over` is the one
     // place a player is declared dead, so it is the one place the hero comes
     // back.
+    //
+    // A flag rather than a count, because the wiki's ruling is that "it is
+    // not possible to have multiple copies of Husk's Deathrattle on the
+    // player's hero" -- a second copy is not a second life. Playing another
+    // after the resurrection arms it again, which is the same flag being set.
     battlecry("Husk, Eternal Reaper", T::None, |g, c| {
         g.player_mut(c.side).hero_rises_from_corpses = true;
     }),

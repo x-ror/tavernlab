@@ -1828,6 +1828,43 @@ fn husk_fires_once_and_not_with_nothing_to_spend() {
 }
 
 #[test]
+fn two_husks_are_still_one_resurrection() {
+    // The wiki's own ruling: "It is not possible to have multiple copies of
+    // Husk's Deathrattle on the player's hero." A flag says that by
+    // construction where a counter would quietly grant two lives -- and the
+    // rest of the ruling, "additional triggers require playing another Husk
+    // after resurrection", is the same flag being set again.
+    let mut f = Fix::new();
+    f.play("Husk, Eternal Reaper", None);
+    f.play("Husk, Eternal Reaper", None);
+    f.g.players[0].corpses = 4;
+    f.g.players[0].hero_hp = 2;
+    f.g.spell_damage(FOE, Some(Target::Hero(ME)), 6);
+    assert_eq!(f.g.players[0].hero_hp, 4, "the first death is paid for");
+
+    f.g.players[0].corpses = 9;
+    f.g.spell_damage(FOE, Some(Target::Hero(ME)), 9);
+    assert_eq!(
+        f.g.outcome,
+        Some(tavernlab_core::state::Outcome::Win(FOE)),
+        "and the second Husk was never a second life"
+    );
+    assert_eq!(f.g.players[0].corpses, 9, "so nothing was spent on it");
+
+    // Playing another one after the resurrection does arm it again.
+    let mut f = Fix::new();
+    f.play("Husk, Eternal Reaper", None);
+    f.g.players[0].corpses = 3;
+    f.g.players[0].hero_hp = 1;
+    f.g.spell_damage(FOE, Some(Target::Hero(ME)), 5);
+    assert_eq!(f.g.players[0].hero_hp, 3);
+    f.play("Husk, Eternal Reaper", None);
+    f.g.players[0].corpses = 6;
+    f.g.spell_damage(FOE, Some(Target::Hero(ME)), 8);
+    assert_eq!(f.g.players[0].hero_hp, 6, "the new one carries the next death");
+}
+
+#[test]
 fn frostbitten_imp_freezes_itself() {
     let mut f = Fix::new();
     f.play("Frostbitten Imp", None);
