@@ -6406,6 +6406,28 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             g.fire_deathrattle_of(c.side, pick);
         }
     }),
+    // "Discover a Blood Rune card". Which cards those are is a question no
+    // source this project can read answers outright: the wiki has no
+    // definition, and the card's own page has none either. What the wiki does
+    // have is the query behind its own listing pages, and it reads
+    // `runeBlood=N, runeFrost=0, runeUnholy=0` -- a card of pure Blood.
+    //
+    // That is also the reading that cannot overrate the card. A pool of pure
+    // Blood cards is a subset of any wider one, so if the game means "at
+    // least one Blood" this offers fewer choices rather than more, and if the
+    // game means what the wiki lists then this is exact. See APPROXIMATE.
+    //
+    // `discover_pool` already keeps to collectible, deckable, implemented
+    // cards, so nothing here has to say so again.
+    battlecry("Hematurge", T::None, |g, c| {
+        // "Spend a Corpse to Discover": no corpse, no Discover.
+        if g.spend_corpses(c.side, 1) {
+            g.discover(c.side, |d| {
+                d.runes.blood() > 0 && d.runes.frost() == 0 && d.runes.unholy() == 0
+            });
+        }
+    }),
+
     battlecry("Boneguard Commander", T::None, |g, c| {
         let mut raised = 0;
         while raised < 6 && g.spend_corpses(c.side, 1) {
@@ -10320,6 +10342,10 @@ pub fn is_aura(card: CardId) -> bool {
 /// coverage figure that mixes exact and approximate cards is worse than a
 /// smaller honest one.
 pub const APPROXIMATE: &[(&str, &str)] = &[
+    (
+        "Hematurge",
+        "\"Discover a Blood Rune card\" offers cards whose rune cost is Blood and nothing else. No source states the pool: hearthstone.wiki.gg has no definition on its Rune page or the card's own, and the corpus carries no runes at all (the costs here come from Blizzard's card API). What the wiki does have is the query behind its Blood Rune listing pages, `runeBlood=N, runeFrost=0, runeUnholy=0`, and that is what this follows. It is also the subset reading: if the game means \"at least one Blood\" then this offers fewer cards rather than more, so it cannot read stronger than printed",
+    ),
     (
         "Khadgar",
         "\"Your cards that summon minions summon twice as many\" reaches the summons that are written as a count -- `summon_token`, `summon_child`, `summon_random_of_cost` -- and not the ones a card writes as its own loop or as a single `summon`. Doubling every `summon` instead would double resurrects, Reborn and board-copies as well, which the card does not say; so this misses summons rather than inventing them, and reads weaker",

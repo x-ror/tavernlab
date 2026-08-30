@@ -1750,6 +1750,43 @@ fn body_bagger_gains_a_corpse() {
 }
 
 #[test]
+fn hematurge_spends_a_corpse_and_discovers_blood() {
+    let mut f = Fix::new();
+    f.g.players[0].corpses = 1;
+    let before = f.g.players[0].hand.len();
+    f.play("Hematurge", None);
+    assert_eq!(f.g.players[0].corpses, 0, "the Corpse is spent");
+    assert_eq!(
+        f.g.players[0].hand.len(),
+        before + 1,
+        "and a card is Discovered"
+    );
+    let got = f.g.players[0].hand.last().expect("the Discovered card").card;
+    let r = got.def().runes;
+    assert!(
+        r.blood() > 0 && r.frost() == 0 && r.unholy() == 0,
+        "{} is not a pure Blood card: B{} F{} U{}",
+        got.name(),
+        r.blood(),
+        r.frost(),
+        r.unholy()
+    );
+}
+
+#[test]
+fn hematurge_with_no_corpse_discovers_nothing() {
+    // "Spend a Corpse to Discover" -- the Discover is what the Corpse buys,
+    // so with none to spend the Battlecry does nothing rather than going
+    // into debt for it.
+    let mut f = Fix::new();
+    f.g.players[0].corpses = 0;
+    let before = f.g.players[0].hand.len();
+    f.play("Hematurge", None);
+    assert_eq!(f.g.players[0].corpses, 0, "no debt");
+    assert_eq!(f.g.players[0].hand.len(), before, "and no card");
+}
+
+#[test]
 fn frostbitten_imp_freezes_itself() {
     let mut f = Fix::new();
     f.play("Frostbitten Imp", None);
