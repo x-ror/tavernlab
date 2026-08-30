@@ -280,6 +280,21 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
     for i in 0..2 {
         g.players[i].hero_hp = tr.heroes[i].health();
         g.players[i].armor = tr.heroes[i].armor;
+        // A hero that has already swung cannot swing again, and a plan that
+        // offers the attack twice is offering one that does not exist.
+        g.players[i].hero_attacks_done = tr.heroes[i].attacks;
+        // The weapon as the log has it: the printed card where it said
+        // nothing, what it said where it did. Without this the rebuilt hero
+        // has bare hands, and the plan never suggests the swing -- which for
+        // half the classes is most of what a turn is.
+        g.players[i].weapon = tr.weapons[i].map(|w| {
+            let (atk, durability) = w.stats();
+            tavernlab_core::state::Weapon {
+                card: w.card,
+                atk,
+                durability,
+            }
+        });
     }
     // Without a battletag the log's mana lines cannot be attributed, so the
     // plan is drawn at the turn's worth of crystals rather than at a made-up
@@ -698,6 +713,19 @@ pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice
             .with("mine", hero_line(&tr.heroes[0]))
             .with("theirs", hero_line(&tr.heroes[1])),
     );
+    // Only when there is one. A line saying you have no weapon is true of
+    // every turn of every game that is not about weapons.
+    for (i, key) in [(0, "live.pos.my_weapon"), (1, "live.pos.their_weapon")] {
+        if let Some(w) = tr.weapons[i] {
+            let (atk, dur) = w.stats();
+            position.push(
+                Line::new(key)
+                    .with("card", w.card.name())
+                    .with("atk", atk as i64)
+                    .with("durability", dur as i64),
+            );
+        }
+    }
     position.push(Line::new("live.pos.my_board").with("board", side_line(&tr.board[0])));
     position.push(Line::new("live.pos.their_board").with("board", side_line(&tr.board[1])));
     let hand: Vec<&str> = tr.hand.iter().map(|b| b.card.name()).collect();

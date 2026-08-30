@@ -813,3 +813,64 @@ fn a_session_that_rotates_does_not_lose_its_last_game() {
     );
     assert!(out.contains("SHAMAN"), "and the new session's game: {out}");
 }
+
+/// A weapon in play is swings the plan can spend.
+///
+/// The rebuilt hero used to have bare hands whatever the log said, so the
+/// plan never suggested the attack -- which for the classes that equip is
+/// most of what a turn is. The corpus says which cards are weapons, so this
+/// reads correctly whether or not the client marks the zone line `(Weapon)`.
+const WEAPON: &str = "\
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES value=4
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES_USED value=4
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7
+D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=CURRENT_PLAYER value=1
+D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=9 local=False [entityName=Fiery War Axe id=40 zone=HAND zonePos=1 cardId=CS2_106 player=1] zone from FRIENDLY HAND -> FRIENDLY PLAY (Weapon)
+";
+
+#[test]
+fn an_equipped_weapon_is_a_swing_the_plan_can_spend() {
+    let out = run("weapon", &format!("{LOG}{WEAPON}"), &["--me", "Me#1"]);
+    assert!(
+        out.contains("ваша зброя: Fiery War Axe 3/2"),
+        "the printed numbers stand until the log says otherwise: {out}"
+    );
+    assert!(
+        out.contains("бити героєм"),
+        "and the plan spends the swing: {out}"
+    );
+}
+
+#[test]
+fn a_hero_that_has_already_swung_is_not_told_to_swing_again() {
+    // `NUM_ATTACKS_THIS_TURN` on the hero. Offering the attack a second time
+    // is offering one the game will not allow.
+    let swung = format!(
+        "{WEAPON}D 09:00:03.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE \
+         Entity=[entityName=Jaina Proudmoore id=64 zone=PLAY zonePos=0 cardId=HERO_08 \
+         player=1] tag=NUM_ATTACKS_THIS_TURN value=1\n"
+    );
+    let out = run("weapon-spent", &format!("{LOG}{swung}"), &["--me", "Me#1"]);
+    assert!(
+        out.contains("ваша зброя: Fiery War Axe 3/2"),
+        "the weapon is still equipped: {out}"
+    );
+    assert!(
+        !out.contains("бити героєм"),
+        "but the swing is spent: {out}"
+    );
+}
+
+#[test]
+fn a_weapon_that_broke_is_no_longer_in_the_position() {
+    let broken = format!(
+        "{WEAPON}D 09:00:03.0 [Zone] ZoneChangeList.ProcessChanges() - id=10 local=False \
+         [entityName=Fiery War Axe id=40 zone=PLAY zonePos=0 cardId=CS2_106 player=1] \
+         zone from FRIENDLY PLAY (Weapon) -> FRIENDLY GRAVEYARD\n"
+    );
+    let out = run("weapon-broken", &format!("{LOG}{broken}"), &["--me", "Me#1"]);
+    assert!(
+        !out.contains("ваша зброя"),
+        "a broken weapon is no swings, not a stale line: {out}"
+    );
+}

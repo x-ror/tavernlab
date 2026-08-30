@@ -79,7 +79,9 @@ impl Body {
             EntityTag::Health(n) => self.hp = Some(n),
             EntityTag::Damage(n) => self.damage = n,
             EntityTag::Attacks(n) => self.attacks = n,
-            EntityTag::Armor(_) => {}
+            // Neither belongs on a minion. Dropped rather than guessed at:
+            // a durability tag on a body is not a fact about that body.
+            EntityTag::Armor(_) | EntityTag::Durability(_) => {}
             EntityTag::Keyword("FROZEN", on) => self.frozen = on,
             EntityTag::Keyword(name, on) => {
                 let Some(k) = keyword_of(name) else { return };
@@ -113,6 +115,45 @@ fn keyword_of(tag: &str) -> Option<Keywords> {
     })
 }
 
+/// A weapon in play, as far as the log states it.
+///
+/// Separate from [`Body`] because a weapon is not on a board and has
+/// durability where a minion has health -- and because the position needs to
+/// find "the weapon" rather than search a list for it.
+#[derive(Clone, Copy, Debug)]
+pub struct Weapon {
+    pub entity: u32,
+    pub card: CardId,
+    /// Attack and durability as the log last stated them, or `None` while it
+    /// has said nothing and the printed numbers still stand. The same rule
+    /// [`Body`] follows: `TAG_CHANGE` is written when a value *changes*.
+    pub atk: Option<i16>,
+    pub durability: Option<i16>,
+}
+
+impl Weapon {
+    /// Attack and durability right now, falling back to the printed card.
+    ///
+    /// Falling back rather than assuming: a weapon the log has said nothing
+    /// about is its printed self, and one it has spoken about is what it
+    /// said. Neither case invents a number.
+    pub fn stats(&self) -> (i16, i16) {
+        let d = self.card.def();
+        (self.atk.unwrap_or(d.atk), self.durability.unwrap_or(d.dur))
+    }
+
+    fn apply(&mut self, what: EntityTag) {
+        match what {
+            EntityTag::Atk(n) => self.atk = Some(n),
+            // A weapon's durability arrives as `DURABILITY` on the cards that
+            // print it that way and as `HEALTH` on the ones that do not.
+            // Both mean the swings it has left, so both are read as that.
+            EntityTag::Durability(n) | EntityTag::Health(n) => self.durability = Some(n),
+            _ => {}
+        }
+    }
+}
+
 /// A hero, as far as the log states it.
 #[derive(Clone, Copy, Debug)]
 pub struct Hero {
@@ -122,6 +163,10 @@ pub struct Hero {
     pub max_hp: i16,
     pub damage: i16,
     pub armor: i16,
+    /// Swings taken this turn. A hero that has already attacked cannot
+    /// attack again, and a plan that offers the swing twice is offering one
+    /// that does not exist.
+    pub attacks: u8,
 }
 
 impl Default for Hero {
@@ -131,6 +176,7 @@ impl Default for Hero {
             max_hp: 30,
             damage: 0,
             armor: 0,
+            attacks: 0,
         }
     }
 }
@@ -150,6 +196,7 @@ impl Hero {
             EntityTag::Health(n) => self.max_hp = n,
             EntityTag::Damage(n) => self.damage = n,
             EntityTag::Armor(n) => self.armor = n,
+            EntityTag::Attacks(n) => self.attacks = n,
             _ => {}
         }
     }
@@ -178,6 +225,8 @@ pub struct Tracker {
     pub board: [Vec<Body>; 2],
     /// Both heroes: health, armour, and the entity the log names them by.
     pub heroes: [Hero; 2],
+    /// The weapon each hero has equipped, when the log has shown one.
+    pub weapons: [Option<Weapon>; 2],
     /// Every player name the log has used on a line that needs one, in the
     /// order they first appeared. Printed when `me_name` matched none of
     /// them, because the fix is to pass one of these and the user cannot
@@ -385,6 +434,12 @@ impl Tracker {
                         return;
                     }
                 }
+                for w in self.weapons.iter_mut().flatten() {
+                    if w.entity == entity {
+                        w.apply(what);
+                        return;
+                    }
+                }
                 for side in 0..2 {
                     for b in self.board[side].iter_mut() {
                         if b.entity == entity {
@@ -439,12 +494,16 @@ impl Tracker {
             }
             return;
         }
-        if kind.is_some() {
+        if kind.is_some() && kind != Some("Weapon") {
             return; // Hero Power, and anything else parenthesised.
         }
 
-        // Leaving a zone: drop it from wherever it was.
+        // Leaving a zone: drop it from wherever it was. A weapon leaves when
+        // it breaks, and a broken weapon is no swings rather than a stale one.
         self.board[i].retain(|b| b.entity != entity);
+        if self.weapons[i].is_some_and(|w| w.entity == entity) {
+            self.weapons[i] = None;
+        }
         if i == 0 {
             self.hand.retain(|b| b.entity != entity);
         }
@@ -460,8 +519,25 @@ impl Tracker {
             }
             "PLAY" => {
                 if let Some(c) = card {
-                    if c.def().kind() == tavernlab_core::cards::Kind::Minion {
-                        self.board[i].push(Body::new(entity, c, self.turn));
+                    match c.def().kind() {
+                        tavernlab_core::cards::Kind::Minion => {
+                            self.board[i].push(Body::new(entity, c, self.turn));
+                        }
+                        // What the card is, not what the line called it. The
+                        // client marks a weapon `(Weapon)` and the branch
+                        // above lets that through, but the corpus already
+                        // knows the card is a weapon -- so this reads
+                        // correctly whether or not the note is written, and
+                        // no line shape has to be assumed.
+                        tavernlab_core::cards::Kind::Weapon => {
+                            self.weapons[i] = Some(Weapon {
+                                entity,
+                                card: c,
+                                atk: None,
+                                durability: None,
+                            });
+                        }
+                        _ => {}
                     }
                     self.played[i].push(c);
                     if c.def().class() != Class::Neutral && self.classes[i].is_none() {
