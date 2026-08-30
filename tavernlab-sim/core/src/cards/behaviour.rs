@@ -620,7 +620,7 @@ mod tokens {
     pub const NIGHTMARE_SLICER: CardId = token("EDR_457t");
     /// Eredar Deceptor's "1/1 Demon with Rush". Its Standard printing
     /// (`CORE_TTN_843`) carries no `childIds` in this snapshot of the corpus
-    /// (see docs/RUST_CARDS_PLAN.md §2a on reprints missing child data), so
+    /// -- a reprint often does not repeat its original's token list -- so
     /// this names the original printing's token directly; summoning by id
     /// does not check the token's own format legality.
     pub const INVADING_FELBAT: CardId = token("TTN_843t1");
@@ -689,8 +689,8 @@ mod tokens {
     pub const ANIMAL_COMPANION: CardId = token("NEW1_031");
     pub const FIREBALL: CardId = token("CS2_029");
     /// Cairne's Baine and Mountain Bear's Cub. Both cards' Standard
-    /// reprints carry no `childIds` in this snapshot (docs/RUST_CARDS_PLAN.md
-    /// §2a), so the tokens are named rather than looked up.
+    /// reprints carry no `childIds` in this snapshot, the same gap the
+    /// Deceptor above hits, so the tokens are named rather than looked up.
     pub const BAINE_BLOODHOOF: CardId = token("EX1_110t");
     pub const MOUNTAIN_CUB: CardId = token("AV_337t");
     /// Eternal Bloodpetal's "0/1 Eternal Seedling", whose own deathrattle
@@ -2552,10 +2552,10 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         }
     }),
 
-    // ---------------------------------------------- 2026 meta decks, phase 1
-    // Ported from the retired Python engine against the corpus text; see
-    // docs/RUST_CARDS_PLAN.md §4 phase 1. No new engine mechanism needed —
-    // existing verbs plus the small additions listed in that section.
+    // ------------------------------------------------------ 2026 meta decks
+    // Ported from the retired Python engine against the corpus text. Nothing
+    // here needed a new engine mechanism: these are the cards the existing
+    // verbs already covered.
     // death knight
     deathrattle("Staff of the Endbringer", |g, c| {
         let mut all: Inline<Target, 16> = Inline::new();
@@ -2838,8 +2838,9 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         }
     }),
 
-    // ------------------------------------------------------- phase 2, G1/G2
-    // docs/RUST_CARDS_PLAN.md §4 phase 2.
+    // ---------------------------------------------------- deferred effects
+    // "At the start of your next turn" and friends: the amount and the
+    // countdown live in `Player::pending`, ticked by `begin_turn`.
     spell("Acceleration Aura", T::None, |g, c| {
         g.player_mut(c.side).pending.push(Pending {
             kind: PendingKind::TempCrystal,
@@ -2894,8 +2895,8 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         }
     }),
 
-    // -------------------------------------------------------- phase 3, G5
-    // Start of Game: docs/RUST_CARDS_PLAN.md §4 phase 4 (G5).
+    // -------------------------------------------------------- Start of Game
+    // Fires once, before either player's first turn.
     start_of_game("Chainbreaker Hogger", |g, c| {
         let mut extra: Inline<CardId, MAX_DECK> = Inline::new();
         for dc in g.player(c.side).deck.iter() {
@@ -2969,8 +2970,9 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         }
     }),
 
-    // -------------------------------------------------------- phase 4, G7
-    // Forced attack: docs/RUST_CARDS_PLAN.md §4 phase 4 (G7).
+    // --------------------------------------------------------- forced attack
+    // "Force a minion to attack": the swing resolves immediately rather than
+    // being queued.
     spell("Emergency Surgery", T::EnemyMinion, |g, c| {
         let Some(target) = c.target else { return };
         for _ in 0..4 {
@@ -3004,9 +3006,8 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         }
     }),
 
-    // -------------------------------------------------------- phase 4, G6
-    // Quest / Sidequest: docs/RUST_CARDS_PLAN.md §4 phase 4 (G6). Progress
-    // lives entirely in the `trigger` hook -- see Player::quest/sidequest
+    // ------------------------------------------------------ Quest / Sidequest
+    // Progress lives entirely in the `trigger` hook -- see Player::quest/sidequest
     // and the extra reactor slots in Game::fire.
     trigger("The Food Chain", |g, ctx| {
         if let Event::CardPlayed { side, card } = ctx.event
