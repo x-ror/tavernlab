@@ -534,3 +534,47 @@ D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=6 local=False [entityNa
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Asking what a command does is not asking it to run.
+///
+/// Several of these run for minutes and one for the better part of an hour.
+/// `--help` used to fall through to the argument parse, which reads it as
+/// neither a number nor a path and runs the command on its defaults, so
+/// `weights --help` started a measurement instead of answering; a bare
+/// `tavernsim` started a benchmark. Both are cheap to get wrong again, so
+/// both are pinned here.
+#[test]
+fn asking_for_help_does_not_start_work() {
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_tavernsim"))
+            .args(args)
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .expect("the binary runs");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        )
+    };
+
+    for args in [&[][..], &["--help"], &["-h"], &["weights", "--help"], &["bench", "--help"]] {
+        let (code, stdout, _) = run(args);
+        assert_eq!(code, Some(0), "{args:?} should succeed");
+        assert!(
+            stdout.contains("tavernsim <команда>"),
+            "{args:?} should print the usage: {stdout}"
+        );
+        assert!(
+            !stdout.contains("вінрейт") && !stdout.contains("ігор/с"),
+            "{args:?} must not have run anything: {stdout}"
+        );
+    }
+
+    // An unknown command says so and shows the same list, on stderr and with
+    // a failing status, because it is an error rather than an answer.
+    let (code, _, stderr) = run(&["nosuch"]);
+    assert_eq!(code, Some(2));
+    assert!(stderr.contains("невідома команда"), "{stderr}");
+    assert!(stderr.contains("tavernsim <команда>"), "{stderr}");
+}
