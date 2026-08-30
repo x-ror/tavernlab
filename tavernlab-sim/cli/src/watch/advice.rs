@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 /// A value a line is filled in with.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Arg {
     /// A literal -- a number, a card name, a path. Card names are the
     /// corpus's own and are not translated, here or anywhere else in the app.
@@ -55,7 +55,7 @@ impl From<Line> for Arg {
 }
 
 /// One line: a key and what fills it in.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Line {
     pub key: &'static str,
     pub args: Vec<(&'static str, Arg)>,

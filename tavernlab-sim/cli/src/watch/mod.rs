@@ -278,20 +278,25 @@ fn remaining_deck(tr: &Tracker, deck: &str) -> Vec<CardId> {
     left
 }
 
-fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
-    let mut caveats = Vec::new();
-    if tr.whose_turn().is_none() {
-        caveats.push(Line::new("live.plan.whose_turn_unknown"));
-    }
+/// The position, rebuilt as far as the log states it.
+///
+/// Split out from the plan so that what was reconstructed can be asserted on
+/// directly. The printed position beside the advice shows the tracker's own
+/// reading; this is the game the search actually runs on, and the two are
+/// not the same object.
+///
+/// `Err` is the line to show instead: the position could not be built at
+/// all. The `bool` is whether the deck was restored -- see `remaining_deck`.
+pub(crate) fn position(tr: &Tracker, deck: &str) -> Result<(Game, bool), Line> {
     let (Some(mine), Some(theirs)) = (tr.my_class(), tr.opponent_class()) else {
-        return vec![Line::new("live.plan.no_classes")];
+        return Err(Line::new("live.plan.no_classes"));
     };
     let (Ok(hp0), Ok(hp1)) = (hero_power_for(mine), hero_power_for(theirs)) else {
-        return vec![Line::new("live.plan.no_hero_power")];
+        return Err(Line::new("live.plan.no_hero_power"));
     };
     let mut g = match Game::new((mine, &[]), (theirs, &[]), 1) {
         Ok(g) => g,
-        Err(e) => return vec![Line::new("live.plan.broken").with("why", e.to_string())],
+        Err(e) => return Err(Line::new("live.plan.broken").with("why", e.to_string())),
     };
     g.players[0].hero_power = hp0;
     g.players[1].hero_power = hp1;
@@ -352,6 +357,9 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
         .unwrap_or_else(|| ((tr.turn as i16 + 1) / 2).clamp(1, 10));
     g.players[0].mana = tr.mana_left().unwrap_or(g.players[0].crystals);
     g.turn = tr.turn;
+    // What the log stated outright, kept so it can be put back after the
+    // engine has had its say about auras. See below.
+    let mut stated: Vec<(usize, usize, Option<i16>, Option<i16>)> = Vec::new();
     for side in 0..2 {
         // A body the log has taken to zero health is dead; the line that
         // moves it out of play arrives in a later batch, up to a poll behind.
@@ -379,6 +387,7 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
             if b.frozen {
                 m.flags.insert(tavernlab_core::state::Flags::FROZEN);
             }
+            stated.push((side, g.players[side].board.len(), b.atk, b.hp));
             g.players[side].board.push(m);
         }
     }
@@ -395,7 +404,46 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
         }
         known
     };
+    // The engine keeps a minion's aura share inside its total: `atk`
+    // includes `aura_atk`, and `recompute_auras` subtracts the old share
+    // before adding the new one. The log's `ATK` and `HEALTH` are the
+    // client's totals and already include whatever auras were up, so a body
+    // placed with the logged number and no share recorded gets its aura
+    // counted twice -- once by the client, once here. A buffed minion came
+    // out fatter in the plan than on screen.
+    //
+    // So the engine works out what it thinks the auras are, and then the
+    // stated totals go back on top of that: `atk` is the client's number,
+    // `aura_atk` is the engine's share of it, and the invariant holds again.
+    //
+    // Only where the log actually stated a number. A body it said nothing
+    // about carries printed stats, which do *not* include auras -- there the
+    // engine adding them is right, and putting the printed number back would
+    // strip an aura the minion really has.
     g.recompute_auras();
+    for (side, slot, atk, hp) in stated {
+        let Some(m) = g.players[side].board.get_mut(slot) else {
+            continue;
+        };
+        if let Some(a) = atk {
+            m.atk = a;
+        }
+        if let Some(h) = hp {
+            m.max_hp = h;
+        }
+    }
+    Ok((g, deck_known))
+}
+
+fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
+    let mut caveats = Vec::new();
+    if tr.whose_turn().is_none() {
+        caveats.push(Line::new("live.plan.whose_turn_unknown"));
+    }
+    let (mut g, deck_known) = match position(tr, deck) {
+        Ok(pair) => pair,
+        Err(why) => return vec![why],
+    };
 
     // The search, not the greedy policy: live advice is one decision at a
     // time rather than a batch, so the cost that keeps the search out of the
@@ -1312,6 +1360,82 @@ pub fn record_games(
         }
     };
     history::append(path, &games)
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::*;
+    use crate::watch_mod::log::parse;
+
+    fn tracked(lines: &[&str]) -> Tracker {
+        let mut t = Tracker::new(Some("Me#1".into()));
+        for l in lines {
+            if let Some(ev) = parse(l) {
+                t.feed(ev);
+            }
+        }
+        t
+    }
+
+    const HEROES: [&str; 3] = [
+        "D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME",
+        "D 09:00:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=1 local=False [entityName=Jaina Proudmoore id=64 zone=PLAY zonePos=0 cardId=HERO_08 player=1] zone from  -> FRIENDLY PLAY (Hero)",
+        "D 09:00:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=2 local=False [entityName=Garrosh Hellscream id=65 zone=PLAY zonePos=0 cardId=HERO_01 player=2] zone from  -> OPPOSING PLAY (Hero)",
+    ];
+
+    /// The log's ATK already carries the aura; the engine must not add it
+    /// again.
+    ///
+    /// A Raid Leader gives friendly minions +1 Attack. The client writes the
+    /// Raptor as 4, its printed 3 plus that 1. Placed with 4 and no aura
+    /// share recorded, `recompute_auras` added the Raid Leader's bonus on top
+    /// and the search planned around a 5/2 that is not on the board.
+    #[test]
+    fn an_aura_inside_the_logs_number_is_not_counted_twice() {
+        let mut lines = HEROES.to_vec();
+        lines.push("D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7");
+        lines.push("D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=7 local=False [entityName=Raid Leader id=20 zone=HAND zonePos=1 cardId=CS2_122 player=1] zone from FRIENDLY HAND -> FRIENDLY PLAY");
+        lines.push("D 09:00:02.1 [Zone] ZoneChangeList.ProcessChanges() - id=8 local=False [entityName=Bloodfen Raptor id=21 zone=HAND zonePos=1 cardId=CS2_172 player=1] zone from FRIENDLY HAND -> FRIENDLY PLAY");
+        lines.push("D 09:00:02.2 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=Bloodfen Raptor id=21 zone=PLAY zonePos=1 cardId=CS2_172 player=1] tag=ATK value=4");
+        let tr = tracked(&lines);
+        let (g, _) = position(&tr, "").expect("a position");
+        let raptor = g.players[0]
+            .board
+            .iter()
+            .find(|m| m.card.name() == "Bloodfen Raptor")
+            .expect("the Raptor is on the board");
+        assert_eq!(raptor.atk, 4, "the client's total, not the total plus the aura again");
+    }
+
+    /// A body the log said nothing about is its printed self, and the aura
+    /// does apply to it -- restoring a printed number would strip one the
+    /// minion really has.
+    #[test]
+    fn an_aura_still_reaches_a_body_the_log_was_silent_about() {
+        let mut lines = HEROES.to_vec();
+        lines.push("D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7");
+        lines.push("D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=7 local=False [entityName=Raid Leader id=20 zone=HAND zonePos=1 cardId=CS2_122 player=1] zone from FRIENDLY HAND -> FRIENDLY PLAY");
+        lines.push("D 09:00:02.1 [Zone] ZoneChangeList.ProcessChanges() - id=8 local=False [entityName=Bloodfen Raptor id=21 zone=HAND zonePos=1 cardId=CS2_172 player=1] zone from FRIENDLY HAND -> FRIENDLY PLAY");
+        let tr = tracked(&lines);
+        let (g, _) = position(&tr, "").expect("a position");
+        let raptor = g.players[0]
+            .board
+            .iter()
+            .find(|m| m.card.name() == "Bloodfen Raptor")
+            .expect("the Raptor is on the board");
+        assert_eq!(raptor.atk, 4, "printed 3 and the Raid Leader's +1");
+    }
+
+    /// The Corpses the log banked reach the game the search runs on.
+    #[test]
+    fn the_corpses_reach_the_rebuilt_game() {
+        let mut lines = HEROES.to_vec();
+        lines.push("D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7");
+        lines.push("D 09:00:01.5 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=CORPSES value=3");
+        let tr = tracked(&lines);
+        let (g, _) = position(&tr, "").expect("a position");
+        assert_eq!(g.players[0].corpses, 3);
+    }
 }
 
 #[cfg(test)]
