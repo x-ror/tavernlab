@@ -56,3 +56,22 @@ export function I18nProvider({ lang, children }) {
 export function useT() {
   return useContext(I18nContext)
 }
+
+/* A line the server built: a key, and the values that fill it in.
+ *
+ * `{k, p}` rather than a sentence, because the server is one process
+ * serving two languages and the advice it writes is read on this page.
+ * A value that is itself `{k}` is another key — a class name, a verdict —
+ * and one that is `{k, p}` is a whole nested phrase, which is how a plan
+ * line carries "your Chillwind Yeti" as one translatable unit.
+ *
+ * See `cli/src/watch/advice.rs`, which is the other half of this. */
+export function renderLine(t, line) {
+  if (!line) return ''
+  if (typeof line === 'string') return line
+  const vars = {}
+  for (const [name, value] of Object.entries(line.p || {})) {
+    vars[name] = value && typeof value === 'object' ? renderLine(t, value) : String(value)
+  }
+  return t(line.k, vars)
+}

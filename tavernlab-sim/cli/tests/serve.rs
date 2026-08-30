@@ -483,21 +483,40 @@ D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=6 local=False [entityNa
     let advice = loop {
         let (status, body) = s.get("/api/live");
         assert_eq!(status, 200, "{body}");
-        if !json(&body).str_or_empty("title").is_empty() || Instant::now() > deadline {
+        if !json(&body).arr_or_empty("title").is_empty() || Instant::now() > deadline {
             break body;
         }
         std::thread::sleep(Duration::from_millis(100));
     };
     let doc = json(&advice);
-    assert!(doc.str_or_empty("title").contains("хід 7"), "{advice}");
+
+    // Keys and values, not sentences -- the page writes the words. Asserting
+    // on prose here would pass or fail on a translation rather than on
+    // whether the watcher read the game.
+    let title: Vec<&str> = doc
+        .arr_or_empty("title")
+        .iter()
+        .map(|l| l.str_or_empty("k"))
+        .collect();
+    assert!(title.contains(&"live.title.turn_mine"), "{advice}");
+    assert_eq!(
+        doc.arr_or_empty("title")[0]
+            .get("p")
+            .map(|p| p.str_or_empty("turn")),
+        Some("7"),
+        "the turn number came off the log: {advice}"
+    );
     let headings: Vec<&str> = doc
         .arr_or_empty("sections")
         .iter()
         .map(|s| s.str_or_empty("heading"))
         .collect();
-    assert!(headings.contains(&"ХІД"), "the turn is planned: {advice}");
     assert!(
-        advice.contains("зіграти Chillwind Yeti"),
+        headings.contains(&"live.head.turn"),
+        "the turn is planned: {advice}"
+    );
+    assert!(
+        advice.contains("\"live.plan.play\"") && advice.contains("Chillwind Yeti"),
         "four mana buys the Yeti: {advice}"
     );
     assert!(

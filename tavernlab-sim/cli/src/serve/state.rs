@@ -26,6 +26,8 @@ use tavernlab_core::gauntlet::{MetaDeck, class_by_name, style_by_name};
 use tavernlab_core::telemetry::{self, Matchup, Verdict};
 use tavernlab_json::Json;
 
+use crate::watch_mod::advice::{Arg, Line};
+
 use super::jobs::Jobs;
 
 /// Appearances below which a card's mulligan delta is noise, not a number.
@@ -164,24 +166,21 @@ impl App {
         code: &str,
         opp_class: tavernlab_core::cards::Class,
         hand: &[CardId],
-    ) -> Result<Vec<String>, String> {
-        let resolved =
-            tavernlab_core::deckstring::resolve(code).map_err(|e| e.to_string())?;
+    ) -> Result<Vec<Line>, Line> {
+        let resolved = tavernlab_core::deckstring::resolve(code)
+            .map_err(|e| Line::new("live.mull.bad_deck").with("why", e.to_string()))?;
         if !resolved.unimplemented.is_empty() {
-            return Err(format!(
-                "симулятор не грає цими картами: {}",
-                resolved.unimplemented.join(", ")
-            ));
+            return Err(Line::new("live.mull.unimplemented")
+                .with("cards", resolved.unimplemented.join(", ")));
         }
         let field = self.gauntlet(format);
         let Some(opp) = field
             .iter()
             .find(|d| d.class == opp_class && d.playable())
         else {
-            return Err(format!(
-                "у гаунтлеті {format} немає колоди класу {}, яку симулятор може виставити",
-                tavernlab_core::gauntlet::class_name(opp_class)
-            ));
+            return Err(Line::new("live.mull.no_field_deck")
+                .with("format", format)
+                .with("class", tavernlab_core::gauntlet::class_name(opp_class)));
         };
         let key = tavernlab_core::deckstring::extract(code)
             .unwrap_or(code.trim())
@@ -193,15 +192,15 @@ impl App {
             .unwrap_or(Style::Midrange);
         let telemetry = self.telemetry(&key, &resolved.ids, resolved.class, style, &field);
         let Some((_, matchup)) = telemetry.matchups.iter().find(|(n, _)| *n == opp.name) else {
-            return Err("телеметрія не має запису для цього суперника".into());
+            return Err(Line::new("live.mull.no_telemetry"));
         };
         let base = matchup.base();
-        let mut out = vec![format!(
-            "проти «{}» — база {:.0}% на {} іграх",
-            opp.name,
-            base * 100.0,
-            matchup.games
-        )];
+        let mut out = vec![
+            Line::new("live.mull.base")
+                .with("deck", opp.name.clone())
+                .with("pct", format!("{:.0}", base * 100.0))
+                .with("games", matchup.games as i64),
+        ];
         for card in hand {
             let stat = matchup.stat(*card).unwrap_or_default();
             let delta = stat.opening_delta(base, MULLIGAN_MIN_N);
@@ -211,41 +210,41 @@ impl App {
             // hurt, and falls back to the mana curve like a card with too
             // few games.
             let verdict = stat.opening_verdict(base, MULLIGAN_MIN_N);
-            let by_curve = cost <= 3;
-            let (label, note) = match verdict {
-                Verdict::Keep => (
-                    "ЛИШИТИ",
-                    format!(
-                        "{:+.1} в.п. на {} іграх",
-                        delta.unwrap_or(0.0) * 100.0,
-                        stat.open_n
-                    ),
-                ),
-                Verdict::Toss => (
-                    "СКИНУТИ",
-                    format!(
-                        "{:+.1} в.п. на {} іграх",
-                        delta.unwrap_or(0.0) * 100.0,
-                        stat.open_n
-                    ),
-                ),
-                Verdict::NoDifference => (
-                    if by_curve { "ЛИШИТИ" } else { "СКИНУТИ" },
-                    format!(
-                        "різниці не видно ({:+.1} ± {:.1} на {}), лишається крива",
-                        delta.unwrap_or(0.0) * 100.0,
-                        stat.opening_margin().unwrap_or(0.0) * 100.0,
-                        stat.open_n
-                    ),
-                ),
-                Verdict::TooFew => (
-                    if by_curve { "ЛИШИТИ" } else { "СКИНУТИ" },
-                    "мало даних, лишається крива".to_string(),
-                ),
+            let measured = || {
+                Line::new("live.mull.measured")
+                    .with("delta", format!("{:+.1}", delta.unwrap_or(0.0) * 100.0))
+                    .with("games", stat.open_n as i64)
             };
-            out.push(format!("{label} ({cost}) {:24} {note}", card.name()));
+            let (keep, note) = match verdict {
+                Verdict::Keep => (true, measured()),
+                Verdict::Toss => (false, measured()),
+                Verdict::NoDifference => (
+                    cost <= 3,
+                    Line::new("live.mull.no_difference")
+                        .with("delta", format!("{:+.1}", delta.unwrap_or(0.0) * 100.0))
+                        .with(
+                            "margin",
+                            format!("{:.1}", stat.opening_margin().unwrap_or(0.0) * 100.0),
+                        )
+                        .with("games", stat.open_n as i64),
+                ),
+                Verdict::TooFew => (cost <= 3, Line::new("live.mull.too_few")),
+            };
+            out.push(
+                Line::new("live.mull.verdict")
+                    .with("verdict", Arg::Key(crate::watch_mod::keep_or_toss(keep)))
+                    .with("cost", cost as i64)
+                    .with("card", card.name())
+                    .with("note", note),
+            );
         }
         Ok(out)
+    }
+
+    /// The language the app's own text is written in.
+    pub fn language(&self) -> String {
+        let set = self.settings().get("language").cloned().unwrap_or_default();
+        if set.is_empty() { "uk".to_string() } else { set }
     }
 
     pub fn gauntlet_path(&self, format: &str) -> PathBuf {

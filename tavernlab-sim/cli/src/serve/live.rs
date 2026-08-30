@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::watch_mod::{self as watch, Advice, Runner, Tick};
+use crate::watch_mod::{self as watch, Advice, Line, Runner, Tick};
 
 use super::state::App;
 
@@ -32,7 +32,10 @@ pub struct Snapshot {
     /// Why there is nothing to show, when there is nothing to show. A note
     /// rather than an error: waiting for the client to start is the normal
     /// state of a watcher that was switched on first.
-    pub note: Option<String>,
+    ///
+    /// A key and its values, like every other line the watcher produces --
+    /// the page writes it out in its own language.
+    pub note: Option<Line>,
     /// The advice as it stands, or `None` before the first game is seen.
     pub advice: Option<Advice>,
     /// Games written to the history since this watcher started.
@@ -123,7 +126,7 @@ pub fn start(app: &Arc<App>, format: &str) -> Result<PathBuf, String> {
         inner.stop = Some(Arc::clone(&stop));
         inner.snapshot = Snapshot {
             running: true,
-            note: Some(format!("читаю {}", dir.display())),
+            note: Some(Line::new("live.note.reading").with("dir", dir.display().to_string())),
             ..Snapshot::default()
         };
     }
@@ -169,10 +172,7 @@ fn run(
             s.recorded = recorded;
         });
     } else {
-        let note = format!(
-            "чекаю на гру в {} — увімкніть логування в log.config і запустіть клієнт",
-            dir.display()
-        );
+        let note = Line::new("live.note.waiting").with("dir", dir.display().to_string());
         app.live.publish(|s| s.note = Some(note));
     }
 
@@ -213,7 +213,7 @@ fn run(
     if inner.stop.as_ref().is_some_and(|s| Arc::ptr_eq(s, &stop)) {
         inner.stop = None;
         inner.snapshot.running = false;
-        inner.snapshot.note = Some("стеження зупинено".into());
+        inner.snapshot.note = Some(Line::new("live.note.stopped"));
     }
 }
 

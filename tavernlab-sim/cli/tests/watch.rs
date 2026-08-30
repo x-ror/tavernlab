@@ -67,8 +67,10 @@ fn run(tag: &str, body: &str, extra: &[&str]) -> String {
 #[test]
 fn before_the_first_turn_it_advises_the_mulligan() {
     let out = run("mulligan", LOG, &["--me", "Me#1"]);
-    assert!(out.contains("MAGE"), "{out}");
-    assert!(out.contains("WARRIOR"), "the opponent's hero named their class: {out}");
+    // The class names are the app's own, in the app's language: the terminal
+    // and the Live tab write the same keys out of `locales/`.
+    assert!(out.contains("Маг"), "{out}");
+    assert!(out.contains("Воїн"), "the opponent's hero named their class: {out}");
     assert!(out.contains("МУЛІГАН"), "{out}");
     assert!(out.contains("Chillwind Yeti"), "{out}");
     assert!(
@@ -313,7 +315,7 @@ D 09:30:02.0000000 [Zone] [entityName=Uther Lightbringer id=71 zone=PLAY zonePos
         + &String::from_utf8_lossy(&out.stderr);
 
     assert!(
-        out.contains("SHAMAN проти PALADIN"),
+        out.contains("Шаман проти Паладин"),
         "the classes come from the game being played, not the one before it: {out}"
     );
     assert!(

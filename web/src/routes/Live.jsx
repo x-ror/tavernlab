@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Button, Flex, StatusLight, Switch, Text, TextField } from '@adobe/react-spectrum'
 import * as api from '../api'
 import { useApp } from '../store'
-import { useT } from '../i18n'
+import { renderLine, useT } from '../i18n'
 import { ErrorNote, Panel } from '../components/ui'
 
 /* Advice while you play.
@@ -117,7 +117,7 @@ export default function Live() {
         )}
         {live?.note && (
           <Text UNSAFE_style={{ display: 'block', marginTop: 12, color: 'var(--tl-muted)' }}>
-            {live.note}
+            {renderLine(t, live.note)}
           </Text>
         )}
         {running && live?.watching && (
@@ -143,35 +143,77 @@ export default function Live() {
 /* One section per heading, in the order the watcher built them: what to
  * do first, then what the opponent looks like, then the position it read.
  * A heading with no lines under it is never sent, so nothing here renders
- * an empty block that reads as "no advice". */
+ * an empty block that reads as "no advice".
+ *
+ * The turn is numbered and the rest is not, and that is the whole of the
+ * difference in weight this screen needs: a plan is a sequence, where the
+ * third line only makes sense after the second, while the position and the
+ * opponent read are a set of facts in no particular order. */
 function Advice({ live }) {
   const { t } = useT()
-  if (!live?.title) return null
+  if (!live?.title?.length) return null
+  const title = live.title.map((part) => renderLine(t, part)).join(' — ')
   return (
-    <Panel title={live.title}>
+    <Panel title={title}>
       {live.sections?.length ? (
-        live.sections.map((s) => (
-          <div key={s.heading} style={{ marginBottom: 18 }}>
-            <div
-              style={{
-                fontSize: '.75rem',
-                letterSpacing: '.08em',
-                color: 'var(--tl-muted)',
-                marginBottom: 6,
-              }}
-            >
-              {s.heading}
+        live.sections.map((s) => {
+          const ordered = s.heading === 'live.head.turn'
+          const List = ordered ? 'ol' : 'ul'
+          return (
+            <div key={s.heading} style={{ marginBottom: 18 }}>
+              <div
+                style={{
+                  fontSize: '.75rem',
+                  letterSpacing: '.08em',
+                  color: 'var(--tl-muted)',
+                  marginBottom: 6,
+                }}
+              >
+                {t(s.heading)}
+              </div>
+              <List
+                style={{
+                  margin: 0,
+                  paddingLeft: 22,
+                  lineHeight: 1.7,
+                  fontSize: ordered ? '1.05rem' : '1rem',
+                }}
+              >
+                {s.lines.map((line, i) => (
+                  <Line key={i} line={line} ordered={ordered} />
+                ))}
+              </List>
             </div>
-            <ul style={{ margin: 0, paddingLeft: 20, lineHeight: 1.7 }}>
-              {s.lines.map((line, i) => (
-                <li key={i}>{line}</li>
-              ))}
-            </ul>
-          </div>
-        ))
+          )
+        })
       ) : (
         <Text UNSAFE_style={{ color: 'var(--tl-muted)' }}>{t('ui.live.nothing_yet')}</Text>
       )}
     </Panel>
+  )
+}
+
+/* A caveat is not a step.
+ *
+ * The plan carries lines that say what it could not see — that the mana was
+ * guessed, that there is no deck to draw from — and rendering them as the
+ * next thing to do would be advice to do something that is not a play. They
+ * keep their place in the list, because that is where they were built, and
+ * lose the number and the weight. */
+const CAVEATS = new Set(['live.plan.mana_guessed', 'live.plan.no_deck'])
+
+function Line({ line, ordered }) {
+  const { t } = useT()
+  const caveat = ordered && CAVEATS.has(line?.k)
+  return (
+    <li
+      style={
+        caveat
+          ? { listStyle: 'none', marginLeft: -22, color: 'var(--tl-muted)', fontSize: '.85rem' }
+          : undefined
+      }
+    >
+      {renderLine(t, line)}
+    </li>
   )
 }
