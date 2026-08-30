@@ -34,6 +34,16 @@ pub struct Body {
     pub keywords: Keywords,
     pub frozen: bool,
     pub attacks: u8,
+    /// What this copy costs right now, when the log has said. Discounts and
+    /// taxes are already in that number; the printed cost is not.
+    pub cost: Option<i16>,
+    /// Spent for this turn. On a minion this is what `attacks` already says;
+    /// on a Hero Power or a Location it is the whole of it.
+    pub exhausted: bool,
+    /// Uses left, for the entities that count them rather than health --
+    /// Locations. `None` while the log has said nothing and the printed
+    /// number stands.
+    pub durability: Option<i16>,
 }
 
 impl Body {
@@ -48,6 +58,9 @@ impl Body {
             keywords: card.def().keywords,
             frozen: false,
             attacks: 0,
+            cost: None,
+            exhausted: false,
+            durability: None,
         }
     }
 
@@ -79,9 +92,12 @@ impl Body {
             EntityTag::Health(n) => self.hp = Some(n),
             EntityTag::Damage(n) => self.damage = n,
             EntityTag::Attacks(n) => self.attacks = n,
-            // Neither belongs on a minion. Dropped rather than guessed at:
-            // a durability tag on a body is not a fact about that body.
-            EntityTag::Armor(_) | EntityTag::Durability(_) => {}
+            EntityTag::Cost(n) => self.cost = Some(n),
+            EntityTag::Exhausted(on) => self.exhausted = on,
+            EntityTag::Durability(n) => self.durability = Some(n),
+            // Armor is a hero's. Dropped rather than guessed at: an armour
+            // tag on a body is not a fact about that body.
+            EntityTag::Armor(_) => {}
             EntityTag::Keyword("FROZEN", on) => self.frozen = on,
             EntityTag::Keyword(name, on) => {
                 let Some(k) = keyword_of(name) else { return };
@@ -241,6 +257,9 @@ pub struct Tracker {
     pub weapons: [Option<Weapon>; 2],
     /// Secrets in play, yours named and theirs not.
     pub secrets: [Vec<Secret>; 2],
+    /// Each side's Hero Power entity, once a zone line has named it. Carried
+    /// for the one tag that matters: whether it has been used this turn.
+    pub hero_powers: [Option<Body>; 2],
     /// Every player name the log has used on a line that needs one, in the
     /// order they first appeared. Printed when `me_name` matched none of
     /// them, because the fix is to pass one of these and the user cannot
@@ -251,6 +270,10 @@ pub struct Tracker {
     pub played: [Vec<CardId>; 2],
     pub turn: u16,
     pub my_turn: bool,
+    /// Corpses banked, for me. `None` until a `CORPSES` line could be
+    /// attributed, which is not the same as zero: a Death Knight plan drawn
+    /// at zero when the log said three spends nothing it actually has.
+    pub corpses: Option<i16>,
     /// Mana crystals and mana spent, for me. `None` until a `RESOURCES` line
     /// could be attributed -- see `me_name`.
     pub crystals: Option<i16>,
@@ -260,6 +283,9 @@ pub struct Tracker {
     /// battletag could be matched to. `None` on a game the log never
     /// resolved, and on one where `--me` was never supplied.
     pub won: Option<bool>,
+    /// Whether a `CURRENT_PLAYER` line was ever attributed to a player.
+    /// While this is false, `my_turn` is not an answer but a default.
+    pub turn_read: bool,
     /// True once the mulligan is done and the game proper has started.
     ///
     /// Driven by `STEP=MAIN_READY`, not by the turn counter: `TURN=1` is set
@@ -301,6 +327,32 @@ impl Tracker {
     ///
     /// `None` before the opening hand is complete: an empty opening hand is
     /// not "no Coin", it is "not dealt yet".
+    /// Whose turn it is: read from the log, else worked out, else unknown.
+    ///
+    /// The log states it on a `CURRENT_PLAYER` line, but only usably when
+    /// that line carries a player number or a name that has been matched to
+    /// one. A client that writes those lines as a bare battletag and never
+    /// as a bracketed descriptor gives neither, and then the turn was never
+    /// attributed at all -- which used to mean no turn plan for the whole
+    /// game, on every turn, in silence.
+    ///
+    /// The opening hand answers it anyway, by two rules rather than a guess:
+    /// The Coin is "granted at the start of each game to whichever player is
+    /// selected to go second", and the second player takes the even-numbered
+    /// turns -- the wiki's own turn limit note counts them, "Player 1 has 45
+    /// complete turns (turn 1, 3, 5...), while Player 2 has 44 (turn 2, 4,
+    /// 6...)". So a Coin in the opening hand says which parity is mine.
+    ///
+    /// `None` only when the opening was never seen either, which is the
+    /// watcher having been started in the middle of a game.
+    pub fn whose_turn(&self) -> Option<bool> {
+        if self.turn_read {
+            return Some(self.my_turn);
+        }
+        let coin = self.had_coin()?;
+        (self.turn > 0).then_some((self.turn % 2 == 0) == coin)
+    }
+
     pub fn had_coin(&self) -> Option<bool> {
         if self.opening.is_empty() {
             return None;
@@ -327,6 +379,18 @@ impl Tracker {
         }
         let base = |s: &str| s.split('#').next().unwrap_or(s).to_ascii_lowercase();
         !name.is_empty() && base(mine) == base(name)
+    }
+
+    /// Whether a player line is about me, by number where the line carries
+    /// one and by name where it does not.
+    ///
+    /// The number is the surer of the two and needs nothing matched first,
+    /// so it is asked first; the name is what a bare-battletag line leaves.
+    fn mine(&self, name: &str, player: Option<u8>) -> bool {
+        match (player, self.me) {
+            (Some(p), Some(me)) => p == me,
+            _ => self.is_me(name),
+        }
     }
 
     /// Work out which battletag is yours, from a line that says so.
@@ -389,6 +453,17 @@ impl Tracker {
                 }
                 self.over = true;
             }
+            Event::Corpses {
+                player_name,
+                player,
+                value,
+            } => {
+                self.note_name(&player_name);
+                self.learn_me(&player_name, player);
+                if self.mine(&player_name, player) {
+                    self.corpses = Some(value);
+                }
+            }
             Event::CurrentPlayer {
                 player_name,
                 player,
@@ -396,13 +471,46 @@ impl Tracker {
             } => {
                 self.learn_me(&player_name, player);
                 self.note_name(&player_name);
+                // A name is learnable here even with no number on the line.
+                // The opening hand says whose turn this is -- see
+                // `whose_turn` -- and a `CURRENT_PLAYER value=1` names the
+                // player whose turn it is. Put together they name you, which
+                // is the bridge between the zone lines that carry a player
+                // number and the Power lines that carry only a battletag.
+                //
+                // Only the positive direction: "it is my turn and this line
+                // says who is current" identifies you. "It is their turn"
+                // would identify you only by elimination, and a log that has
+                // shown one name so far would then pin the wrong one.
+                if self.me_name.is_none()
+                    && current
+                    && self.whose_turn() == Some(true)
+                    && !player_name.is_empty()
+                {
+                    self.me_name = Some(player_name.clone());
+                    self.me_learned = true;
+                }
+                // The player number first, when the line carries one: it
+                // says whose turn it is without anyone's name being matched.
+                if let (Some(p), Some(me)) = (player, self.me) {
+                    if p == me {
+                        self.my_turn = current;
+                        self.turn_read = true;
+                    } else if current {
+                        self.my_turn = false;
+                        self.turn_read = true;
+                    }
+                    return;
+                }
                 if self.me_name.is_none() {
                     return;
                 }
                 if self.is_me(&player_name) {
                     self.my_turn = current;
+                    self.turn_read = true;
                 } else if current {
                     self.my_turn = false;
+                    self.turn_read = true;
                 }
             }
             Event::Resources {
@@ -461,6 +569,12 @@ impl Tracker {
                         return;
                     }
                 }
+                for p in self.hero_powers.iter_mut().flatten() {
+                    if p.entity == entity {
+                        p.apply(what);
+                        return;
+                    }
+                }
                 for side in 0..2 {
                     for b in self.board[side].iter_mut() {
                         if b.entity == entity {
@@ -515,8 +629,15 @@ impl Tracker {
             }
             return;
         }
+        // The Hero Power's own entity, so the `EXHAUSTED` written on it can
+        // be found. Which power it is comes from the class; whether it has
+        // been used this turn is only knowable from this line's id.
+        if kind == Some("Hero Power") {
+            self.hero_powers[i] = Some(Body::new(entity, card.unwrap_or_default(), self.turn));
+            return;
+        }
         if kind.is_some() && kind != Some("Weapon") {
-            return; // Hero Power, and anything else parenthesised.
+            return; // anything else parenthesised.
         }
 
         // Leaving a zone: drop it from wherever it was. A weapon leaves when
@@ -543,7 +664,12 @@ impl Tracker {
             "PLAY" => {
                 if let Some(c) = card {
                     match c.def().kind() {
-                        tavernlab_core::cards::Kind::Minion => {
+                        // A Location takes a board slot the way a minion
+                        // does, and the engine offers `UseLocation` for one
+                        // that is in play -- so leaving them out was leaving
+                        // a whole play out of the turn.
+                        tavernlab_core::cards::Kind::Minion
+                        | tavernlab_core::cards::Kind::Location => {
                             self.board[i].push(Body::new(entity, c, self.turn));
                         }
                         // What the card is, not what the line called it. The
@@ -687,6 +813,80 @@ mod tests {
         ]);
         assert_eq!(t.crystals, Some(7));
         assert_eq!(t.mana_left(), Some(4));
+    }
+
+    #[test]
+    fn the_coin_says_which_turns_are_mine_when_the_log_will_not() {
+        // A client that writes CURRENT_PLAYER as a bare battletag carries no
+        // player number, so no name is ever matched to one. The opening hand
+        // answers it: The Coin goes to the player on the draw, and that
+        // player takes the even turns.
+        let mut t = Tracker::new(None);
+        feed(&mut t, &[
+            "D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME",
+            "D 09:00:00.2 [Zone] ZoneChangeList.ProcessChanges() - id=3 local=False [entityName=The Coin id=11 zone=DECK zonePos=0 cardId=GAME_005 player=1] zone from  -> FRIENDLY HAND",
+            "D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=2",
+        ]);
+        assert_eq!(t.me_name, None, "the name was never learned");
+        assert_eq!(t.whose_turn(), Some(true), "but turn two is the Coin holder's");
+
+        t.feed(crate::watch_mod::log::Event::Turn(3));
+        assert_eq!(t.whose_turn(), Some(false), "and turn three is not");
+    }
+
+    #[test]
+    fn the_turn_you_can_place_names_the_player_who_is_taking_it() {
+        // The bridge between the two halves of the log: zone lines carry a
+        // player number and no name, Power lines carry a name and no number.
+        // Knowing whose turn it is from the opening hand puts them together.
+        let mut t = Tracker::new(None);
+        feed(&mut t, &[
+            "D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME",
+            "D 09:00:00.2 [Zone] ZoneChangeList.ProcessChanges() - id=3 local=False [entityName=The Coin id=11 zone=DECK zonePos=0 cardId=GAME_005 player=1] zone from  -> FRIENDLY HAND",
+            "D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=2",
+            "D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=xror#21652 tag=CURRENT_PLAYER value=1",
+            "D 09:00:01.3 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=xror#21652 tag=RESOURCES value=1",
+            "D 09:00:01.4 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=xror#21652 tag=RESOURCES_USED value=0",
+        ]);
+        assert_eq!(t.me_name.as_deref(), Some("xror#21652"));
+        assert!(t.me_learned, "worked out rather than supplied");
+        assert_eq!(t.mana_left(), Some(1), "so the mana lines attribute too");
+    }
+
+    #[test]
+    fn the_opponents_turn_does_not_name_you_by_elimination() {
+        // "It is their turn and this line says who is current" identifies
+        // them, not you -- and with one name seen so far, eliminating would
+        // pin the wrong one.
+        let mut t = Tracker::new(None);
+        feed(&mut t, &[
+            "D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME",
+            "D 09:00:00.2 [Zone] ZoneChangeList.ProcessChanges() - id=3 local=False [entityName=The Coin id=11 zone=DECK zonePos=0 cardId=GAME_005 player=1] zone from  -> FRIENDLY HAND",
+            "D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=1",
+            "D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=starkalpha#2221 tag=CURRENT_PLAYER value=1",
+        ]);
+        assert_eq!(t.me_name, None, "turn one is not the Coin holder's");
+    }
+
+    #[test]
+    fn no_coin_means_the_odd_turns_are_mine() {
+        let mut t = Tracker::new(None);
+        feed(&mut t, &[
+            "D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME",
+            "D 09:00:00.2 [Zone] ZoneChangeList.ProcessChanges() - id=3 local=False [entityName=Corpse Cannon id=12 zone=DECK zonePos=0 cardId=JAIL_450 player=1] zone from  -> FRIENDLY HAND",
+            "D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=1",
+        ]);
+        assert_eq!(t.whose_turn(), Some(true), "no Coin is going first");
+        t.feed(crate::watch_mod::log::Event::Turn(2));
+        assert_eq!(t.whose_turn(), Some(false));
+    }
+
+    #[test]
+    fn a_log_read_from_the_middle_admits_it_does_not_know() {
+        // No opening hand to reason from, and no attributable CURRENT_PLAYER.
+        let mut t = Tracker::new(None);
+        t.feed(crate::watch_mod::log::Event::Turn(5));
+        assert_eq!(t.whose_turn(), None);
     }
 
     #[test]

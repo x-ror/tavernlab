@@ -278,16 +278,25 @@ fn remaining_deck(tr: &Tracker, deck: &str) -> Vec<CardId> {
     left
 }
 
-fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
+/// The position, rebuilt as far as the log states it.
+///
+/// Split out from the plan so that what was reconstructed can be asserted on
+/// directly. The printed position beside the advice shows the tracker's own
+/// reading; this is the game the search actually runs on, and the two are
+/// not the same object.
+///
+/// `Err` is the line to show instead: the position could not be built at
+/// all. The `bool` is whether the deck was restored -- see `remaining_deck`.
+pub(crate) fn position(tr: &Tracker, deck: &str) -> Result<(Game, bool), Line> {
     let (Some(mine), Some(theirs)) = (tr.my_class(), tr.opponent_class()) else {
-        return vec![Line::new("live.plan.no_classes")];
+        return Err(Line::new("live.plan.no_classes"));
     };
     let (Ok(hp0), Ok(hp1)) = (hero_power_for(mine), hero_power_for(theirs)) else {
-        return vec![Line::new("live.plan.no_hero_power")];
+        return Err(Line::new("live.plan.no_hero_power"));
     };
     let mut g = match Game::new((mine, &[]), (theirs, &[]), 1) {
         Ok(g) => g,
-        Err(e) => return vec![Line::new("live.plan.broken").with("why", e.to_string())],
+        Err(e) => return Err(Line::new("live.plan.broken").with("why", e.to_string())),
     };
     g.players[0].hero_power = hp0;
     g.players[1].hero_power = hp1;
@@ -297,6 +306,12 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
         // A hero that has already swung cannot swing again, and a plan that
         // offers the attack twice is offering one that does not exist.
         g.players[i].hero_attacks_done = tr.heroes[i].attacks;
+        // A Hero Power already pressed this turn is not a play the plan may
+        // offer again. The log writes `EXHAUSTED` on the power's own entity;
+        // without it every position looked freshly untouched.
+        if tr.hero_powers[i].as_ref().is_some_and(|p| p.exhausted) {
+            g.players[i].hero_power_uses = 1;
+        }
         // The weapon as the log has it: the printed card where it said
         // nothing, what it said where it did. Without this the rebuilt hero
         // has bare hands, and the plan never suggests the swing -- which for
@@ -331,15 +346,37 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
     }
     // Without a battletag the log's mana lines cannot be attributed, so the
     // plan is drawn at the turn's worth of crystals rather than at a made-up
-    // number: it will suggest more than you can pay for, and says so.
-    g.players[0].crystals = tr.crystals.unwrap_or_else(|| (tr.turn as i16 / 2 + 1).min(10));
+    // number, and says that it guessed.
+    //
+    // Each player gains a crystal at the start of their own turn, and the
+    // two alternate -- turns 1 and 2 are the first for their respective
+    // players, 3 and 4 the second. So the count is the same for both sides
+    // and is `ceil(turn / 2)`, which the old `turn / 2 + 1` overstated by one
+    // on every even turn: it gave the player on the draw two crystals on
+    // turn two, and a plan that spends what you do not have.
+    // The Death Knight resource, when the log said it. Zero where it did
+    // not, which is the same thing a fresh game has -- but a plan drawn at
+    // zero for a deck built on Corpses spends none of what it has.
+    g.players[0].corpses = tr.corpses.unwrap_or(0);
+    g.players[0].crystals = tr
+        .crystals
+        .unwrap_or_else(|| ((tr.turn as i16 + 1) / 2).clamp(1, 10));
     g.players[0].mana = tr.mana_left().unwrap_or(g.players[0].crystals);
     g.turn = tr.turn;
+    // What the log stated outright, kept so it can be put back after the
+    // engine has had its say about auras. See below.
+    let mut stated: Vec<(usize, usize, Option<i16>, Option<i16>)> = Vec::new();
     for side in 0..2 {
         // A body the log has taken to zero health is dead; the line that
         // moves it out of play arrives in a later batch, up to a poll behind.
         // Leaving it in would draw the plan over a board with a corpse on it.
-        for b in tr.board[side].iter().filter(|b| b.stats().1 > 0) {
+        // Zero health is dead -- for a minion. A Location prints no Health
+        // at all (its own number is durability, in another field), so the
+        // same test read every Location as a corpse and left it off the
+        // board entirely.
+        for b in tr.board[side].iter().filter(|b| {
+            b.card.def().kind() == tavernlab_core::cards::Kind::Location || b.stats().1 > 0
+        }) {
             let mut m = Permanent::summon(b.card);
             // Summoning sickness is kept for whatever landed this turn:
             // without it the plan swings with a minion that has only just
@@ -362,11 +399,24 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
             if b.frozen {
                 m.flags.insert(tavernlab_core::state::Flags::FROZEN);
             }
+            // A Location used this turn cannot be used again, and the log
+            // says so with the same `EXHAUSTED` a spent Hero Power carries.
+            if b.exhausted && b.card.def().kind() == tavernlab_core::cards::Kind::Location {
+                m.flags.insert(tavernlab_core::state::Flags::USED);
+            }
+            stated.push((side, g.players[side].board.len(), b.atk, b.hp));
             g.players[side].board.push(m);
         }
     }
     for b in tr.hand.iter() {
-        g.players[0].hand.push(HandCard::new(b.card));
+        let mut hc = HandCard::new(b.card);
+        // What the client says it costs now, over what the card prints:
+        // discounts and taxes are already folded into the logged number, and
+        // the engine carries the difference per copy.
+        if let Some(cost) = b.cost {
+            hc.cost_delta = cost - b.card.def().cost;
+        }
+        g.players[0].hand.push(hc);
     }
     let deck_known = {
         let left = remaining_deck(tr, deck);
@@ -378,7 +428,46 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
         }
         known
     };
+    // The engine keeps a minion's aura share inside its total: `atk`
+    // includes `aura_atk`, and `recompute_auras` subtracts the old share
+    // before adding the new one. The log's `ATK` and `HEALTH` are the
+    // client's totals and already include whatever auras were up, so a body
+    // placed with the logged number and no share recorded gets its aura
+    // counted twice -- once by the client, once here. A buffed minion came
+    // out fatter in the plan than on screen.
+    //
+    // So the engine works out what it thinks the auras are, and then the
+    // stated totals go back on top of that: `atk` is the client's number,
+    // `aura_atk` is the engine's share of it, and the invariant holds again.
+    //
+    // Only where the log actually stated a number. A body it said nothing
+    // about carries printed stats, which do *not* include auras -- there the
+    // engine adding them is right, and putting the printed number back would
+    // strip an aura the minion really has.
     g.recompute_auras();
+    for (side, slot, atk, hp) in stated {
+        let Some(m) = g.players[side].board.get_mut(slot) else {
+            continue;
+        };
+        if let Some(a) = atk {
+            m.atk = a;
+        }
+        if let Some(h) = hp {
+            m.max_hp = h;
+        }
+    }
+    Ok((g, deck_known))
+}
+
+fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
+    let mut caveats = Vec::new();
+    if tr.whose_turn().is_none() {
+        caveats.push(Line::new("live.plan.whose_turn_unknown"));
+    }
+    let (mut g, deck_known) = match position(tr, deck) {
+        Ok(pair) => pair,
+        Err(why) => return vec![why],
+    };
 
     // The search, not the greedy policy: live advice is one decision at a
     // time rather than a batch, so the cost that keeps the search out of the
@@ -429,6 +518,7 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
     if !deck_known {
         out.push(Line::new("live.plan.no_deck"));
     }
+    out.extend(caveats);
     // The opponent's secrets are known to exist and not known to be
     // anything. The plan is drawn without them, and the reader is the one
     // who can play around what the plan cannot see.
@@ -677,11 +767,12 @@ pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice
             sections: Vec::new(),
         };
     }
+    let mine = tr.whose_turn();
     let mut title = vec![
-        Line::new(if tr.my_turn {
-            "live.title.turn_mine"
-        } else {
-            "live.title.turn_theirs"
+        Line::new(match mine {
+            Some(true) => "live.title.turn_mine",
+            Some(false) => "live.title.turn_theirs",
+            None => "live.title.turn_unknown",
         })
         .with("turn", tr.turn as i64),
     ];
@@ -709,7 +800,11 @@ pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice
         // is left alone: it also decides what counts as the opening hand, and
         // setting it from "someone is the current player" would empty every
         // recorded opening if that line arrived before the deal.
-        if tr.my_turn && !tr.over {
+        // A positive answer only. Before the game starts there is no turn to
+        // plan, and "nothing to do this turn" during the mulligan is noise
+        // rather than advice -- unlike mid-game, where not knowing whose
+        // turn it is still leaves a plan worth showing.
+        if mine == Some(true) && !tr.over {
             sections.push(section("live.head.turn", plan(tr, deck)));
         }
         return Advice { title, sections };
@@ -718,7 +813,11 @@ pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice
     // The turn first: it is the thing being looked up mid-game, and a reader
     // glancing at a browser window beside the client should not have to
     // scroll past the board they can already see.
-    if tr.my_turn && !tr.over {
+    // Silence is the one answer that helps nobody. When the log never said
+    // whose turn it is and the opening did not settle it either, the plan is
+    // still what you would do on your turn -- so it is shown, and says that
+    // it could not tell.
+    if mine != Some(false) && !tr.over {
         sections.push(section("live.head.turn", plan(tr, deck)));
     }
     sections.push(section("live.head.opponent", opponent_read(app, format, tr)));
@@ -776,6 +875,9 @@ pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice
     if !tr.secrets[1].is_empty() {
         position.push(Line::new("live.pos.their_secrets").with("n", tr.secrets[1].len() as i64));
     }
+    if let Some(n) = tr.corpses {
+        position.push(Line::new("live.pos.corpses").with("n", n as i64));
+    }
     position.push(Line::new("live.pos.my_board").with("board", side_line(&tr.board[0])));
     position.push(Line::new("live.pos.their_board").with("board", side_line(&tr.board[1])));
     let hand: Vec<&str> = tr.hand.iter().map(|b| b.card.name()).collect();
@@ -828,9 +930,23 @@ fn side_line(board: &[tracker::Body]) -> Arg {
     let names: Vec<String> = board
         .iter()
         // Same rule as the plan: a body at zero health is already dead, and
-        // showing it would make the advice look like it ignored a minion.
-        .filter(|b| b.stats().1 > 0)
+        // showing it would make the advice look like it ignored a minion --
+        // and, as there, a Location prints no Health and is not a corpse for
+        // having none.
+        .filter(|b| {
+            b.card.def().kind() == tavernlab_core::cards::Kind::Location || b.stats().1 > 0
+        })
         .map(|b| {
+            // A Location has no Attack and no Health; what it carries is
+            // durability, and `0/0` would be two numbers nobody wrote. The
+            // log's own figure where it gave one, the printed one otherwise
+            // -- the same rule everything else here follows. No word for
+            // "location": the shape of the entry is the word, and prose in
+            // this line would be prose the page cannot translate.
+            if b.card.def().kind() == tavernlab_core::cards::Kind::Location {
+                let left = b.durability.unwrap_or(b.card.def().dur);
+                return format!("{} ({left})", b.card.name());
+            }
             let (atk, health) = b.stats();
             let mut s = format!("{} {atk}/{health}", b.card.name());
             // Only what the log granted on top of the card, so the line stays
@@ -1282,6 +1398,150 @@ pub fn record_games(
         }
     };
     history::append(path, &games)
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::*;
+    use crate::watch_mod::log::parse;
+
+    fn tracked(lines: &[&str]) -> Tracker {
+        let mut t = Tracker::new(Some("Me#1".into()));
+        for l in lines {
+            if let Some(ev) = parse(l) {
+                t.feed(ev);
+            }
+        }
+        t
+    }
+
+    const HEROES: [&str; 3] = [
+        "D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME",
+        "D 09:00:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=1 local=False [entityName=Jaina Proudmoore id=64 zone=PLAY zonePos=0 cardId=HERO_08 player=1] zone from  -> FRIENDLY PLAY (Hero)",
+        "D 09:00:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=2 local=False [entityName=Garrosh Hellscream id=65 zone=PLAY zonePos=0 cardId=HERO_01 player=2] zone from  -> OPPOSING PLAY (Hero)",
+    ];
+
+    /// The log's ATK already carries the aura; the engine must not add it
+    /// again.
+    ///
+    /// A Raid Leader gives friendly minions +1 Attack. The client writes the
+    /// Raptor as 4, its printed 3 plus that 1. Placed with 4 and no aura
+    /// share recorded, `recompute_auras` added the Raid Leader's bonus on top
+    /// and the search planned around a 5/2 that is not on the board.
+    #[test]
+    fn an_aura_inside_the_logs_number_is_not_counted_twice() {
+        let mut lines = HEROES.to_vec();
+        lines.push("D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7");
+        lines.push("D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=7 local=False [entityName=Raid Leader id=20 zone=HAND zonePos=1 cardId=CS2_122 player=1] zone from FRIENDLY HAND -> FRIENDLY PLAY");
+        lines.push("D 09:00:02.1 [Zone] ZoneChangeList.ProcessChanges() - id=8 local=False [entityName=Bloodfen Raptor id=21 zone=HAND zonePos=1 cardId=CS2_172 player=1] zone from FRIENDLY HAND -> FRIENDLY PLAY");
+        lines.push("D 09:00:02.2 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=Bloodfen Raptor id=21 zone=PLAY zonePos=1 cardId=CS2_172 player=1] tag=ATK value=4");
+        let tr = tracked(&lines);
+        let (g, _) = position(&tr, "").expect("a position");
+        let raptor = g.players[0]
+            .board
+            .iter()
+            .find(|m| m.card.name() == "Bloodfen Raptor")
+            .expect("the Raptor is on the board");
+        assert_eq!(raptor.atk, 4, "the client's total, not the total plus the aura again");
+    }
+
+    /// A body the log said nothing about is its printed self, and the aura
+    /// does apply to it -- restoring a printed number would strip one the
+    /// minion really has.
+    #[test]
+    fn an_aura_still_reaches_a_body_the_log_was_silent_about() {
+        let mut lines = HEROES.to_vec();
+        lines.push("D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7");
+        lines.push("D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=7 local=False [entityName=Raid Leader id=20 zone=HAND zonePos=1 cardId=CS2_122 player=1] zone from FRIENDLY HAND -> FRIENDLY PLAY");
+        lines.push("D 09:00:02.1 [Zone] ZoneChangeList.ProcessChanges() - id=8 local=False [entityName=Bloodfen Raptor id=21 zone=HAND zonePos=1 cardId=CS2_172 player=1] zone from FRIENDLY HAND -> FRIENDLY PLAY");
+        let tr = tracked(&lines);
+        let (g, _) = position(&tr, "").expect("a position");
+        let raptor = g.players[0]
+            .board
+            .iter()
+            .find(|m| m.card.name() == "Bloodfen Raptor")
+            .expect("the Raptor is on the board");
+        assert_eq!(raptor.atk, 4, "printed 3 and the Raid Leader's +1");
+    }
+
+    /// A discounted card in hand is discounted in the plan.
+    ///
+    /// The log writes what a card costs now, taxes and discounts folded in.
+    /// The plan used to read the printed cost, so it either refused a play
+    /// the turn could afford or offered one it could not.
+    #[test]
+    fn the_cost_the_log_wrote_is_the_cost_the_plan_pays() {
+        let mut lines = HEROES.to_vec();
+        lines.push("D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7");
+        lines.push("D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=9 local=False [entityName=Fireball id=30 zone=DECK zonePos=0 cardId=CS2_029 player=1] zone from FRIENDLY DECK -> FRIENDLY HAND");
+        lines.push("D 09:00:02.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=Fireball id=30 zone=HAND zonePos=1 cardId=CS2_029 player=1] tag=COST value=1");
+        let tr = tracked(&lines);
+        let (g, _) = position(&tr, "").expect("a position");
+        let hc = g.players[0].hand.first().expect("Fireball in hand");
+        assert_eq!(hc.card.name(), "Fireball");
+        assert_eq!(
+            hc.card.def().cost + hc.cost_delta,
+            1,
+            "printed four, the log says one"
+        );
+    }
+
+    /// A Hero Power already pressed is not a play the plan may offer again.
+    #[test]
+    fn a_spent_hero_power_is_spent_in_the_position() {
+        let mut lines = HEROES.to_vec();
+        lines.push("D 09:00:00.5 [Zone] ZoneChangeList.ProcessChanges() - id=5 local=False [entityName=Fireblast id=66 zone=PLAY zonePos=0 cardId=CS2_034 player=1] zone from  -> FRIENDLY PLAY (Hero Power)");
+        lines.push("D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7");
+        let fresh = tracked(&lines);
+        let (g, _) = position(&fresh, "").expect("a position");
+        assert_eq!(g.players[0].hero_power_uses, 0, "not pressed yet");
+
+        lines.push("D 09:00:01.5 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=Fireblast id=66 zone=PLAY zonePos=0 cardId=CS2_034 player=1] tag=EXHAUSTED value=1");
+        let spent = tracked(&lines);
+        let (g, _) = position(&spent, "").expect("a position");
+        assert_eq!(g.players[0].hero_power_uses, 1, "the log said it was used");
+    }
+
+    /// A Location is a play, so it belongs on the board.
+    ///
+    /// The engine offers `UseLocation` for one in play, and the zone branch
+    /// used to drop everything that was not a minion or a weapon -- so a
+    /// whole play was missing from every turn that had one.
+    #[test]
+    fn a_location_is_on_the_board_and_can_be_used() {
+        let mut lines = HEROES.to_vec();
+        lines.push("D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7");
+        lines.push("D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=9 local=False [entityName=Ruby Sanctum id=40 zone=HAND zonePos=1 cardId=CATA_301 player=1] zone from FRIENDLY HAND -> FRIENDLY PLAY");
+        let tr = tracked(&lines);
+        let (g, _) = position(&tr, "").expect("a position");
+        let m = g.players[0].board.first().expect("the Location is in play");
+        assert_eq!(m.card.name(), "Ruby Sanctum");
+        assert!(
+            !m.flags.has(tavernlab_core::state::Flags::USED),
+            "and it has not been used yet"
+        );
+
+        lines.push("D 09:00:02.5 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=Ruby Sanctum id=40 zone=PLAY zonePos=1 cardId=CATA_301 player=1] tag=EXHAUSTED value=1");
+        let spent = tracked(&lines);
+        let (g, _) = position(&spent, "").expect("a position");
+        assert!(
+            g.players[0].board[0]
+                .flags
+                .has(tavernlab_core::state::Flags::USED),
+            "used this turn, so not a play the plan may offer again"
+        );
+    }
+
+    /// The Corpses the log banked reach the game the search runs on.
+    #[test]
+    fn the_corpses_reach_the_rebuilt_game() {
+        let mut lines = HEROES.to_vec();
+        lines.push("D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7");
+        lines.push("D 09:00:01.5 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=CORPSES value=3");
+        let tr = tracked(&lines);
+        let (g, _) = position(&tr, "").expect("a position");
+        assert_eq!(g.players[0].corpses, 3);
+    }
 }
 
 #[cfg(test)]
