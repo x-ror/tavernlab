@@ -32,6 +32,7 @@ use tavernlab_json::{Json, Out, to_string};
 
 use super::http::{Request, Response};
 use super::state::{App, format_by_name};
+use crate::watch_mod::advice::write_line;
 
 /// Games per opponent a rating run may ask for.
 const ANALYZE_MIN: usize = 100;
@@ -1417,24 +1418,33 @@ pub fn live_read(app: &Arc<App>) -> Response {
                 o.bool_field("running", snap.running);
                 o.str_field("logs_dir", dir.as_deref().unwrap_or(""));
                 o.str_field("watching", snap.watching.as_deref().unwrap_or(""));
-                o.str_field("note", snap.note.as_deref().unwrap_or(""));
+                match &snap.note {
+                    Some(n) => o.field("note", |v| write_line(v, n)),
+                    None => o.field("note", |v| v.null()),
+                }
                 o.int_field("recorded", snap.recorded as i64);
+                // Keys and their values, not sentences: the page writes the
+                // words out in whatever language it is running in. See
+                // `watch::advice`.
                 match &snap.advice {
                     Some(a) => {
-                        o.str_field("title", &a.title);
+                        o.field("title", |v| {
+                            v.arr(|arr| {
+                                for part in &a.title {
+                                    arr.item(|v| write_line(v, part));
+                                }
+                            })
+                        });
                         o.field("sections", |v| {
                             v.arr(|arr| {
-                                for (heading, lines) in a.sections.iter() {
-                                    if lines.is_empty() {
-                                        continue;
-                                    }
+                                for s in a.sections.iter().filter(|s| !s.lines.is_empty()) {
                                     arr.item(|o| {
                                         o.obj(|o| {
-                                            o.str_field("heading", heading);
+                                            o.str_field("heading", s.key);
                                             o.field("lines", |v| {
                                                 v.arr(|arr| {
-                                                    for line in lines {
-                                                        arr.str_item(line);
+                                                    for line in &s.lines {
+                                                        arr.item(|v| write_line(v, line));
                                                     }
                                                 })
                                             });
@@ -1445,7 +1455,7 @@ pub fn live_read(app: &Arc<App>) -> Response {
                         });
                     }
                     None => {
-                        o.str_field("title", "");
+                        o.field("title", |v| v.arr(|_| {}));
                         o.field("sections", |v| v.arr(|_| {}));
                     }
                 }

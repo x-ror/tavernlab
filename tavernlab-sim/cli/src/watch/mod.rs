@@ -20,6 +20,7 @@
 //! measurement is a batch of simulations, and a daemon that is only keeping
 //! score should not run one on every turn.
 
+pub mod advice;
 pub mod log;
 pub mod tracker;
 
@@ -34,6 +35,7 @@ use tavernlab_core::state::{Game, HandCard, Permanent};
 
 use crate::history;
 use crate::serve::state::App;
+pub use advice::{Advice, Arg, Line, Locale, Section};
 use tracker::Tracker;
 
 /// Where the game keeps its logs, when it is being run in the usual place.
@@ -262,16 +264,16 @@ fn remaining_deck(tr: &Tracker, deck: &str) -> Vec<CardId> {
     left
 }
 
-fn plan(tr: &Tracker, deck: &str) -> Vec<String> {
+fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
     let (Some(mine), Some(theirs)) = (tr.my_class(), tr.opponent_class()) else {
-        return vec!["не видно обох класів — ще нема з чого будувати позицію".into()];
+        return vec![Line::new("live.plan.no_classes")];
     };
     let (Ok(hp0), Ok(hp1)) = (hero_power_for(mine), hero_power_for(theirs)) else {
-        return vec!["клас без сили героя".into()];
+        return vec![Line::new("live.plan.no_hero_power")];
     };
     let mut g = match Game::new((mine, &[]), (theirs, &[]), 1) {
         Ok(g) => g,
-        Err(e) => return vec![format!("не вдалося зібрати позицію: {e}")],
+        Err(e) => return vec![Line::new("live.plan.broken").with("why", e.to_string())],
     };
     g.players[0].hero_power = hp0;
     g.players[1].hero_power = hp1;
@@ -358,128 +360,164 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<String> {
     // out and wrong as advice: what is left after the last line is a mana
     // crystal with nothing to buy. Only the last one goes -- a Coin that pays
     // for the play after it stays.
-    while out.last().is_some_and(|l| l == "зіграти The Coin") {
+    while out
+        .last()
+        .is_some_and(|l| l.key == "live.plan.play" && arg_is(l, "card", "The Coin"))
+    {
         out.pop();
     }
     if out.is_empty() {
-        out.push("нічого не робити цього ходу".into());
+        out.push(Line::new("live.plan.nothing"));
     }
     // Say it out loud when the mana was guessed rather than read. A plan
     // drawn at a made-up crystal count will happily spend more than you have,
     // and the reader has no way to tell that from a plan drawn at the real
     // number unless this line is here.
     if tr.crystals.is_none() {
-        out.push(format!(
- "(мана невідома — рахував як {}; вкажіть свій бойовий тег, щоб було точно)",
-            g.players[0].crystals
-        ));
+        out.push(Line::new("live.plan.mana_guessed").with("mana", g.players[0].crystals as i64));
     }
     // An empty deck is fatigue, and fatigue makes the plan avoid every card
     // that draws. Silence about it would read as advice.
     if !deck_known {
-        out.push(
- "(колоду не відновлено — без деккоду добір рахується як втома, тож карти, що тягнуть, план обходить)"
-                .into(),
-        );
+        out.push(Line::new("live.plan.no_deck"));
     }
     out
 }
 
-fn describe(g: &Game, a: Action) -> Option<String> {
+/// Whether a line carries this exact literal, for the one place that has to
+/// look at a line it has already built.
+fn arg_is(line: &Line, name: &str, value: &str) -> bool {
+    line.args
+        .iter()
+        .any(|(n, v)| *n == name && matches!(v, Arg::Text(t) if t == value))
+}
+
+fn describe(g: &Game, a: Action) -> Option<Line> {
     let me = g.current;
     Some(match a {
         Action::EndTurn => return None,
         Action::Play { hand, target, .. } => {
             let card = g.player(me).hand.get(hand as usize)?.card;
+            let line = Line::new(match target {
+                Some(_) => "live.plan.play_at",
+                None => "live.plan.play",
+            })
+            .with("card", card.name());
             match target {
-                Some(t) => format!("зіграти {} → {}", card.name(), target_name(g, t)),
-                None => format!("зіграти {}", card.name()),
+                Some(t) => line.with("target", target_name(g, t)),
+                None => line,
             }
         }
         Action::Attack { from, target } => {
             let m = g.player(me).board.get(from as usize)?;
-            format!("атакувати: {} → {}", m.card.name(), target_name(g, target))
+            Line::new("live.plan.attack")
+                .with("card", m.card.name())
+                .with("target", target_name(g, target))
         }
-        Action::HeroAttack { target } => format!("бити героєм → {}", target_name(g, target)),
+        Action::HeroAttack { target } => {
+            Line::new("live.plan.hero_attack").with("target", target_name(g, target))
+        }
         Action::HeroPower { target, .. } => match target {
-            Some(t) => format!("сила героя → {}", target_name(g, t)),
-            None => "сила героя".into(),
+            Some(t) => Line::new("live.plan.hero_power_at").with("target", target_name(g, t)),
+            None => Line::new("live.plan.hero_power"),
         },
         Action::Trade { hand } => {
             let card = g.player(me).hand.get(hand as usize)?.card;
-            format!("Trade {}", card.name())
+            Line::new("live.plan.trade").with("card", card.name())
         }
         Action::Prepare { hand } => {
             let card = g.player(me).hand.get(hand as usize)?.card;
-            format!("Prepare {}", card.name())
+            Line::new("live.plan.prepare").with("card", card.name())
         }
         Action::UseLocation { slot, .. } => {
             let m = g.player(me).board.get(slot as usize)?;
-            format!("активувати {}", m.card.name())
+            Line::new("live.plan.location").with("card", m.card.name())
         }
     })
 }
 
-fn target_name(g: &Game, t: tavernlab_core::state::Target) -> String {
+/// What a target is called, as one already-written phrase.
+///
+/// Composed here rather than left as parts because "your Chillwind Yeti"
+/// inflects differently in the two languages, and a plan line that glues
+/// "your" to a name is the shape that stops translating.
+fn target_name(g: &Game, t: tavernlab_core::state::Target) -> Line {
     match t {
-        tavernlab_core::state::Target::Hero(s) => {
-            if s == g.current { "свій герой" } else { "ворожий герой" }.into()
-        }
+        tavernlab_core::state::Target::Hero(s) => Line::new(if s == g.current {
+            "live.target.my_hero"
+        } else {
+            "live.target.their_hero"
+        }),
         tavernlab_core::state::Target::Minion(s, i) => {
-            let who = if s == g.current { "свій" } else { "ворожий" };
+            let mine = s == g.current;
             match g.player(s).board.get(i as usize) {
-                Some(m) => format!("{who} {}", m.card.name()),
-                None => format!("{who} мінйон {i}"),
+                Some(m) => Line::new(if mine {
+                    "live.target.my_minion"
+                } else {
+                    "live.target.their_minion"
+                })
+                .with("card", m.card.name()),
+                None => Line::new(if mine {
+                    "live.target.my_slot"
+                } else {
+                    "live.target.their_slot"
+                })
+                .with("slot", i as i64),
             }
         }
     }
 }
 
 /// Which gauntlet deck the opponent looks like, from what they have played.
-fn opponent_read(app: &App, format: &str, tr: &Tracker) -> Vec<String> {
+fn opponent_read(app: &App, format: &str, tr: &Tracker) -> Vec<Line> {
     let Some(class) = tr.opponent_class() else {
-        return vec!["клас суперника ще не видно".into()];
+        return vec![Line::new("live.opp.no_class")];
     };
+    let who = Arg::Key(class_key(class));
     let seen: Vec<CardId> = tr.played[1].clone();
     let field = app.gauntlet(format);
     let reads = tavernlab_core::gauntlet::read_opponent(&field, class, &seen);
     if reads.is_empty() {
-        return vec![format!(
-            "{}: у гаунтлеті немає колод цього класу",
-            class_name(class)
-        )];
+        return vec![Line::new("live.opp.no_decks").with("class", who)];
     }
     if seen.is_empty() {
-        return vec![format!(
-            "{}: ще нічого не зіграно, читати нема чого",
-            class_name(class)
-        )];
+        return vec![Line::new("live.opp.nothing_played").with("class", who)];
     }
     // `Read::frac` is 1.0 on no evidence by design, because the web UI wants
     // a neutral prior. Here that would name a deck before the opponent had
     // played a card, so a best match of nothing names nothing.
     if reads.iter().all(|r| r.hits == 0) {
-        return vec![format!(
-            "{}: жодна колода гаунтлета не пояснює зіграного ({} карт)",
-            class_name(class),
-            seen.len()
-        )];
+        return vec![
+            Line::new("live.opp.no_match")
+                .with("class", who)
+                .with("seen", seen.len() as i64),
+        ];
     }
     let mut out = Vec::new();
     for r in reads.iter().take(3).filter(|r| r.hits > 0) {
         // The fraction and the count it came from: "43%" out of seven cards
-        // is a read, out of two is a coincidence, and the line should not
-        // make them look alike.
-        let mut line = format!("{}  {:.0}% ({} з {})", r.deck, r.frac * 100.0, r.hits, r.seen);
-        if !r.threats.is_empty() {
+        // is a read, out of two is a coincidence, and the line must not make
+        // them look alike.
+        let line = Line::new(if r.threats.is_empty() {
+            "live.opp.match"
+        } else {
+            "live.opp.match_threats"
+        })
+        .with("deck", r.deck.clone())
+        .with("pct", format!("{:.0}", r.frac * 100.0))
+        .with("hits", r.hits as i64)
+        .with("seen", r.seen as i64);
+        let line = if r.threats.is_empty() {
+            line
+        } else {
             let names: Vec<String> = r
                 .threats
                 .iter()
                 .take(4)
                 .map(|c| format!("({}) {}", c.def().cost, c.name()))
                 .collect();
-            line.push_str(&format!("  — чекай: {}", names.join(", ")));
-        }
+            line.with("threats", names.join(", "))
+        };
         out.push(line);
     }
     out
@@ -492,39 +530,64 @@ fn opponent_read(app: &App, format: &str, tr: &Tracker) -> Vec<String> {
 /// difference between the win rate of the games that opened with it and the
 /// win rate overall. Below the sample floor there is no number, and the
 /// answer falls back to the only thing still true about the card -- its cost.
-fn mulligan(app: &App, format: &str, tr: &Tracker, deck: &str) -> Vec<String> {
+fn mulligan(app: &App, format: &str, tr: &Tracker, deck: &str) -> Vec<Line> {
     if tr.opening.is_empty() {
-        return vec!["ще не роздано".into()];
+        return vec![Line::new("live.mull.not_dealt")];
     }
-    let listed: Vec<String> = tr
-        .opening
-        .iter()
-        .map(|c| format!("({}) {}", c.def().cost, c.name()))
-        .collect();
     if deck.is_empty() {
-        let mut out = vec![
-            "без --deck немає з чим міряти; лишається тільки крива:".to_string(),
-        ];
-        for c in &tr.opening {
-            let keep = c.def().cost <= 3;
-            out.push(format!(
-                "{} ({}) {}",
-                if keep { "ЛИШИТИ" } else { "СКИНУТИ" },
-                c.def().cost,
-                c.name()
-            ));
-        }
+        let mut out = vec![Line::new("live.mull.no_deck")];
+        out.extend(tr.opening.iter().map(|c| by_curve(*c)));
         return out;
     }
     let Some(class) = tr.opponent_class() else {
-        return vec![format!(
-            "клас суперника ще не видно; на руці: {}",
-            listed.join(", ")
-        )];
+        let listed: Vec<String> = tr
+            .opening
+            .iter()
+            .map(|c| format!("({}) {}", c.def().cost, c.name()))
+            .collect();
+        return vec![Line::new("live.mull.no_opp_class").with("hand", listed.join(", "))];
     };
     match app.mulligan_advice(format, deck, class, &tr.opening) {
         Ok(rows) => rows,
         Err(e) => vec![e],
+    }
+}
+
+/// The only thing still true about a card when nothing has been measured:
+/// what it costs. Shared with the measured path, which falls back to it.
+pub fn by_curve(card: CardId) -> Line {
+    let cost = card.def().cost;
+    Line::new("live.mull.verdict")
+        .with("verdict", Arg::Key(keep_or_toss(cost <= 3)))
+        .with("cost", cost as i64)
+        .with("card", card.name())
+        .with("note", Arg::Key("live.mull.by_curve"))
+}
+
+pub fn keep_or_toss(keep: bool) -> &'static str {
+    if keep {
+        "live.mull.keep"
+    } else {
+        "live.mull.toss"
+    }
+}
+
+/// A class as the key the app already has for it.
+fn class_key(c: Class) -> &'static str {
+    match class_name(c) {
+        "DEATHKNIGHT" => "class.DEATHKNIGHT",
+        "DEMONHUNTER" => "class.DEMONHUNTER",
+        "DRUID" => "class.DRUID",
+        "HUNTER" => "class.HUNTER",
+        "MAGE" => "class.MAGE",
+        "PALADIN" => "class.PALADIN",
+        "PRIEST" => "class.PRIEST",
+        "ROGUE" => "class.ROGUE",
+        "SHAMAN" => "class.SHAMAN",
+        "WARLOCK" => "class.WARLOCK",
+        "WARRIOR" => "class.WARRIOR",
+        "NEUTRAL" => "class.NEUTRAL",
+        _ => "class.unknown",
     }
 }
 
@@ -548,17 +611,7 @@ pub struct Args {
 }
 
 /// Everything the tracker can currently say, built once so that the terminal
-/// and the browser view cannot drift apart.
-///
-/// A heading with no lines under it is dropped rather than printed empty: an
-/// empty section reads as "nothing to advise", which is a different claim
-/// from "this does not apply right now".
-#[derive(Clone)]
-pub struct Advice {
-    pub title: String,
-    pub sections: Vec<(&'static str, Vec<String>)>,
-}
-
+/// and the app's Live tab cannot drift apart.
 pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice {
     // Straight after a `CREATE_GAME` there is a moment where nothing at all
     // has been read. A full block of empty boards and two untouched heroes
@@ -566,23 +619,34 @@ pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice
     // what is known.
     if tr.my_class().is_none() && tr.opponent_class().is_none() && tr.opening.is_empty() {
         return Advice {
-            title: "нова гра — ще нічого не видно".into(),
+            title: vec![Line::new("live.title.fresh")],
             sections: Vec::new(),
         };
     }
-    let mut title = format!("хід {}{}", tr.turn, if tr.my_turn { " (ваш)" } else { "" });
-    match (tr.my_class(), tr.opponent_class()) {
-        (Some(a), Some(b)) => title.push_str(&format!(" — {} проти {}", class_name(a), class_name(b))),
-        (Some(a), None) => title.push_str(&format!(" — {} проти ?", class_name(a))),
-        _ => title.push_str(" — класи ще не видно"),
-    }
+    let mut title = vec![
+        Line::new(if tr.my_turn {
+            "live.title.turn_mine"
+        } else {
+            "live.title.turn_theirs"
+        })
+        .with("turn", tr.turn as i64),
+    ];
+    title.push(match (tr.my_class(), tr.opponent_class()) {
+        (Some(a), Some(b)) => Line::new("live.title.matchup")
+            .with("mine", Arg::Key(class_key(a)))
+            .with("theirs", Arg::Key(class_key(b))),
+        (Some(a), None) => {
+            Line::new("live.title.matchup_unknown").with("mine", Arg::Key(class_key(a)))
+        }
+        _ => Line::new("live.title.classes_unknown"),
+    });
     if tr.over {
-        title.push_str(" — гру завершено");
+        title.push(Line::new("live.title.over"));
     }
 
-    let mut sections: Vec<(&'static str, Vec<String>)> = Vec::new();
+    let mut sections: Vec<Section> = Vec::new();
     if !tr.started && !tr.opening.is_empty() {
-        sections.push(("МУЛІГАН", mulligan(app, format, tr, deck)));
+        sections.push(section("live.head.mulligan", mulligan(app, format, tr, deck)));
         // The mulligan being on does not mean the turn is not: "started" is
         // `STEP=MAIN_READY` or a turn counter past one, and the first turn of
         // the player who goes first is turn one.
@@ -592,7 +656,7 @@ pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice
         // setting it from "someone is the current player" would empty every
         // recorded opening if that line arrived before the deal.
         if tr.my_turn && !tr.over {
-            sections.push(("ХІД", plan(tr, deck)));
+            sections.push(section("live.head.turn", plan(tr, deck)));
         }
         return Advice { title, sections };
     }
@@ -601,78 +665,88 @@ pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice
     // glancing at a browser window beside the client should not have to
     // scroll past the board they can already see.
     if tr.my_turn && !tr.over {
-        sections.push(("ХІД", plan(tr, deck)));
+        sections.push(section("live.head.turn", plan(tr, deck)));
     }
-    sections.push(("СУПЕРНИК", opponent_read(app, format, tr)));
+    sections.push(section("live.head.opponent", opponent_read(app, format, tr)));
 
     let mut position = Vec::new();
     match (tr.mana_left(), tr.crystals) {
-        (Some(left), Some(total)) => position.push(format!("мана {left}/{total}")),
+        (Some(left), Some(total)) => position.push(
+            Line::new("live.pos.mana")
+                .with("left", left as i64)
+                .with("total", total as i64),
+        ),
         _ => {
-            position.push(
-                "мана невідома — лог ще не написав рядка, у якому видно, \
-                 котрий з двох гравців ви; якщо так і не напише, впишіть \
-                 свій бойовий тег у налаштуваннях"
-                    .into(),
-            );
+            position.push(Line::new("live.pos.mana_unknown"));
             // The client does not always spell a battletag the way the
-            // launcher shows it, so print what it wrote and let the user
+            // launcher shows it, so show what it wrote and let the user
             // pick rather than guessing.
             if !tr.names.is_empty() {
-                position.push(format!("у лозі трапилися імена: {}", tr.names.join(", ")));
+                position
+                    .push(Line::new("live.pos.names").with("names", tr.names.join(", ")));
             }
         }
     }
     // A name the watcher worked out for itself is a claim, and a wrong one
-    // would attribute the opponent's mana to you. Printing it is how a
-    // reader can see it is right without having to know how it was found.
+    // would attribute the opponent's mana to you. Showing it is how a reader
+    // can see it is right without having to know how it was found.
     if tr.me_learned && let Some(me) = tr.me_name.as_deref() {
-        position.push(format!("ви: {me} (визначено з логу)"));
+        position.push(Line::new("live.pos.me").with("me", me));
     }
-    position.push(format!(
-        "ваш герой {}{}, ворожий {}{}",
-        tr.heroes[0].health(),
-        armour(tr.heroes[0].armor),
-        tr.heroes[1].health(),
-        armour(tr.heroes[1].armor),
-    ));
-    position.push(format!("ваша дошка: {}", side_line(&tr.board[0])));
-    position.push(format!("ворожа дошка: {}", side_line(&tr.board[1])));
+    position.push(
+        Line::new("live.pos.heroes")
+            .with("mine", hero_line(&tr.heroes[0]))
+            .with("theirs", hero_line(&tr.heroes[1])),
+    );
+    position.push(Line::new("live.pos.my_board").with("board", side_line(&tr.board[0])));
+    position.push(Line::new("live.pos.their_board").with("board", side_line(&tr.board[1])));
     let hand: Vec<&str> = tr.hand.iter().map(|b| b.card.name()).collect();
-    position.push(format!(
-        "рука: {}",
-        if hand.is_empty() {
-            "порожня".to_string()
-        } else {
-            hand.join(", ")
-        }
-    ));
-    sections.push(("ПОЗИЦІЯ (те, що вдалося прочитати з логу)", position));
+    position.push(match hand.is_empty() {
+        true => Line::new("live.pos.hand").with("hand", Arg::Key("live.pos.empty")),
+        false => Line::new("live.pos.hand").with("hand", hand.join(", ")),
+    });
+    sections.push(section("live.head.position", position));
 
     Advice { title, sections }
 }
 
-/// Print everything the tracker can currently say.
+/// A heading and its lines, together.
+fn section(key: &'static str, lines: Vec<Line>) -> Section {
+    Section { key, lines }
+}
+
+/// A hero's health, and the armour on top of it when there is any.
+fn hero_line(h: &tracker::Hero) -> Line {
+    match h.armor {
+        0 => Line::new("live.pos.hero").with("hp", h.health() as i64),
+        n => Line::new("live.pos.hero_armour")
+            .with("hp", h.health() as i64)
+            .with("armour", n as i64),
+    }
+}
+
+/// Print everything the tracker can currently say, in the app's language.
 fn report(app: &App, format: &str, tr: &Tracker, deck: &str) {
     let advice = build_advice(app, format, tr, deck);
-    println!("\n─── {}", advice.title);
-    for (heading, lines) in &advice.sections {
-        if lines.is_empty() {
+    let words = Locale::load(&app.root, &app.language());
+    println!("\n─── {}", words.title(&advice));
+    for s in &advice.sections {
+        if s.lines.is_empty() {
             continue;
         }
-        println!("\n  {heading}");
-        for line in lines {
-            println!("    {line}");
+        println!("\n  {}", words.get(s.key));
+        for line in &s.lines {
+            println!("    {}", words.line(line));
         }
     }
 }
 
-fn armour(n: i16) -> String {
-    if n > 0 { format!(" (+{n} броні)") } else { String::new() }
-}
-
-/// One board as a line, or "порожня".
-fn side_line(board: &[tracker::Body]) -> String {
+/// One board as a line, or the key for "empty".
+///
+/// Stats and keywords are the game's own notation rather than prose, so this
+/// is one string in both languages -- an empty board is the only part with
+/// a word in it.
+fn side_line(board: &[tracker::Body]) -> Arg {
     let names: Vec<String> = board
         .iter()
         // Same rule as the plan: a body at zero health is already dead, and
@@ -698,9 +772,9 @@ fn side_line(board: &[tracker::Body]) -> String {
         })
         .collect();
     if names.is_empty() {
-        "порожня".to_string()
+        Arg::Key("live.pos.empty")
     } else {
-        names.join(", ")
+        Arg::Text(names.join(", "))
     }
 }
 
@@ -865,8 +939,9 @@ pub enum Tick {
     /// New lines were read. `changed` is whether the position moved, which is
     /// what decides whether advice is worth rebuilding.
     Read { changed: bool },
-    /// The directory was readable and then was not.
-    Lost(String),
+    /// The directory was readable and then was not. A key and its values,
+    /// because this one reaches the page as well as the terminal.
+    Lost(Line),
 }
 
 impl Runner {
@@ -928,7 +1003,9 @@ impl Runner {
                 return Tick::Waiting;
             }
             self.files.clear();
-            return Tick::Lost(format!("лог зник у {}", self.dir.display()));
+            return Tick::Lost(
+                Line::new("live.note.gone_dir").with("dir", self.dir.display().to_string()),
+            );
         };
         let next = files_of(power, zone);
         if self.files.first() != next.first() {
@@ -939,7 +1016,7 @@ impl Runner {
         let batch = match replay(&mut self.tr, &self.files, &mut self.offsets) {
             Ok(b) if b.lines == 0 => return Tick::Quiet,
             Ok(b) => b,
-            Err(e) => return Tick::Lost(format!("лог зник: {e}")),
+            Err(e) => return Tick::Lost(Line::new("live.note.gone").with("why", e.to_string())),
         };
         self.finished.extend(batch.finished);
         let now = snapshot(&self.tr);
@@ -966,7 +1043,11 @@ impl Runner {
             Err(e) => {
                 let path = self.files[0].display().to_string();
                 self.files.clear();
-                return Tick::Lost(format!("{path}: {e}"));
+                return Tick::Lost(
+                    Line::new("live.note.unreadable")
+                        .with("path", path)
+                        .with("why", e.to_string()),
+                );
             }
         }
         self.last = snapshot(&self.tr);
@@ -979,6 +1060,7 @@ pub const POLL: std::time::Duration = std::time::Duration::from_millis(700);
 
 /// The terminal front end of [`Runner`].
 fn live(app: &App, format: &str, args: &Args, dir: &Path) -> i32 {
+    let words = Locale::load(&app.root, &app.language());
     let mut runner = Runner::new(dir.to_path_buf(), args.me.clone());
     for e in runner.catch_up() {
         eprintln!("{e}");
@@ -1007,7 +1089,7 @@ fn live(app: &App, format: &str, args: &Args, dir: &Path) -> i32 {
             Tick::Waiting => continue,
             Tick::Lost(why) => {
                 if watching {
-                    eprintln!("{why}, чекаю знову.");
+                    eprintln!("{}, чекаю знову.", words.line(&why));
                     watching = false;
                 }
                 continue;
