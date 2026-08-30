@@ -1,20 +1,7 @@
 //! `tavernsim` — the batch simulator.
 //!
-//! Commands:
-//!
-//! ```text
-//! tavernsim serve [port]              the local app: web UI + API
-//! tavernsim watch [opts]              read the game log in a terminal
-//!                                     (the app does the same on its own)
-//! tavernsim history [file]            the games watch has recorded
-//! tavernsim bench [games] [threads]   throughput against a fixed mirror match
-//! tavernsim matrix [games]            every class against every class
-//! tavernsim demo [seed]               one game, turn by turn
-//! tavernsim coverage                  how much of the card pool is implemented
-//! tavernsim gauntlet [path]           how much of real deck lists resolves
-//! tavernsim backlog <class>           exactly which Standard cards are missing
-//! tavernsim art-urls [--heroes]       where to fetch the card art cache from
-//! ```
+//! The commands are listed in [`USAGE`], which is also what `--help` prints,
+//! so there is one copy of them rather than one here and one on screen.
 
 use std::time::Instant;
 
@@ -35,10 +22,53 @@ mod serve;
 #[path = "watch/mod.rs"]
 mod watch_mod;
 
+/// Every command and what it takes, in one place.
+///
+/// Several of these run for minutes and some for the better part of an hour,
+/// which is why asking what they are must never be one of them.
+const USAGE: &str = "\
+tavernsim <команда> [аргументи]
+
+  serve [порт] [--no-open]        застосунок: інтерфейс, API і стеження за грою
+  watch [опції]                   те саме стеження в терміналі
+                                  (--logs, --log, --me, --deck, --format,
+                                   --history, --no-history, --once, --quiet)
+  history [файл]                  записані бої
+
+  bench [ігор] [потоків]          пропускна здатність на дзеркалі
+  matrix [ігор]                   кожен клас проти кожного
+  demo [сід]                      одна гра, хід за ходом
+
+  policy [сідів] [бюджет] [глибина] [визначень]
+                                  скільки жадібний агент віддає пошуку
+  weights [сідів] [бюджет] [гаунтлет] [--only=вага]
+                                  чи ті числа стоять в оцінці позиції
+  mulligan [ігор] [гаунтлет] [--noise-only]
+                                  чи порада мулігану залежить від політики
+  tiers [ігор] [гаунтлет]         чи їде тір-лист, коли політика міняється
+
+  coverage                        скільки пулу карт реалізовано
+  implemented [wild]              які саме карти реалізовано
+  gauntlet [файл]                 скільки справжніх списків резолвиться
+  decks [файл]                    що мета просить у рушія, за пріоритетом
+  backlog <клас>                  яких саме карт бракує класу
+  art-urls [--heroes]             звідки взяти кеш ілюстрацій
+";
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let cmd = args.first().map(String::as_str).unwrap_or("bench");
     let num = |i: usize, d: usize| args.get(i).and_then(|s| s.parse().ok()).unwrap_or(d);
+
+    // Asking is not asking for work. `--help` used to fall through to the
+    // argument parse, which reads it as neither a number nor a path and runs
+    // the command on its defaults -- so `weights --help` started an hour of
+    // measurement instead of answering. A bare `tavernsim` did the same with
+    // a benchmark.
+    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{USAGE}");
+        return;
+    }
+    let cmd = args[0].as_str();
 
     match cmd {
         "serve" => {
@@ -95,10 +125,8 @@ fn main() {
         "backlog" => backlog(args.get(1).map(String::as_str)),
         "history" => show_history(args.get(1).map(String::as_str)),
         other => {
-            eprintln!("unknown command {other:?}");
-            eprintln!(
-                "usage: tavernsim [serve|watch|history|bench|matrix|policy|weights|mulligan|tiers|demo|coverage|gauntlet|decks|backlog|art-urls] [args]"
-            );
+            eprintln!("невідома команда {other:?}\n");
+            eprint!("{USAGE}");
             std::process::exit(2);
         }
     }
