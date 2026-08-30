@@ -71,7 +71,13 @@ fn main() {
             num(3, 4) as u8,
             num(4, 1) as u8,
         ),
-        "weights" => weights(num(1, 200), num(2, 4000) as u32, args.get(3).map(String::as_str)),
+        "weights" => weights(
+            num(1, 200),
+            num(2, 4000) as u32,
+            args.get(3).filter(|a| !a.starts_with("--")).map(String::as_str),
+            args.iter()
+                .find_map(|a| a.strip_prefix("--only=")),
+        ),
         "mulligan" => mulligan_bias(
             num(1, 300),
             args.get(2).filter(|a| !a.starts_with("--")).map(String::as_str),
@@ -164,7 +170,7 @@ fn bench(games: usize, threads: usize) {
 /// that would avoid them.
 type Sweep = (&'static str, fn(Weights, f32) -> Weights, &'static [f32]);
 
-const SWEEPS: [Sweep; 3] = [
+const SWEEPS: [Sweep; 4] = [
     (
         "own_health",
         |w, v| Weights { own_health: v, ..w },
@@ -176,6 +182,15 @@ const SWEEPS: [Sweep; 3] = [
         |w, v| Weights { unspent: v, ..w },
         &[0.0, 0.05, 0.4, 1.0],
     ),
+    // Only two of the eleven generated decks hold a secret at all, so this
+    // row is the one that most needs the per-deck table below it: merged
+    // across the field, nine decks that cannot exercise the weight would
+    // dilute whatever the two that can have to say.
+    (
+        "secret",
+        |w, v| Weights { secret: v, ..w },
+        &[0.5, 1.0, 2.0, 4.0, 6.0, 8.0, 12.0],
+    ),
 ];
 
 /// Play each weight of the evaluation against the value it currently has.
@@ -184,7 +199,7 @@ const SWEEPS: [Sweep; 3] = [
 /// sweep over three axes would need many times the games to say anything,
 /// and the question is not what the optimum is but whether any of the three
 /// is visibly wrong.
-fn weights(per_deck: usize, budget: u32, gauntlet: Option<&str>) {
+fn weights(per_deck: usize, budget: u32, gauntlet: Option<&str>, only: Option<&str>) {
     use tavernlab_core::batch::{Policy, duel};
 
     // A weight found on one population and shipped to another is how an
@@ -217,17 +232,27 @@ fn weights(per_deck: usize, budget: u32, gauntlet: Option<&str>) {
     };
 
     // Both sides search, so this is twice the work of a run against greedy.
+    //
+    // Kept per deck as well as merged. A weight can matter to one archetype
+    // and be irrelevant to the rest, and the merged number cannot tell that
+    // from "matters to none" -- the decks it does not touch are dead weight
+    // in the average, and the more of them there are the smaller a real
+    // effect looks. Those same decks are the control: a weight that moves a
+    // deck which cannot exercise it is the harness measuring itself.
     let run = |w: Weights| {
-        let mut rec = tavernlab_core::batch::Record::default();
+        let mut merged = tavernlab_core::batch::Record::default();
+        let mut per_deck = Vec::new();
         for (class, cards) in &decks {
             let deck = Contender {
                 class: *class,
                 cards,
                 style: Style::Midrange,
             };
-            rec = rec.merge(duel(deck, [plan(w), plan(base)], &s, threads));
+            let rec = duel(deck, [plan(w), plan(base)], &s, threads);
+            merged = merged.merge(rec);
+            per_deck.push((*class, rec));
         }
-        rec
+        (merged, per_deck)
     };
     let report = |label: String, rec: &tavernlab_core::batch::Record| {
         let p = rec.rate(Side::Player0);
@@ -250,11 +275,12 @@ fn weights(per_deck: usize, budget: u32, gauntlet: Option<&str>) {
 
     println!(
         "{} колод, {per_deck} сідів кожна, обидва боки шукають (бюджет {budget}, глибина 4)\n\
-         базові ваги: own_health {}, card {}, unspent {}\n",
+         базові ваги: own_health {}, card {}, unspent {}, secret {}\n",
         decks.len(),
         base.own_health,
         base.card,
-        base.unspent
+        base.unspent,
+        base.secret
     );
     println!(
         "{:<22}{:>10}{:>8}{:>10}{:>9}",
@@ -263,11 +289,40 @@ fn weights(per_deck: usize, budget: u32, gauntlet: Option<&str>) {
     // The control first, and it must read 50.0%: the same weights on both
     // sides cannot differ, so anything else means the harness is measuring
     // itself.
-    report("контроль (ті самі)".to_string(), &run(base));
+    let (merged, control_decks) = run(base);
+    report("контроль (ті самі)".to_string(), &merged);
+    let mut rows: Vec<(String, Vec<(Class, tavernlab_core::batch::Record)>)> =
+        vec![("контроль".to_string(), control_decks)];
     for (name, apply, values) in SWEEPS {
-        for &v in values {
-            report(format!("{name} = {v}"), &run(apply(base, v)));
+        // Re-measuring one weight should not cost the other three. The
+        // control still runs, because a sweep without it is a column of
+        // numbers with nothing to be a number against.
+        if only.is_some_and(|want| want != name) {
+            continue;
         }
+        for &v in values {
+            let (merged, per_deck) = run(apply(base, v));
+            let label = format!("{name} = {v}");
+            report(label.clone(), &merged);
+            rows.push((label, per_deck));
+        }
+    }
+
+    // The same numbers per deck. The merged column above says whether the
+    // field as a whole moved; this says which decks moved it, and whether
+    // the ones that had no way to move stayed put.
+    println!("\nпо колодах (вінрейт проти базових ваг, %)");
+    print!("{:<22}", "");
+    for (class, _) in &rows[0].1 {
+        print!("{:>7}", short(*class));
+    }
+    println!();
+    for (label, per_deck) in &rows {
+        print!("{label:<22}");
+        for (_, rec) in per_deck {
+            print!("{:>7.1}", 100.0 * rec.rate(Side::Player0));
+        }
+        println!();
     }
 }
 

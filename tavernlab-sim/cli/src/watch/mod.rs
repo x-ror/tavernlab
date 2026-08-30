@@ -287,6 +287,25 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
         // nothing, what it said where it did. Without this the rebuilt hero
         // has bare hands, and the plan never suggests the swing -- which for
         // half the classes is most of what a turn is.
+        // Yours by name; theirs never. A secret the log did not name is
+        // not a secret this may pick: filling the opponent's zone from what
+        // their deck usually plays would be a card the log never said, and
+        // the plan would be drawn around a guess. The caveat below says so
+        // instead.
+        //
+        // Yours go in because the position is meant to be the position, and
+        // the engine's own rules then apply to it -- a secret already in the
+        // zone cannot be set again. Whether that ever changes a plan is
+        // another matter: see `live.plan.secret_in_hand`.
+        if i == 0 {
+            for card in tr.secrets[0].iter().filter_map(|s| s.card) {
+                if g.players[0].secrets.len() < tavernlab_core::state::MAX_SECRETS
+                    && !g.players[0].secrets.contains(&card)
+                {
+                    g.players[0].secrets.push(card);
+                }
+            }
+        }
         g.players[i].weapon = tr.weapons[i].map(|w| {
             let (atk, durability) = w.stats();
             tavernlab_core::state::Weapon {
@@ -395,6 +414,12 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
     // that draws. Silence about it would read as advice.
     if !deck_known {
         out.push(Line::new("live.plan.no_deck"));
+    }
+    // The opponent's secrets are known to exist and not known to be
+    // anything. The plan is drawn without them, and the reader is the one
+    // who can play around what the plan cannot see.
+    if !tr.secrets[1].is_empty() {
+        out.push(Line::new("live.plan.their_secrets").with("n", tr.secrets[1].len() as i64));
     }
     out
 }
@@ -725,6 +750,17 @@ pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice
                     .with("durability", dur as i64),
             );
         }
+    }
+    // Named where the log named them, counted where it did not.
+    if !tr.secrets[0].is_empty() {
+        let named: Vec<&str> = tr.secrets[0].iter().filter_map(|s| s.card).map(|c| c.name()).collect();
+        position.push(match named.len() == tr.secrets[0].len() {
+            true => Line::new("live.pos.my_secrets").with("secrets", named.join(", ")),
+            false => Line::new("live.pos.my_secrets_count").with("n", tr.secrets[0].len() as i64),
+        });
+    }
+    if !tr.secrets[1].is_empty() {
+        position.push(Line::new("live.pos.their_secrets").with("n", tr.secrets[1].len() as i64));
     }
     position.push(Line::new("live.pos.my_board").with("board", side_line(&tr.board[0])));
     position.push(Line::new("live.pos.their_board").with("board", side_line(&tr.board[1])));

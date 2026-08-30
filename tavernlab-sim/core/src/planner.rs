@@ -51,6 +51,15 @@ pub struct Weights {
     /// Charged per mana crystal left unspent when the turn ends. Mana that
     /// ends the turn unspent bought nothing.
     pub unspent: f32,
+    /// A secret set in your own zone.
+    ///
+    /// Priced rather than played out, because a secret pays off past this
+    /// search's horizon: it fires on the opponent's turn, and the search
+    /// stops at the end of yours. Without a price, setting one only ever
+    /// moves a card out of hand -- see [`card`](Self::card) -- so every line
+    /// that sets a secret scores below the line that does not, and a secret
+    /// deck is advised to hold them all game.
+    pub secret: f32,
 }
 
 impl Weights {
@@ -59,6 +68,7 @@ impl Weights {
         own_health: 0.35,
         card: 0.5,
         unspent: 0.15,
+        secret: 0.0,
     };
 
     /// What the search runs with.
@@ -67,8 +77,16 @@ impl Weights {
     /// `unspent` are near-constant across the sibling lines of one turn, so
     /// they cancel rather than decide, and any value from 0 to 1 plays the
     /// same. `card` has a narrow peak around 2.0 and should be held loosely.
+    ///
+    /// `secret` prices what the search cannot reach. It is held as loosely
+    /// as `card`: every value from 4 to 12 played the same, and 4 is the
+    /// smallest that bought the whole difference, so it is the one that
+    /// distorts the rest of the evaluation least. Below 2 it bought nothing
+    /// at all -- the weight was too small to flip a single decision, and the
+    /// games came out identical.
     pub const MEASURED: Weights = Weights {
         card: 2.0,
+        secret: 4.0,
         ..Weights::GUESSED
     };
 }
@@ -188,6 +206,7 @@ impl Planner {
         v += self.weights.own_health * (g.player(me).hero_hp + g.player(me).armor) as f32;
         v += self.weights.card * g.player(me).hand.len() as f32;
         v -= self.weights.unspent * g.player(me).mana as f32;
+        v += self.weights.secret * g.player(me).secrets.len() as f32;
         v
     }
 

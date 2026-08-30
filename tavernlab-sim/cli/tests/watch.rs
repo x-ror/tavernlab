@@ -874,3 +874,109 @@ fn a_weapon_that_broke_is_no_longer_in_the_position() {
         "a broken weapon is no swings, not a stale line: {out}"
     );
 }
+
+/// A secret the log named is yours; one it did not is theirs.
+///
+/// The two are not the same fact and are not treated the same way. Yours goes
+/// into the rebuilt position, so the plan stops offering the copy the game
+/// would refuse to set. Theirs goes nowhere near it: filling the opponent's
+/// zone from what their deck usually plays would be a card the log never
+/// said, and the plan would be drawn around a guess. It is said out loud
+/// instead, and the reader plays around what the plan cannot see.
+const SECRETS: &str = "\
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES value=4
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES_USED value=0
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7
+D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=CURRENT_PLAYER value=1
+D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=9 local=False [entityName=Counterspell id=41 zone=HAND zonePos=1 cardId=EX1_287 player=1] zone from FRIENDLY HAND -> FRIENDLY SECRET
+D 09:00:02.1 [Zone] ZoneChangeList.ProcessChanges() - id=10 local=False [entityName=UNKNOWN ENTITY [cardType=INVALID] id=42 zone=HAND zonePos=1 cardId= player=2] zone from OPPOSING HAND -> OPPOSING SECRET
+";
+
+#[test]
+fn your_secret_is_named_and_theirs_is_only_counted() {
+    let out = run("secrets", &format!("{LOG}{SECRETS}"), &["--me", "Me#1"]);
+    assert!(
+        out.contains("ваші секрети: Counterspell"),
+        "your own client writes your card id: {out}"
+    );
+    assert!(
+        out.contains("ворожих секретів: 1"),
+        "and theirs is a count, because that is all the log said: {out}"
+    );
+    assert!(
+        !out.contains("ворожі секрети: Counterspell"),
+        "nothing names a card the log did not: {out}"
+    );
+    assert!(
+        out.contains("у суперника секретів: 1"),
+        "the plan says what it did not account for: {out}"
+    );
+}
+
+#[test]
+fn a_secret_that_fired_is_no_longer_in_the_position() {
+    let fired = format!(
+        "{SECRETS}D 09:00:03.0 [Zone] ZoneChangeList.ProcessChanges() - id=11 local=False \
+         [entityName=UNKNOWN ENTITY [cardType=INVALID] id=42 zone=SECRET zonePos=0 cardId= \
+         player=2] zone from OPPOSING SECRET -> OPPOSING GRAVEYARD\n"
+    );
+    let out = run("secret-fired", &format!("{LOG}{fired}"), &["--me", "Me#1"]);
+    assert!(
+        !out.contains("ворожих секретів"),
+        "a spent secret is not a threat: {out}"
+    );
+    assert!(
+        out.contains("ваші секрети: Counterspell"),
+        "and yours is untouched: {out}"
+    );
+}
+
+/// A secret is a play now, and a secret already set is not.
+///
+/// `Planner::eval` weighs boards, hero totals, cards in hand and unspent
+/// mana, so before `Weights::secret` every line that set a secret scored
+/// below the line that did not, and the plan never offered one. With a price
+/// on it -- measured, see the README -- it does, and the engine's own rule
+/// that a secret cannot be set twice becomes something the plan obeys rather
+/// than something no plan ever reached.
+const ONLY_A_SECRET: &str = "\
+D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME
+D 09:00:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=1 local=False [entityName=Jaina Proudmoore id=64 zone=PLAY zonePos=0 cardId=HERO_08 player=1] zone from  -> FRIENDLY PLAY (Hero)
+D 09:00:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=2 local=False [entityName=Garrosh Hellscream id=65 zone=PLAY zonePos=0 cardId=HERO_01 player=2] zone from  -> OPPOSING PLAY (Hero)
+D 09:00:00.2 [Zone] ZoneChangeList.ProcessChanges() - id=3 local=False [entityName=Counterspell id=41 zone=DECK zonePos=0 cardId=EX1_287 player=1] zone from FRIENDLY DECK -> FRIENDLY HAND
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES value=7
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=RESOURCES_USED value=0
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=9
+D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=CURRENT_PLAYER value=1
+";
+
+#[test]
+fn a_secret_in_hand_is_a_play_the_plan_offers() {
+    let out = run("secret-hand", ONLY_A_SECRET, &["--me", "Me#1"]);
+    assert!(
+        out.contains("зіграти Counterspell"),
+        "the evaluation prices it now, so the plan spends the mana: {out}"
+    );
+}
+
+#[test]
+fn the_copy_of_a_secret_already_set_is_not_offered() {
+    // The same hand and the same mana, with one already in the zone. The
+    // engine refuses to offer a secret it holds a copy of, and the rebuilt
+    // position carries the real zone -- so the plan does not suggest the
+    // set that the game would not allow.
+    let already = format!(
+        "{ONLY_A_SECRET}D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=9 local=False \
+         [entityName=Counterspell id=50 zone=HAND zonePos=1 cardId=EX1_287 player=1] \
+         zone from FRIENDLY HAND -> FRIENDLY SECRET\n"
+    );
+    let out = run("secret-dup", &already, &["--me", "Me#1"]);
+    assert!(
+        out.contains("ваші секрети: Counterspell"),
+        "one is set: {out}"
+    );
+    assert!(
+        !out.contains("зіграти Counterspell"),
+        "so the copy in hand is not a play: {out}"
+    );
+}
