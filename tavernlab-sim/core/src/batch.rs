@@ -1,12 +1,12 @@
 //! Running many games.
 //!
-//! The measurement design is baked in rather than left to the caller, because
-//! getting it wrong is what made the Python pipeline slow. Two rules:
+//! The measurement design is baked in rather than left to the caller. Two
+//! rules:
 //!
 //! * **Every candidate sees the same seeds.** Comparing two decks that share 29
 //!   of 30 cards using independent samples throws away the shared variance;
-//!   pairing the seeds recovers it. Measured on the old engine, that alone was
-//!   worth 8.5× fewer games for the same resolution.
+//!   pairing the seeds recovers it, and is worth several times fewer games for
+//!   the same resolution.
 //! * **Who goes first is alternated, not rolled.** The coin is a large and
 //!   entirely avoidable source of noise.
 //!
@@ -581,16 +581,12 @@ mod tests {
         // Directly asserts the anti-variance rule: with an even game count each
         // side leads exactly half the time.
         //
-        // A single seed is not a reliable witness for this on its own: in a
-        // mirror match a coin flip legitimately ties as often as it decides
-        // the game (measured at roughly half of arbitrary seeds, on this very
-        // matchup), purely from how the two identical decks happen to draw.
-        // One card gaining or losing a behaviour shifts which seeds land on
-        // which side of that coincidence -- unrelated to whether the coin is
-        // actually being applied. Checking a spread of seeds and requiring
-        // only that they do not *all* tie keeps the real bug this guards
-        // against (leading never mattering at all) easy to catch while not
-        // breaking every time an unrelated card's behaviour changes.
+        // A single seed is not a reliable witness: in a mirror match a coin
+        // flip often ties, purely from how two identical decks happen to
+        // draw, and which seeds tie shifts whenever an unrelated card gains
+        // or loses a behaviour. A spread of seeds that must not *all* tie
+        // still catches the bug this guards against -- leading never
+        // mattering at all -- without breaking on every card change.
         let d = test_deck(Class::Mage);
         let a = Contender {
             class: Class::Mage,

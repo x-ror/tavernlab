@@ -34,7 +34,19 @@ pub const MULLIGAN_MIN_N: u32 = 30;
 /// Settings the app actually has. A key outside this list is refused rather
 /// than stored: an unknown setting that silently persists is a setting
 /// nobody can find again.
-pub const SETTING_KEYS: [&str; 3] = ["deckstring", "deck_name", "language"];
+pub const SETTING_KEYS: [&str; 6] = [
+    "deckstring",
+    "deck_name",
+    "language",
+    // Where the client writes its logs, and who you are in them. Both are
+    // the live watcher's, and both live here rather than in a flag so that
+    // the page that starts the watcher is the page that configures it.
+    "logs_dir",
+    "battletag",
+    // Start the watcher with the server, for the session that opens the lab
+    // and then plays.
+    "live_auto",
+];
 
 /// Games per opponent behind the mulligan and coach screens.
 ///
@@ -56,6 +68,8 @@ pub struct App {
     /// Threads a simulation batch may use.
     pub threads: usize,
     pub jobs: Jobs,
+    /// The log watcher, when one has been switched on.
+    pub live: super::live::Live,
     pub started: Instant,
     /// Games simulated since start, for `/api/metrics`.
     games: AtomicU64,
@@ -79,6 +93,7 @@ impl App {
             home,
             threads,
             jobs: Jobs::default(),
+            live: super::live::Live::default(),
             started: Instant::now(),
             games: AtomicU64::new(0),
             settings: Mutex::new(settings),
@@ -191,13 +206,10 @@ impl App {
             let stat = matchup.stat(*card).unwrap_or_default();
             let delta = stat.opening_delta(base, MULLIGAN_MIN_N);
             let cost = card.def().cost;
-            // Three answers, not two. A card whose measured difference does
-            // not clear its own error bar has not been measured to help or
-            // to hurt, and saying otherwise is a coin toss with a number on
-            // it: rerunning the same deck on a different seed list used to
-            // flip 28% of these verdicts. Those cards fall back to the mana
-            // curve, the same as a card with too few games -- which is what
-            // the run can honestly support.
+            // Three answers, not two. A card whose difference does not
+            // clear its own error bar has not been measured to help or to
+            // hurt, and falls back to the mana curve like a card with too
+            // few games.
             let verdict = stat.opening_verdict(base, MULLIGAN_MIN_N);
             let by_curve = cost <= 3;
             let (label, note) = match verdict {
@@ -294,15 +306,12 @@ impl App {
         self.games.load(Ordering::Relaxed)
     }
 
-    /// Where the cached tier table for a format lives.
     /// Where a computed tier table is cached.
     ///
-    /// Keyed by the policy as well as the format. A table played by the
+    /// Keyed by the policy as well as the format: a table played by the
     /// greedy policy and one played by the search are different answers to
-    /// the same question -- three of twelve decks change tier between them --
-    /// so one must not overwrite the other and be read as the other. The
-    /// greedy table keeps the original path, so a cache written before this
-    /// existed still reads.
+    /// the same question, so neither may overwrite the other. The greedy
+    /// table keeps the unsuffixed path.
     pub fn tiers_path(&self, format: &str, policy: &str) -> PathBuf {
         if policy == "greedy" {
             return self.home.join(format!("tiers_{format}.json"));

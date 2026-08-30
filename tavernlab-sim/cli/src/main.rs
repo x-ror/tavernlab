@@ -4,7 +4,8 @@
 //!
 //! ```text
 //! tavernsim serve [port]              the local app: web UI + API
-//! tavernsim watch [opts]              read the game log; --quiet records only
+//! tavernsim watch [opts]              read the game log in a terminal
+//!                                     (the app does the same on its own)
 //! tavernsim history [file]            the games watch has recorded
 //! tavernsim bench [games] [threads]   throughput against a fixed mirror match
 //! tavernsim matrix [games]            every class against every class
@@ -177,19 +178,12 @@ const SWEEPS: [Sweep; 3] = [
     ),
 ];
 
-/// Are the evaluation's numbers the right numbers?
+/// Play each weight of the evaluation against the value it currently has.
 ///
-/// Three of them were picked by hand when the search was written, to find
-/// out whether searching helped at all. That it does (+37.5 points) says
-/// nothing about whether 0.35, 0.5 and 0.15 are right, and those three
-/// numbers now decide what the tool advises mid-game and what the Meta tab
-/// prints. So each is played against the value it has, one weight at a time,
-/// on identical decks and identical seeds -- the same head-to-head that gave
-/// deepening its +10.2 and averaging its nothing.
-///
-/// One at a time on purpose. A joint sweep over three axes would need many
-/// times the games to say anything, and the question here is not "what is
-/// the optimum" but "is any of these three visibly wrong".
+/// One weight at a time, on identical decks and identical seeds. A joint
+/// sweep over three axes would need many times the games to say anything,
+/// and the question is not what the optimum is but whether any of the three
+/// is visibly wrong.
 fn weights(per_deck: usize, budget: u32, gauntlet: Option<&str>) {
     use tavernlab_core::batch::{Policy, duel};
 
@@ -268,7 +262,7 @@ fn weights(per_deck: usize, budget: u32, gauntlet: Option<&str>) {
     );
     // The control first, and it must read 50.0%: the same weights on both
     // sides cannot differ, so anything else means the harness is measuring
-    // itself rather than the weights.
+    // itself.
     report("контроль (ті самі)".to_string(), &run(base));
     for (name, apply, values) in SWEEPS {
         for &v in values {
@@ -279,16 +273,13 @@ fn weights(per_deck: usize, budget: u32, gauntlet: Option<&str>) {
 
 /// Does the mulligan advice depend on how well the agent plays?
 ///
-/// The README says the policy's bias largely cancels on this screen, because
-/// a deck is measured against the same field either way. That argument is
-/// about *decks*. The mulligan is a comparison between the **cards of one
-/// deck**, and a card the greedy policy misplays looks bad against every
-/// opponent -- nothing there cancels. So the claim is checked rather than
-/// repeated: the same instrumented runs, on the same seeds, once with each
-/// policy, and what is compared is the advice, not the win rate.
+/// The same instrumented runs on the same seeds, once with each policy, and
+/// what is compared is the advice rather than the win rate: a card counts as
+/// flipped when the two runs disagree about keeping it, which is the only
+/// difference a reader of the tab would see.
 ///
-/// A card counts as flipped when the two policies disagree about keeping it.
-/// That is the only difference a reader of the tab would ever see.
+/// The advice compares the cards *inside one deck*, so a policy that
+/// misplays a card marks it down against every opponent.
 fn mulligan_bias(games: usize, gauntlet: Option<&str>, noise_only: bool) {
     use tavernlab_core::batch::Policy;
     use tavernlab_core::telemetry::instrumented_parallel_with;
@@ -316,11 +307,10 @@ fn mulligan_bias(games: usize, gauntlet: Option<&str>, noise_only: bool) {
     let s = seeds(31, games);
     let other = seeds(97, games);
 
-    // Two rules over the same games, so the fix can be shown to work rather
-    // than argued for. `binary` is what the tab used to say -- keep unless
-    // the measured difference is below the line, whatever its error bar.
-    // `guarded` is `opening_verdict`: a difference inside its own bar is no
-    // difference, and falls back to the curve like a card with too few games.
+    // Two rules over the same games. `binary` keeps a card unless its
+    // difference is below the line, whatever its error bar; `guarded` is
+    // `opening_verdict`, where a difference inside its own bar is no
+    // difference and falls back to the curve.
     #[derive(PartialEq)]
     enum Say {
         Keep,
@@ -417,8 +407,8 @@ fn mulligan_bias(games: usize, gauntlet: Option<&str>, noise_only: bool) {
         }
         format!("{diff}/{cards} ({:.0}%)", 100.0 * diff as f64 / cards as f64)
     };
-    // An arm that was not run prints as not run. A zero there would be a
-    // measurement nobody took, which is the one thing this must never say.
+    // An arm that was not run prints as not run: a zero there would be a
+    // measurement nobody took.
     let arm = |v, cards| {
         if noise_only {
             "не міряно".to_string()
@@ -499,14 +489,13 @@ fn mulligan_bias(games: usize, gauntlet: Option<&str>, noise_only: bool) {
 
 /// Whether the tier list is a statement about decks or about the policy.
 ///
-/// The same field, the same seeds, the same matchups -- built twice, once by
-/// the greedy policy and once by the turn-planning search. A tier list that
-/// says something about decks should not move much when the hands holding
-/// them get better; one that reorders was never measuring the decks.
+/// The same field, the same seeds and the same matchups, built twice: once
+/// by the greedy policy and once by the search. A ranking about decks should
+/// not move much when the hands holding them get better.
 ///
 /// Printed as the two rankings side by side with each deck's change in
-/// position, because a correlation on its own hides the case that matters:
-/// one deck moving a long way while the rest sit still.
+/// position rather than as a rank correlation, which would hide one deck
+/// moving a long way while the rest sit still.
 fn tiers_by_policy(per_pair: usize, path: Option<&str>) {
     use tavernlab_core::batch::Policy;
     use tavernlab_core::tiers;
@@ -600,8 +589,8 @@ fn tiers_by_policy(per_pair: usize, path: Option<&str>) {
 /// `depth` is the knob that separates the two things a win could mean. At
 /// depth 1 the planner does not search at all -- it applies one action and
 /// scores the position -- so whatever it gains there is its *evaluation*
-/// being better than greedy's action scorer, not lookahead. Everything from
-/// depth 1 to depth 6 is the search.
+/// being better than greedy's action scorer, not lookahead. Everything above
+/// depth 1 is the search.
 fn policy(per_deck: usize, budget: u32, depth: u8, samples: u8) {
     use tavernlab_core::batch::{Policy, duel};
 
@@ -618,9 +607,8 @@ fn policy(per_deck: usize, budget: u32, depth: u8, samples: u8) {
         iterative: true,
         weights: tavernlab_core::planner::Weights::default(),
     };
-    // The same search with the budget spent depth-first instead. Printed
-    // beside the planner so the deepening is a measured claim rather than an
-    // assertion in a comment.
+    // The same search with the budget spent depth-first instead, printed
+    // beside the planner so the two can be compared directly.
     let dfs = Policy::Plan {
         budget,
         depth,
@@ -710,7 +698,7 @@ fn matrix(per_pair: usize) {
         .collect();
     if !skipped.is_empty() {
         // Never silently drop a class from a matrix: a missing row reads as
-        // "not measured", and it should be obvious which ones were.
+        // "not measured", so say which ones are.
         println!(
             "skipping {} class(es) with too few implemented cards: {}\n",
             skipped.len(),
@@ -1090,7 +1078,6 @@ fn watch(args: &[String]) {
         me: None,
         once: false,
         quiet: false,
-        serve: None,
     };
     let mut format = "standard".to_string();
     let mut i = 0;
@@ -1119,17 +1106,6 @@ fn watch(args: &[String]) {
             "--history" => {
                 a.history = args.get(i + 1).map(std::path::PathBuf::from);
                 i += 1;
-            }
-            "--serve" => {
-                // The port is optional: `--serve` on its own takes the
-                // default, so the common case is one word.
-                a.serve = Some(match args.get(i + 1).and_then(|v| v.parse().ok()) {
-                    Some(port) => {
-                        i += 1;
-                        port
-                    }
-                    None => 8766,
-                });
             }
             "--no-history" => a.history = Some(std::path::PathBuf::new()),
             "--once" => a.once = true,

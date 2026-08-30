@@ -511,12 +511,9 @@ pub fn mulligan(app: &App, req: &Request) -> Response {
                             let delta = stat.opening_delta(base, MIN_APPEARANCES);
                             let cost = card.def().cost;
                             // Three answers. A card whose difference does not
-                            // clear its own error bar has not been measured
-                            // to help or to hurt, and it falls back to the
-                            // curve the same way a card with too few games
-                            // does — which is the only thing still true about
-                            // it. Saying otherwise flipped 28% of these
-                            // verdicts between two runs of the same deck.
+                            // clear its own error bar falls back to the
+                            // curve, the same way a card with too few games
+                            // does.
                             let verdict = stat.opening_verdict(base, MIN_APPEARANCES);
                             let keep = match verdict {
                                 Verdict::Keep => true,
@@ -530,7 +527,7 @@ pub fn mulligan(app: &App, req: &Request) -> Response {
                                     o.bool_field("keep", keep);
                                     // Named so the front end can say "no
                                     // measurable difference" rather than
-                                    // dressing a fallback as a measurement.
+                                    // showing a fallback as a measurement.
                                     o.str_field(
                                         "verdict",
                                         match verdict {
@@ -1400,6 +1397,79 @@ pub fn job(app: &App, id: &str) -> Response {
         return Response::error(404, "no such job");
     };
     Response::json(200, body)
+}
+
+// --------------------------------------------------------------------- live
+
+/// What the log watcher can currently say.
+///
+/// A poll rather than a stream: the page asks once a second and gets the
+/// position as it stands, which is what a reader glancing at it beside the
+/// client wants. Nothing here is cached — building the answer is reading a
+/// struct the watcher's thread already filled in.
+pub fn live_read(app: &Arc<App>) -> Response {
+    let snap = app.live.snapshot();
+    let dir = super::live::logs_dir(app).map(|p| p.display().to_string());
+    Response::json(
+        200,
+        to_string(|o| {
+            o.obj(|o| {
+                o.bool_field("running", snap.running);
+                o.str_field("logs_dir", dir.as_deref().unwrap_or(""));
+                o.str_field("watching", snap.watching.as_deref().unwrap_or(""));
+                o.str_field("note", snap.note.as_deref().unwrap_or(""));
+                o.int_field("recorded", snap.recorded as i64);
+                match &snap.advice {
+                    Some(a) => {
+                        o.str_field("title", &a.title);
+                        o.field("sections", |v| {
+                            v.arr(|arr| {
+                                for (heading, lines) in a.sections.iter() {
+                                    if lines.is_empty() {
+                                        continue;
+                                    }
+                                    arr.item(|o| {
+                                        o.obj(|o| {
+                                            o.str_field("heading", heading);
+                                            o.field("lines", |v| {
+                                                v.arr(|arr| {
+                                                    for line in lines {
+                                                        arr.str_item(line);
+                                                    }
+                                                })
+                                            });
+                                        });
+                                    });
+                                }
+                            })
+                        });
+                    }
+                    None => {
+                        o.str_field("title", "");
+                        o.field("sections", |v| v.arr(|_| {}));
+                    }
+                }
+            })
+        }),
+    )
+}
+
+/// Start or stop the watcher. Anything else is refused rather than guessed
+/// at: there are two states and a request naming neither means something the
+/// page did not intend.
+pub fn live_write(app: &Arc<App>, req: &Request) -> Response {
+    let payload = body(req);
+    match field_str(&payload, "action") {
+        "start" => match super::live::start(app, "standard") {
+            Ok(_) => live_read(app),
+            Err(e) => Response::error(400, &e),
+        },
+        "stop" => {
+            app.live.stop();
+            live_read(app)
+        }
+        other => Response::error(400, &format!("невідома дія: {other}")),
+    }
 }
 
 #[cfg(test)]

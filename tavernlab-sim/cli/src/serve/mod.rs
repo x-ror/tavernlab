@@ -13,6 +13,11 @@
 //! opponent reads from instrumented simulations, and the tier list the field
 //! produces against itself.
 //!
+//! It also holds the log watcher ([`live`]), so the deck pasted on one tab is
+//! the deck advised on during the game and recorded afterwards. That is the
+//! whole reason it lives here rather than in a second command: three screens
+//! about one deck should not need three processes and a flag apiece.
+//!
 //! Nothing here talks to the network. There is no card art fetcher and no
 //! telemetry: art is served from a local cache if the user has filled one,
 //! and `/api/metrics` is a set of counters that never leave the machine.
@@ -20,6 +25,7 @@
 mod api;
 pub mod http;
 mod jobs;
+mod live;
 pub mod paths;
 pub mod state;
 
@@ -85,6 +91,16 @@ pub fn run(port: u16, threads: usize, open_browser: bool) -> Result<(), String> 
     if !root.join("web/dist/index.html").is_file() {
         println!("  the web UI is not built: run `npm install && npm run build` in web/");
     }
+    // The watcher, for the session that opens the lab and then plays. Off
+    // unless it was switched on before, because something that reads your
+    // game should start because you asked it to and go on starting because
+    // you asked it to stay on.
+    if app.settings().get("live_auto").map(String::as_str) == Some("on") {
+        match live::start(&app, "standard") {
+            Ok(dir) => println!("  стежу за {}", dir.display()),
+            Err(e) => println!("  стеження не почалося: {e}"),
+        }
+    }
     if open_browser {
         open(&url);
     }
@@ -111,6 +127,8 @@ fn route(app: &Arc<App>, req: &Request) -> Response {
         ("POST", "/api/predict") => return api::predict(app, req),
         ("POST", "/api/meta") => return api::meta(app, req),
         ("POST", "/api/cardnames") => return api::cardnames(req),
+        ("GET", "/api/live") => return api::live_read(app),
+        ("POST", "/api/live") => return api::live_write(app, req),
         _ => {}
     }
 

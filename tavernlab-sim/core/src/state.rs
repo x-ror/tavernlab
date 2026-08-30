@@ -396,10 +396,10 @@ impl Marks {
     /// Prepared this turn, and so unplayable for the rest of it -- otherwise
     /// the discount could be banked into and cashed on the same turn.
     ///
-    /// A mark rather than the turn number it used to be: a `u16` there made
-    /// `HandCard` fourteen bytes and a `Game` eighty bigger, and the number
-    /// was only ever compared against the current turn. Cleared with `FUSED`
-    /// at the owner's turn end, which is exactly "the rest of it".
+    /// A mark rather than a turn number: the number would only ever be
+    /// compared against the current turn, and a `u16` on every `HandCard`
+    /// costs eighty bytes a `Game`. Cleared with `FUSED` at the owner's turn
+    /// end, which is exactly "the rest of it".
     pub const PREPARED: Marks = Marks(1 << 9);
     /// Prepare granted to this copy rather than printed on the card (Wanted
     /// Poster). A mark rather than a keyword because keywords live on the
@@ -848,10 +848,9 @@ pub struct Player {
     ///
     /// Its Ectoplasm resummons "all friendly minions that were slimed", and
     /// naming them by graveyard position rather than by a copied list keeps
-    /// the whole feature to one byte a player -- which is what it had to
-    /// cost, since a `Game` is at 2544 of the 2560 bytes the size assertion
-    /// allows. Thirty-two graveyard slots need five bits and a board of seven
-    /// needs three, so the two halves fit a byte exactly. The graveyard is
+    /// the whole feature to one byte a player. Thirty-two graveyard slots
+    /// need five bits and a board of seven needs three, so the two halves fit
+    /// a byte exactly. The graveyard is
     /// append-only, so the slice keeps pointing at the same bodies for as
     /// long as it is held, and minions that died after the wipe sit past it
     /// and are not resummoned.
@@ -889,9 +888,8 @@ pub struct Player {
     /// Three separate cards raise each of the three -- Mystic Runesaber, Ley
     /// Walker and Surge Needle -- and The Arcanomicon offers a bigger version
     /// of any one of them. All of it is "this game", so none of it resets.
-    /// The numbers each card adds are the corpus's own; only the Leylines'
-    /// base values had to come from outside it, and they are named where they
-    /// are used.
+    /// The numbers each card adds come from the corpus; the Leylines' base
+    /// values do not, and are attributed where they are used.
     pub leyline_bonus: u8,
     pub leyline_discount: u8,
     pub leyline_extra: u8,
@@ -940,8 +938,8 @@ pub struct Player {
     ///
     /// Set on the *opponent* by "enemy minions cost (2) more next turn"
     /// (Harsh Sentence). Cleared where every other per-turn discount is, at
-    /// the taxed player's own turn end -- which is what makes "next turn"
-    /// their turn rather than the caster's.
+    /// the taxed player's own turn end, so "next turn" is their turn and not
+    /// the caster's.
     pub minion_tax: i16,
     /// Ebyssian: "Your Dragons have Rush this game." A flag on the player
     /// rather than an aura, because it outlives the body that granted it.
@@ -982,9 +980,9 @@ pub struct Player {
     /// "for each friendly minion that died this game" counts.
     ///
     /// Capped, like `overdrawn`, so a game stays a fixed handful of bytes.
-    /// Thirty-two is far more than the fifteen-turn average produces -- over
-    /// 8000 measured player-games the worst was 23, and `tests/graveyard.rs`
-    /// keeps that claim honest. Past the cap the pool stops growing while
+    /// Thirty-two is more than a game of ordinary length reaches;
+    /// `tests/graveyard.rs` holds the cap to that. Past the cap the pool
+    /// stops growing while
     /// `deaths` keeps counting, so a card that counts stays right even where
     /// a card that resurrects would run out of pool.
     pub graveyard: Inline<CardId, GRAVEYARD>,
@@ -1323,47 +1321,14 @@ mod tests {
 
     #[test]
     fn a_game_is_small_enough_to_copy_freely() {
-        // The number that justifies the whole design. If this grows past a few
-        // kilobytes, search stops being cheap and the reason for Rust is gone.
+        // The number that justifies the whole design: a `Game` is copied
+        // per search node, so if this grows past a few kilobytes the search
+        // stops being cheap.
+        //
+        // The limit is deliberately close to the current size. Anything that
+        // wants another byte per deck or hand card has to take its own
+        // throughput measurement first -- `tools/ab-bench.sh` describes how.
         let n = size_of::<Game>();
-        // The line moved once, from 2 KB, when per-copy enchantments in hand
-        // and granted deathrattles were added: both are per-card state with
-        // nowhere else to live. `tavernsim bench` was unchanged across the
-        // move, which is the number this assertion is really protecting.
-        //
-        // It has not moved since. Giving the deck per-card state -- `DeckCard`
-        // instead of a bare `CardId`, six bytes for sixty slots on both sides
-        // -- took a game from 2032 to 2512 bytes, and `tavernsim bench`
-        // measured ~18 300 games/s on one core both before and after. The
-        // headroom left is small on purpose: the next thing that wants a byte
-        // per deck card has to take its own measurement first.
-        //
-        // It has already had to. A ninth `Marks` bit took that type from `u8`
-        // to `u16`, which took `HandCard` to fourteen bytes and a `Game` to
-        // 2608 -- over the line, and `tavernsim bench` measured a real if
-        // small cost with it (best of five: 15 479 games/s against 15 571 on
-        // the same host). Paying for it by turning `locked_turn` into a tenth
-        // mark, which is all the number ever meant, put `HandCard` back to
-        // twelve bytes and the benchmark back to 15 643 against 15 389.
-        //
-        // The line moved a third time, from 2576, for the Face Hunter
-        // package -- the largest single step so far and the one that used up
-        // the last of the slack. Thirteen cards, and five of them remember
-        // something: which of the three Windrunner sisters have been played
-        // (three bits, because each asks about the other two), whether
-        // Sylvanas's Triumph has been cast, whether Tame Pet has replaced the
-        // Animal Companions, the card Gemstone Hoarder made you discard, and
-        // the 1-Cost minions played this game for Confront the Tol'vir. That
-        // last one is the bulk of it: seven `CardId` slots, seven because
-        // seven is a whole board and an eighth could never be summoned. A
-        // `Game` went 2560 -> 2608.
-        //
-        // The measurement, taken the way `tools/ab-bench.sh` describes --
-        // paired against a build of the merge base, both binaries in both
-        // slot positions, ten rounds of eight runs: +0.01% +/- 0.46%, on an
-        // A/A control of -0.45% +/- 0.50%. Forty-eight more bytes to copy per
-        // node cost nothing that this harness can see. `tavernsim matrix
-        // 2000` printed byte-identical win rates for all eleven classes.
         assert!(
             n < 2624,
             "Game is {n} bytes; it is meant to stay well under 3 KB"

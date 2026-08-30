@@ -20,7 +20,6 @@
 //! measurement is a batch of simulations, and a daemon that is only keeping
 //! score should not run one on every turn.
 
-mod live;
 pub mod log;
 pub mod tracker;
 
@@ -41,7 +40,7 @@ use tracker::Tracker;
 ///
 /// There is no standard location outside Windows, so a Wine or Proton
 /// install has to say: `--logs`, or `HS_LOGS`.
-fn default_logs_dir() -> Option<PathBuf> {
+pub fn default_logs_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("HS_LOGS") {
         return Some(PathBuf::from(dir));
     }
@@ -110,10 +109,9 @@ fn files_of(power: PathBuf, zone: Option<PathBuf>) -> Vec<PathBuf> {
 /// wrote them.
 ///
 /// Chronological, not file by file. Only Power.log carries `CREATE_GAME`, so
-/// replaying one file and then the other puts every reset at the front and
-/// then lays every zone move of every game in the session on top of the last
-/// one — finished games' boards piling up on the current one, and their
-/// heroes deciding the classes. That is what the first real log showed.
+/// replaying one file and then the other would put every reset at the front
+/// and then lay every zone move of every game in the session on top of the
+/// last one.
 /// What one pass over the new lines produced.
 pub struct Batch {
     pub lines: usize,
@@ -234,11 +232,9 @@ fn class_name(c: Class) -> &'static str {
 /// What is left of your deck, as far as the deck code and the log together
 /// can say.
 ///
-/// This matters more than it looks. Without it the rebuilt game has an empty
-/// deck, and every draw effect in your hand reads as fatigue damage to your
-/// own hero -- so the advice quietly refuses to play the card that draws. The
-/// greedy policy scored one action at a time and mostly did not notice; a
-/// search plays the line out and notices every time.
+/// Without it the rebuilt game has an empty deck, and every draw effect in
+/// your hand reads as fatigue damage to your own hero, so the advice refuses
+/// to play the card that draws.
 ///
 /// The subtraction is approximate, and approximate in the safe direction. A
 /// card played from hand has left the deck and a card in hand is not in it,
@@ -292,16 +288,14 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<String> {
     for side in 0..2 {
         // A body the log has taken to zero health is dead; the line that
         // moves it out of play arrives in a later batch, up to a poll behind.
-        // Leaving it in means the plan is drawn over a board with a corpse on
-        // it -- a real session showed `Accelerated Whelp 4/0` still standing.
+        // Leaving it in would draw the plan over a board with a corpse on it.
         for b in tr.board[side].iter().filter(|b| b.stats().1 > 0) {
             let mut m = Permanent::summon(b.card);
-            // Summoning sickness is kept for whatever landed this turn. It is
-            // not a detail: without it the plan tells you to swing with the
-            // minion you have only just put down, and a Rush minion is told
-            // to go face on the turn it arrives, which is the one thing Rush
-            // does not do. `Permanent::summon` sets the flag, so a body that
-            // has been there since an earlier turn is the one that clears it.
+            // Summoning sickness is kept for whatever landed this turn:
+            // without it the plan swings with a minion that has only just
+            // been put down, and sends a Rush minion face on the turn it
+            // arrives. `Permanent::summon` sets the flag, so a body that has
+            // been there since an earlier turn is the one that clears it.
             if b.turn < tr.turn {
                 m.flags.remove(tavernlab_core::state::Flags::JUST_SUMMONED);
             }
@@ -336,11 +330,9 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<String> {
     };
     g.recompute_auras();
 
-    // The search, not the greedy policy. Live advice is one decision at a
-    // time rather than a batch of two thousand games, so the two hundredfold
-    // cost that keeps the search out of the engine buys, here, the difference
-    // between the policy that loses two games in three and the one that wins
-    // them. See the README on how that was measured.
+    // The search, not the greedy policy: live advice is one decision at a
+    // time rather than a batch, so the cost that keeps the search out of the
+    // engine is affordable here. The README compares the two.
     let mut agent = Planner::new(Style::Midrange, 4000, 4);
     let mut out = Vec::new();
     let mut legal: tavernlab_core::inline::Inline<Action, 512> =
@@ -378,7 +370,7 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<String> {
     // number unless this line is here.
     if tr.crystals.is_none() {
         out.push(format!(
- "(мана невідома — рахував як {}; вкажіть --me <бойовий тег>, щоб було точно)",
+ "(мана невідома — рахував як {}; вкажіть свій бойовий тег, щоб було точно)",
             g.players[0].crystals
         ));
     }
@@ -386,7 +378,7 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<String> {
     // that draws. Silence about it would read as advice.
     if !deck_known {
         out.push(
- "(колоду не відновлено — без --deck добір рахується як втома, тож карти, що тягнуть, план обходить)"
+ "(колоду не відновлено — без деккоду добір рахується як втома, тож карти, що тягнуть, план обходить)"
                 .into(),
         );
     }
@@ -463,12 +455,9 @@ fn opponent_read(app: &App, format: &str, tr: &Tracker) -> Vec<String> {
             class_name(class)
         )];
     }
-    // `Read::frac` is 1.0 on no evidence by design -- the web UI wants a
-    // neutral prior -- which printed here read as "Herald Warlock 100%"
-    // before the opponent had played a card. The empty case is answered
-    // above; a best match of nothing is answered here, because naming a deck
-    // beside 0% is a claim with the confidence stripped off but the name
-    // left standing.
+    // `Read::frac` is 1.0 on no evidence by design, because the web UI wants
+    // a neutral prior. Here that would name a deck before the opponent had
+    // played a card, so a best match of nothing names nothing.
     if reads.iter().all(|r| r.hits == 0) {
         return vec![format!(
             "{}: жодна колода гаунтлета не пояснює зіграного ({} карт)",
@@ -556,9 +545,6 @@ pub struct Args {
     /// of simulations; a daemon that is only keeping history should not pay
     /// that on every turn.
     pub quiet: bool,
-    /// Also serve the advice as a page on this loopback port, for reading
-    /// beside the client instead of alt-tabbing to a terminal.
-    pub serve: Option<u16>,
 }
 
 /// Everything the tracker can currently say, built once so that the terminal
@@ -567,12 +553,13 @@ pub struct Args {
 /// A heading with no lines under it is dropped rather than printed empty: an
 /// empty section reads as "nothing to advise", which is a different claim
 /// from "this does not apply right now".
+#[derive(Clone)]
 pub struct Advice {
     pub title: String,
     pub sections: Vec<(&'static str, Vec<String>)>,
 }
 
-fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice {
+pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice {
     // Straight after a `CREATE_GAME` there is a moment where nothing at all
     // has been read. A full block of empty boards and two untouched heroes
     // says nothing and reads like a position; one line is the honest size of
@@ -596,18 +583,14 @@ fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice {
     let mut sections: Vec<(&'static str, Vec<String>)> = Vec::new();
     if !tr.started && !tr.opening.is_empty() {
         sections.push(("МУЛІГАН", mulligan(app, format, tr, deck)));
-        // The mulligan being on does not mean the turn is not. "Started" is
-        // `STEP=MAIN_READY`, or a turn counter past one -- and the first turn
-        // of the player who goes first is turn one, so on it the watcher had
-        // the mulligan on screen and nothing at all about what to play. It
-        // knew: the heading already said "(ваш)".
+        // The mulligan being on does not mean the turn is not: "started" is
+        // `STEP=MAIN_READY` or a turn counter past one, and the first turn of
+        // the player who goes first is turn one.
         //
         // The plan is added rather than the mulligan replaced, and `started`
-        // is deliberately left alone. It also decides what counts as the
-        // opening hand, and setting it from "someone is the current player"
-        // would empty every recorded opening if that line ever arrives before
-        // the deal. Showing both costs a few seconds of a stale mulligan in
-        // that case; the other way round costs the data.
+        // is left alone: it also decides what counts as the opening hand, and
+        // setting it from "someone is the current player" would empty every
+        // recorded opening if that line arrived before the deal.
         if tr.my_turn && !tr.over {
             sections.push(("ХІД", plan(tr, deck)));
         }
@@ -628,13 +611,13 @@ fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice {
         _ => {
             position.push(
                 "мана невідома — лог ще не написав рядка, у якому видно, \
-                 котрий з двох гравців ви; якщо так і не напише, вкажіть \
-                 --me <бойовий тег> або HS_ME"
+                 котрий з двох гравців ви; якщо так і не напише, впишіть \
+                 свій бойовий тег у налаштуваннях"
                     .into(),
             );
             // The client does not always spell a battletag the way the
-            // launcher shows it, and guessing is the one thing this must not
-            // do -- so print what it actually wrote and let the user pick.
+            // launcher shows it, so print what it wrote and let the user
+            // pick rather than guessing.
             if !tr.names.is_empty() {
                 position.push(format!("у лозі трапилися імена: {}", tr.names.join(", ")));
             }
@@ -669,8 +652,7 @@ fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice {
     Advice { title, sections }
 }
 
-/// Print everything the tracker can currently say, and hand the same thing to
-/// the browser view if one is running.
+/// Print everything the tracker can currently say.
 fn report(app: &App, format: &str, tr: &Tracker, deck: &str) {
     let advice = build_advice(app, format, tr, deck);
     println!("\n─── {}", advice.title);
@@ -683,7 +665,6 @@ fn report(app: &App, format: &str, tr: &Tracker, deck: &str) {
             println!("    {line}");
         }
     }
-    live::publish(&advice);
 }
 
 fn armour(n: i16) -> String {
@@ -759,15 +740,6 @@ pub fn run(app: &App, format: &str, mut args: Args) -> i32 {
     if let Some(line) = settle_deck(app, &mut args) {
         println!("{line}");
     }
-    if let Some(port) = args.serve {
-        match live::start(port) {
-            Ok(url) => println!("порада також тут: {url}"),
-            // Not fatal: the terminal report is the primary output and the
-            // page is a convenience. A busy port should not stop a game
-            // being watched.
-            Err(e) => eprintln!("не вдалося відкрити сторінку на порту {port}: {e}"),
-        }
-    }
     if let Some(one) = args.log_file.clone() {
         return follow(app, format, &args, vec![one], args.once);
     }
@@ -816,7 +788,7 @@ fn follow(app: &App, format: &str, args: &Args, files: Vec<PathBuf>, once: bool)
     // Whatever the log still holds becomes history on the first pass. It is
     // the same work the watcher would do a game at a time; doing it once at
     // the start is what makes pointing this at an old session an import.
-    record(app, format, args, &first);
+    record(app, format, args, first.finished);
     if !args.quiet {
         report(app, format, &tr, &args.deck);
     }
@@ -836,7 +808,7 @@ fn follow(app: &App, format: &str, args: &Args, files: Vec<PathBuf>, once: bool)
                 return 2;
             }
         };
-        record(app, format, args, &batch);
+        record(app, format, args, batch.finished);
         if args.quiet {
             continue;
         }
@@ -848,122 +820,215 @@ fn follow(app: &App, format: &str, args: &Args, files: Vec<PathBuf>, once: bool)
     }
 }
 
-fn watching_line(files: &[PathBuf]) -> String {
-    match files.first() {
+fn watching_line(file: Option<&Path>) -> String {
+    match file {
         Some(p) => format!("\nстежу за логом ({}). Ctrl-C щоб вийти.", p.display()),
         None => "\nстежу за логом. Ctrl-C щоб вийти.".into(),
     }
 }
 
-/// Follow the client's log directory for as long as this process lives.
+/// The log-following loop, without a terminal attached.
 ///
-/// Three things a one-shot `follow` cannot do, and a recorder has to:
+/// The client starts a fresh session directory each launch and stops writing
+/// to the old one, so a watcher is not tailing a file but tracking a folder.
+/// Three things follow from that, and they are the whole of this type:
 ///
-/// * wait for the first session instead of exiting when the client is
+/// * it waits for the first session instead of giving up when the client is
 ///   not running yet;
-/// * ingest every session still on disk, so a restart does not drop the
-///   games that finished in the folder the client has just rotated off;
-/// * switch when a newer session appears, because the client starts a
-///   fresh directory each launch and the old Power.log stops growing.
-fn live(app: &App, format: &str, args: &Args, dir: &Path) -> i32 {
-    let mut files: Vec<PathBuf> = Vec::new();
-    let mut tr = Tracker::new(args.me.clone());
-    let mut offsets: Vec<u64> = Vec::new();
-    let mut last = (0u16, false, 0usize, 0usize);
-    let mut watching = false;
+/// * it ingests every session still on disk, so a restart does not drop the
+///   games that finished in a folder the client has since rotated off;
+/// * it reads the old files one last time before letting go of them, because
+///   the client writes a session's final lines as it exits.
+///
+/// Both front ends drive it: the terminal command prints what a tick
+/// produced, the web app publishes it. Neither owns the loop.
+pub struct Runner {
+    dir: PathBuf,
+    files: Vec<PathBuf>,
+    offsets: Vec<u64>,
+    tr: Tracker,
+    me: Option<String>,
+    last: (u16, bool, usize, usize),
+    /// Games that have ended since the caller last took them.
+    finished: Vec<(i64, Tracker)>,
+}
 
-    for (power, zone) in all_sessions(dir) {
+/// What one poll of the log directory produced.
+pub enum Tick {
+    /// The log has not grown.
+    Quiet,
+    /// No session worth reading is on disk. The client is not running, or is
+    /// running with verbose logging off.
+    Waiting,
+    /// The client opened a new session directory, and this is now on it.
+    Session(PathBuf),
+    /// New lines were read. `changed` is whether the position moved, which is
+    /// what decides whether advice is worth rebuilding.
+    Read { changed: bool },
+    /// The directory was readable and then was not.
+    Lost(String),
+}
+
+impl Runner {
+    pub fn new(dir: PathBuf, me: Option<String>) -> Runner {
+        Runner {
+            dir,
+            files: Vec::new(),
+            offsets: Vec::new(),
+            tr: Tracker::new(me.clone()),
+            me,
+            last: (0, false, 0, 0),
+            finished: Vec::new(),
+        }
+    }
+
+    /// The position as far as the log states it.
+    pub fn tracker(&self) -> &Tracker {
+        &self.tr
+    }
+
+    /// The Power.log currently being followed, if any.
+    pub fn watching(&self) -> Option<&Path> {
+        self.files.first().map(PathBuf::as_path)
+    }
+
+    /// The games that have ended since this was last called.
+    pub fn take_finished(&mut self) -> Vec<(i64, Tracker)> {
+        std::mem::take(&mut self.finished)
+    }
+
+    /// Read every session already on disk, oldest first.
+    ///
+    /// This is what makes pointing the watcher at a folder an import rather
+    /// than a start: the games are already there, and replaying them is line
+    /// parsing rather than simulation.
+    pub fn catch_up(&mut self) -> Vec<String> {
+        let mut errors = Vec::new();
+        for (power, zone) in all_sessions(&self.dir) {
+            let next = files_of(power, zone);
+            self.tr = Tracker::new(self.me.clone());
+            self.offsets.clear();
+            match replay(&mut self.tr, &next, &mut self.offsets) {
+                Ok(batch) => self.finished.extend(batch.finished),
+                Err(e) => {
+                    errors.push(format!("{}: {e}", next[0].display()));
+                    continue;
+                }
+            }
+            self.files = next;
+            self.last = snapshot(&self.tr);
+        }
+        errors
+    }
+
+    /// One pass over the log directory.
+    pub fn poll(&mut self) -> Tick {
+        let Some((power, zone)) = newest_logs(&self.dir) else {
+            if self.files.is_empty() {
+                return Tick::Waiting;
+            }
+            self.files.clear();
+            return Tick::Lost(format!("лог зник у {}", self.dir.display()));
+        };
         let next = files_of(power, zone);
-        tr = Tracker::new(args.me.clone());
-        offsets.clear();
-        match replay(&mut tr, &next, &mut offsets) {
-            Ok(batch) => record(app, format, args, &batch),
+        if self.files.first() != next.first() {
+            return self.rotate(next);
+        }
+        // Same Power.log; Zone.log may have appeared since.
+        self.files = next;
+        let batch = match replay(&mut self.tr, &self.files, &mut self.offsets) {
+            Ok(b) if b.lines == 0 => return Tick::Quiet,
+            Ok(b) => b,
+            Err(e) => return Tick::Lost(format!("лог зник: {e}")),
+        };
+        self.finished.extend(batch.finished);
+        let now = snapshot(&self.tr);
+        let changed = now != self.last;
+        self.last = now;
+        Tick::Read { changed }
+    }
+
+    /// Move onto a session directory that was not the one being followed.
+    fn rotate(&mut self, next: Vec<PathBuf>) -> Tick {
+        if !self.files.is_empty()
+            && let Ok(tail) = replay(&mut self.tr, &self.files.clone(), &mut self.offsets)
+        {
+            // The client writes a session's final lines as it exits. If the
+            // next launch lands inside the same poll they are still unread,
+            // which would drop the game that ended the old session.
+            self.finished.extend(tail.finished);
+        }
+        self.tr = Tracker::new(self.me.clone());
+        self.offsets.clear();
+        self.files = next;
+        match replay(&mut self.tr, &self.files, &mut self.offsets) {
+            Ok(batch) => self.finished.extend(batch.finished),
             Err(e) => {
-                eprintln!("{}: {e}", next[0].display());
-                continue;
+                let path = self.files[0].display().to_string();
+                self.files.clear();
+                return Tick::Lost(format!("{path}: {e}"));
             }
         }
-        files = next;
-        last = snapshot(&tr);
+        self.last = snapshot(&self.tr);
+        Tick::Session(self.files[0].clone())
     }
-    if files.is_empty() {
+}
+
+/// How often either front end asks the log whether it has grown.
+pub const POLL: std::time::Duration = std::time::Duration::from_millis(700);
+
+/// The terminal front end of [`Runner`].
+fn live(app: &App, format: &str, args: &Args, dir: &Path) -> i32 {
+    let mut runner = Runner::new(dir.to_path_buf(), args.me.clone());
+    for e in runner.catch_up() {
+        eprintln!("{e}");
+    }
+    let mut watching = false;
+    record(app, format, args, runner.take_finished());
+    if runner.watching().is_none() {
         eprintln!(
             "чекаю на лог у {}. Увімкніть логування в log.config і запустіть клієнт.",
             dir.display()
         );
     } else {
         if !args.quiet {
-            report(app, format, &tr, &args.deck);
+            report(app, format, runner.tracker(), &args.deck);
         }
-        println!("{}", watching_line(&files));
+        println!("{}", watching_line(runner.watching()));
         watching = true;
     }
 
     loop {
-        std::thread::sleep(std::time::Duration::from_millis(700));
-        let Some((power, zone)) = newest_logs(dir) else {
-            if watching {
-                eprintln!("лог зник, чекаю знову в {}.", dir.display());
-                watching = false;
-                files.clear();
-            }
-            continue;
-        };
-        let next = files_of(power, zone);
-        if files.first() != next.first() {
-            // A new session directory, or the first one after waiting.
-            if !files.is_empty() {
-                // Read the old files one last time before letting go of them.
-                // The client writes a session's final lines as it exits, and
-                // if the next launch lands inside the same poll those lines
-                // are still unread -- which drops the game that ended the old
-                // session, in a record whose whole job is not to drop one.
-                if let Ok(tail) = replay(&mut tr, &files, &mut offsets) {
-                    record(app, format, args, &tail);
+        std::thread::sleep(POLL);
+        let tick = runner.poll();
+        record(app, format, args, runner.take_finished());
+        match tick {
+            Tick::Quiet => continue,
+            Tick::Waiting => continue,
+            Tick::Lost(why) => {
+                if watching {
+                    eprintln!("{why}, чекаю знову.");
+                    watching = false;
                 }
-                println!("нова сесія: {}", next[0].display());
-            }
-            tr = Tracker::new(args.me.clone());
-            offsets.clear();
-            files = next;
-            match replay(&mut tr, &files, &mut offsets) {
-                Ok(batch) => {
-                    record(app, format, args, &batch);
-                    if !args.quiet {
-                        report(app, format, &tr, &args.deck);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("не вдалося прочитати лог: {e}");
-                    files.clear();
-                    continue;
-                }
-            }
-            last = snapshot(&tr);
-            if !watching {
-                println!("{}", watching_line(&files));
-                watching = true;
-            }
-            continue;
-        }
-        // Same Power.log; Zone.log may have appeared since.
-        files = next;
-        let batch = match replay(&mut tr, &files, &mut offsets) {
-            Ok(b) if b.lines == 0 => continue,
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("лог зник: {e}");
                 continue;
             }
-        };
-        record(app, format, args, &batch);
-        if args.quiet {
-            continue;
-        }
-        let now = snapshot(&tr);
-        if now != last {
-            last = now;
-            report(app, format, &tr, &args.deck);
+            Tick::Session(path) => {
+                if watching {
+                    println!("нова сесія: {}", path.display());
+                }
+                if !args.quiet {
+                    report(app, format, runner.tracker(), &args.deck);
+                }
+                if !watching {
+                    println!("{}", watching_line(runner.watching()));
+                    watching = true;
+                }
+            }
+            Tick::Read { changed } => {
+                if changed && !args.quiet {
+                    report(app, format, runner.tracker(), &args.deck);
+                }
+            }
         }
     }
 }
@@ -1003,35 +1068,55 @@ fn recorded(app: &App, format: &str, deck: &str, at: i64, tr: &Tracker) -> Optio
     })
 }
 
-/// Write whatever games this batch finished into the history file.
+/// Write whatever games have finished into the history file.
 ///
 /// Failing to write is reported and not fatal. The watcher's job is the advice
 /// on screen; a read-only data directory should cost you the record, not the
 /// session.
-fn record(app: &App, format: &str, args: &Args, batch: &Batch) {
-    let games: Vec<history::Game> = batch
-        .finished
-        .iter()
-        .filter_map(|(at, tr)| recorded(app, format, &args.deck, *at, tr))
-        .collect();
-    if games.is_empty() {
-        return;
-    }
+fn record(app: &App, format: &str, args: &Args, finished: Vec<(i64, Tracker)>) {
     let path = match &args.history {
         // `--no-history` passes an empty path: play without keeping a record.
         Some(p) if p.as_os_str().is_empty() => return,
-        Some(p) => p.clone(),
-        None => history::default_path(),
+        Some(p) => Some(p.as_path()),
+        None => None,
     };
-    match history::append(&path, &games) {
+    match record_games(app, format, &args.deck, path, finished) {
         Ok(0) => {}
         Ok(n) => println!(
-            "\n  записано в історію: {n} {} ({})",
-            crate::games_word(n as i64),
-            path.display()
+            "\n  записано в історію: {n} {}",
+            crate::games_word(n as i64)
         ),
         Err(e) => eprintln!("не вдалося записати історію: {e}"),
     }
+}
+
+/// Turn finished games into history rows and append them.
+///
+/// The count is what was actually new: `history::append` is idempotent, so a
+/// session read twice adds nothing the second time.
+pub fn record_games(
+    app: &App,
+    format: &str,
+    deck: &str,
+    path: Option<&Path>,
+    finished: Vec<(i64, Tracker)>,
+) -> Result<usize, String> {
+    let games: Vec<history::Game> = finished
+        .iter()
+        .filter_map(|(at, tr)| recorded(app, format, deck, *at, tr))
+        .collect();
+    if games.is_empty() {
+        return Ok(0);
+    }
+    let owned;
+    let path = match path {
+        Some(p) => p,
+        None => {
+            owned = history::default_path();
+            &owned
+        }
+    };
+    history::append(path, &games)
 }
 
 #[cfg(test)]

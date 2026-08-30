@@ -13,10 +13,9 @@
 //! systematically overstates it: the swap that came out on top is partly the
 //! swap that got lucky. So the leader of each round is *re-measured* on a
 //! fresh, larger seed set before it is accepted, and it is that second number
-//! that gets reported. On the Python implementation this step did not exist,
-//! and the README had to warn that the printed figure was inflated. Rather
-//! than warn, this measures again — a re-measurement costs a fraction of a
-//! second at this engine's throughput.
+//! that gets reported. A re-measurement costs a fraction of a second at this
+//! engine's throughput, which is cheaper than publishing a number that has to
+//! carry a warning.
 //!
 //! A swap that survives both is still a swap against a scripted opponent on a
 //! twelve-deck field, which is a claim about this simulator and not about

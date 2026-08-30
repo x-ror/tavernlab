@@ -577,10 +577,9 @@ mod tests {
         (hero, cards)
     }
 
-    /// A code as a deck site actually hands it out, pinned against what the
-    /// Python decoder read from it. Every other case here goes through this
-    /// module's own encoder, which cannot catch an encoding the format uses
-    /// and we do not.
+    /// A code as a deck site actually hands it out. Every other case here
+    /// goes through this module's own encoder, which cannot catch an encoding
+    /// the format uses and this decoder does not.
     #[test]
     fn a_real_site_code_decodes_the_way_the_reference_did() {
         let code = "AAECAaoICsmeBsODB9C/B/nDB4LUB5vUB8/bB9DbB4jdB9/lBwqe1ATt5gbgnQexsAePvge1wAfJwAfJ2wfI5Qfm/QcAAA==";

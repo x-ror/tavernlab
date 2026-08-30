@@ -5,17 +5,19 @@ import DeckBadge from './components/DeckBadge'
 import LangPicker from './components/LangPicker'
 import DeckLab from './routes/DeckLab'
 import History from './routes/History'
+import Live from './routes/Live'
 import Meta from './routes/Meta'
 import Settings from './routes/Settings'
 
-/* Four sections. Three are questions the simulator answers — what is my
- * deck worth, what is the field worth, where does this thing keep my
- * data — and the fourth is the one thing here that is not a simulation
- * at all: the games you actually played, as `tavernsim watch` read them
- * out of the client's own log. Keeping it a section of its own is the
- * point, because a measured win rate and a played one must never be
- * mistaken for each other. */
-const SECTIONS = ['deck', 'meta', 'history', 'settings']
+/* Five sections, in the order a game goes through them.
+ *
+ * Three are questions the simulator answers — what is my deck worth, what
+ * is the field worth, where does this thing keep my data. The other two
+ * are not simulations at all: Live is the watcher reading the game you
+ * are playing right now, and History is the games you have finished.
+ * Keeping those apart from the rest is the point, because a measured win
+ * rate and a played one must never be mistaken for each other. */
+const SECTIONS = ['deck', 'meta', 'live', 'history', 'settings']
 
 export default function App() {
   return (
@@ -91,6 +93,7 @@ function Shell() {
             <TabList>
               <Item key="deck">{t('ui.nav.deck')}</Item>
               <Item key="meta">{t('ui.nav.tiers')}</Item>
+              <Item key="live">{t('ui.nav.live')}</Item>
               <Item key="history">{t('ui.nav.history')}</Item>
               <Item key="settings">{t('ui.nav.settings')}</Item>
             </TabList>
@@ -101,6 +104,7 @@ function Shell() {
       <View paddingX="size-350" paddingY="size-400" maxWidth="1240px" marginX="auto">
         {section === 'deck' && <DeckLab tab={parts[1] || 'rating'} sub={parts[2]} />}
         {section === 'meta' && <Meta />}
+        {section === 'live' && <Live />}
         {section === 'history' && <History />}
         {section === 'settings' && <Settings />}
       </View>

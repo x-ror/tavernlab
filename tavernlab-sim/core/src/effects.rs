@@ -664,26 +664,21 @@ impl Game {
     /// nothing and running it late can only leave stats stale rather than
     /// compounding an error. Called wherever the board changes.
     ///
-    /// Cost is at most fourteen minions against fourteen possible sources.
-    /// That is small per call and there are a great many calls -- it runs
-    /// after every resolution point in the game, some six hundred thousand
-    /// times in a two-thousand-game batch, and it is the second most
-    /// expensive function in the engine. What has been done about that is
-    /// the scan below; a dirty-flag scheme was not, because auras depend on
-    /// board membership, silence and whatever else each `Bonus` chooses to
-    /// read, and there is no one place that invalidates all three.
+    /// Runs after every resolution point in the game, so the scan below is
+    /// written to leave early. A dirty-flag scheme would not work: auras
+    /// depend on board membership, on silence, and on whatever else each
+    /// [`Bonus`] chooses to read, and no single place invalidates all
+    /// three.
     pub fn recompute_auras(&mut self) {
         // One pass over both boards, asking three questions at once: what
         // projects an aura, what grants itself a bonus, and whether anything
         // is currently carrying either. A position with none of the three
-        // leaves without writing a byte -- which used to mean walking both
-        // boards four times and looking a behaviour up twice per minion to
-        // arrive at nothing.
+        // leaves without writing a byte.
         //
-        // The hook table answers the first two questions from a byte per
-        // card, so the scan stays in L1 instead of reaching into the ninety
-        // kilobytes of `BEHAVIOURS`; the behaviour itself is fetched further
-        // down, only for the few cards that have one.
+        // The hook table answers the first two from a byte per card, so the
+        // scan stays in cache instead of reaching into `BEHAVIOURS`; the
+        // behaviour itself is fetched below, only for the cards that have
+        // one.
         let hooks = crate::cards::hooks();
         let mut sources: Inline<(Side, u8, CardId), { MAX_BOARD * 2 }> = Inline::new();
         let mut bonuses: Inline<(u8, u8), { MAX_BOARD * 2 }> = Inline::new();
@@ -847,15 +842,12 @@ impl Game {
     /// exist nowhere else once the pick is made.
     fn took_discover(&mut self, side: Side, others: [CardId; 2]) {
         self.player_mut(side).discovered_turn = true;
-        // This costs about 1.8% of raw throughput, measured: `Game::fire`
-        // builds a reactor list over both boards, both weapons, both Quests
-        // and both Hero Powers, and a Discover is frequent enough that doing
-        // that for an event almost nothing listens to shows up in `bench`.
-        // It is paid on purpose. The alternative was to check the two slots
-        // that react today -- a Quest and a weapon -- directly from here,
-        // which is cheap and is a hole: a board minion that reacts to a
-        // Discover would silently never fire, and there is no way to notice
-        // that except by a card being quietly wrong.
+        // Fired as a full event rather than by poking the two slots that
+        // react today. `Game::fire` builds a reactor list over both boards,
+        // both weapons, both Quests and both Hero Powers, which is not free
+        // for an event few cards listen to -- but a board minion that reacts
+        // to a Discover would otherwise never fire, and nothing would notice
+        // except the card being quietly wrong.
         self.fire(crate::events::Event::Discovered { side, others });
     }
 

@@ -77,10 +77,8 @@ impl Ctx {
     /// A Ctx for an effect nobody played: a token cast on someone's behalf, a
     /// Deathrattle fired with no body, a Start of Game hook.
     ///
-    /// Thirteen call sites used to spell out the same eight fields, six of
-    /// them the same six defaults every time -- which meant that adding a
-    /// field to `Ctx` was thirteen edits, and that a site which wanted a
-    /// non-default was hard to spot among the ones that did not.
+    /// Every field but `card` and `side` takes its default, so a call site
+    /// that wants a non-default is the one that spells it out.
     pub fn bare(card: CardId, side: Side) -> Ctx {
         Ctx {
             card,
@@ -1366,9 +1364,9 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     }),
 
     // ------------------------------------------------- straightforward text
-    // Cards whose whole text is one verb already in the vocabulary. Found by
-    // matching the corpus against the shapes `effects` can express, so each
-    // is a mechanical addition rather than a judgement call.
+    // Cards whose whole text is one verb already in the vocabulary: the
+    // corpus text maps onto a shape `effects` can express, so each is a
+    // mechanical addition rather than a judgement call.
     spell("Pyroblast", T::AnyCharacter, |g, c| {
         g.spell_damage(c.side, c.target, 10);
     }),
@@ -1495,9 +1493,8 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     }),
 
     // --------------------------------------------------- Standard gauntlet
-    // Chosen by how many of the twelve meta decks play them, not by fame. An
-    // earlier batch implemented famous classics that turned out to be
-    // Wild-only and added nothing to Standard coverage.
+    // Chosen by how many of the twelve meta decks play them, not by fame:
+    // a famous card that no Standard deck runs adds no coverage.
     battlecry("Glacial Shard", T::EnemyCharacter, |g, c| {
         if let Some(t) = c.target {
             g.freeze(t)
@@ -2455,9 +2452,9 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     }),
     // ------------------------------------------- ported from the Python engine
     // Cards the retired Python engine already reasoned through, translated onto the verbs
-    // that exist here. The Python original is the reference, not the authority:
-    // it was written against a corpus that carried three data bugs we have
-    // since fixed, so each of these arrives with a test of its own.
+    // that exist here. The Python original is the reference, not the authority --
+    // it was written against an older corpus -- so each of these carries a
+    // test of its own.
 
     // Cards that hand you a specific token. Python had to synthesise these by
     // name; here the id is resolved at compile time.
@@ -4321,11 +4318,10 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     }),
     // `discover`'s predicate is a plain `fn` pointer and cannot capture the
     // caster's live mana total, so this repeats its body by hand with
-    // `discover_pool` (which takes `impl Fn`) instead -- the same workaround
-    // used earlier this session for Al'Akir. Every match has the same cost
-    // by construction of the predicate, so there is no "prefer the highest
-    // cost" tiebreak to replicate from `discover` -- a flat random pick
-    // among them is equivalent.
+    // `discover_pool` (which takes `impl Fn`) instead. Every match has the
+    // same cost by construction of the predicate, so there is no "prefer the
+    // highest cost" tiebreak to replicate from `discover` -- a flat random
+    // pick among them is equivalent.
     battlecry("Scrappy Scavenger", T::None, |g, c| {
         let mana = g.player(c.side).mana;
         let pool = crate::cards::discover_pool(move |d| d.cost == mana);
@@ -10524,9 +10520,7 @@ pub const GRANTED_RATTLES: &[&str] = &[
 /// the deck and never arrives, a full hand burns what it cannot hold, and
 /// both `act_from_draw` and the `CardDrawn` event it fires can run effects
 /// that *discard* -- so the hand can be shorter afterwards than it was
-/// before. Found by the turn-planning search reaching a line greedy never
-/// played: hand of eight, draw three, seven cards left, slice from index
-/// eight.
+/// before.
 ///
 /// A card that asks "what did I just draw?" is asking about the tail of the
 /// hand, and the honest answer when the tail is gone is "nothing".
@@ -10862,7 +10856,7 @@ pub fn combines(left: CardId, right: CardId) -> Option<CardId> {
 ///
 /// A dozen side lists name a handful of cards each -- the ones whose printed
 /// rule has no hook to hang a behaviour on, and which the engine therefore
-/// reads by identity. Each of them used to carry its own copy of this loop.
+/// reads by identity. This is the one lookup all of them share.
 /// It is a `while` rather than `iter().position()` because these are asked
 /// from `const` context as well as from the engine, and neither iterators nor
 /// `PartialEq` are available there.
@@ -11210,12 +11204,11 @@ mod tests {
 
     #[test]
     fn a_card_that_asks_what_it_drew_survives_a_hand_that_shrank() {
-        // The bug `drawn_since` exists for. A draw runs arbitrary effects --
-        // a Casts When Drawn card resolves on the way out of the deck, and
-        // the `CardDrawn` event it fires reaches every trigger in play -- so
-        // the hand can be *shorter* when the draw returns than it was when
-        // the card snapshotted its length. Indexing with that snapshot
-        // panicked; the honest answer is that nothing was drawn.
+        // A draw runs arbitrary effects -- a Casts When Drawn card resolves
+        // on the way out of the deck, and the `CardDrawn` event it fires
+        // reaches every trigger in play -- so the hand can be *shorter* when
+        // the draw returns than it was when the card snapshotted its length.
+        // The answer then is that nothing was drawn.
         let mut g = crate::state::Game::new(
             (super::super::Class::Mage, &[]),
             (super::super::Class::Mage, &[]),
@@ -11229,7 +11222,7 @@ mod tests {
         }
         assert_eq!(drawn_since(&g, side, 1).len(), 2, "the ordinary case");
         assert_eq!(drawn_since(&g, side, 3).len(), 0, "nothing new");
-        // The case that used to panic: a mark past the end of the hand.
+        // A mark past the end of the hand.
         assert_eq!(drawn_since(&g, side, 9).len(), 0, "a hand that shrank");
     }
 

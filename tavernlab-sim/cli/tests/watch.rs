@@ -10,10 +10,9 @@
 //! prints the position it reconstructed precisely so that a mismatch against
 //! a real log is visible rather than silent.
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::Write;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const LOG: &str = "\
 D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME
@@ -76,109 +75,6 @@ fn before_the_first_turn_it_advises_the_mulligan() {
         !out.contains("ХІД\n"),
         "there is no turn to plan before the game starts: {out}"
     );
-}
-
-/// Start the watcher on a log file with the browser view on a free port, and
-/// stop it when the test ends.
-struct View {
-    child: std::process::Child,
-    port: u16,
-}
-
-impl Drop for View {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-impl View {
-    fn start(tag: &str, body: &str) -> View {
-        let home = home_for(tag);
-        let log = home.join("Power.log");
-        std::fs::write(&log, body).expect("write the log");
-        // Ask the OS for a free port and hand it straight over: a fixed one
-        // fails whenever the developer has the watcher running.
-        let port = TcpListener::bind(("127.0.0.1", 0))
-            .expect("a free port")
-            .local_addr()
-            .expect("its address")
-            .port();
-        let child = Command::new(env!("CARGO_BIN_EXE_tavernsim"))
-            .args([
-                "watch",
-                "--log",
-                log.to_str().expect("path"),
-                "--me",
-                "Me#1",
-                "--no-history",
-                "--serve",
-                &port.to_string(),
-            ])
-            .env("HOME", &home)
-            .env("USERPROFILE", &home)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("start the watcher");
-        let view = View { child, port };
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while Instant::now() < deadline {
-            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                return view;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        panic!("the view never started listening on {port}");
-    }
-
-    fn get(&self, path: &str) -> (u16, String) {
-        // Retried on a transport failure, not on a bad answer. A machine
-        // busy enough that the watcher's thread cannot be scheduled inside
-        // the read timeout drops the connection, and that is the test's own
-        // environment rather than the server's behaviour -- this failed once
-        // under a benchmark saturating every core. A status the server
-        // actually sent is never retried away.
-        for attempt in 0..3 {
-            match self.try_get(path) {
-                Some(answer) => return answer,
-                None => std::thread::sleep(Duration::from_millis(200 * (attempt + 1))),
-            }
-        }
-        panic!("no answer from the view on {path} after three tries");
-    }
-
-    fn try_get(&self, path: &str) -> Option<(u16, String)> {
-        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).ok()?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(30)))
-            .ok()?;
-        let head = format!(
-            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
-            self.port
-        );
-        stream.write_all(head.as_bytes()).ok()?;
-        let mut raw = Vec::new();
-        stream.read_to_end(&mut raw).ok()?;
-        let text = String::from_utf8_lossy(&raw).into_owned();
-        let (head, body) = text.split_once("\r\n\r\n")?;
-        let status = head.split_whitespace().nth(1)?.parse().ok()?;
-        Some((status, body.to_string()))
-    }
-
-    /// The advice, once the watcher has read the log. It polls the file, so
-    /// the first request can land before the first report.
-    fn advice(&self) -> String {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let (status, body) = self.get("/advice.json");
-            assert_eq!(status, 200, "{body}");
-            if !body.contains("чекаю на гру") || Instant::now() > deadline {
-                return body;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    }
 }
 
 /// A legal thirty-card Standard Mage list, generated from the implemented
@@ -309,26 +205,6 @@ fn with_a_deck_the_plan_is_drawn_over_a_real_library() {
 }
 
 #[test]
-fn the_browser_view_serves_the_same_advice_the_terminal_prints() {
-    // The wiring is the thing that breaks: a report built and never
-    // published, a page served from a path the script does not fetch. Both
-    // ends are checked here rather than trusted.
-    let view = View::start("view", &format!("{LOG}{AFTER_MULLIGAN}"));
-
-    let (status, page) = view.get("/");
-    assert_eq!(status, 200);
-    assert!(page.contains("advice.json"), "the page fetches the advice");
-
-    let body = view.advice();
-    assert!(body.contains("\"heading\":\"ХІД\""), "{body}");
-    assert!(body.contains("зіграти Chillwind Yeti"), "{body}");
-    assert!(body.contains("Bloodfen Raptor"), "the position is there too: {body}");
-
-    let (status, _) = view.get("/nope");
-    assert_eq!(status, 404, "an unknown path is not the page");
-}
-
-#[test]
 fn once_the_game_starts_it_reads_the_board_and_plans_the_turn() {
     let out = run("turn", &format!("{LOG}{AFTER_MULLIGAN}"), &["--me", "Me#1"]);
     assert!(out.contains("хід 7"), "{out}");
@@ -355,7 +231,10 @@ fn without_a_battletag_the_mana_is_unknown_rather_than_zero() {
     // be a number nobody measured.
     let out = run("nameless", &format!("{LOG}{AFTER_MULLIGAN}"), &[]);
     assert!(out.contains("мана невідома"), "{out}");
-    assert!(out.contains("HS_ME"), "and it says how to fix it: {out}");
+    assert!(
+        out.contains("бойовий тег"),
+        "and it says what would fix it: {out}"
+    );
 }
 
 #[test]
@@ -397,11 +276,10 @@ fn session(tag: &str, power: &str, zone: &str) -> std::path::PathBuf {
 
 #[test]
 fn a_finished_games_board_does_not_pile_up_on_the_next_one() {
-    // The bug the first real log showed. `CREATE_GAME` is written only to
-    // Power.log, so reading one file and then the other puts every reset at
-    // the front and lays every zone move of the whole session on top of the
-    // last game: minions on boards that are empty, and the classes of a game
-    // that finished an hour ago.
+    // `CREATE_GAME` is written only to Power.log, so reading one file and
+    // then the other would put every reset at the front and lay every zone
+    // move of the whole session on top of the last game: minions on boards
+    // that are empty, and the classes of a game that finished an hour ago.
     let power = "\
 D 09:00:00.0000000 [Power] GameState.DebugPrintPower() - CREATE_GAME
 D 09:30:00.0000000 [Power] GameState.DebugPrintPower() - CREATE_GAME
@@ -631,9 +509,9 @@ D 09:00:04.2 [Zone] ZoneChangeList.ProcessChanges() - id=8 local=False [entityNa
 /// A minion the log has taken to zero health is off the board already.
 ///
 /// The `DAMAGE` line and the line that moves the body out of play arrive in
-/// different poll batches, up to seven hundred milliseconds apart. In between,
-/// a real session showed `Accelerated Whelp 4/0` standing in the position —
-/// and the plan was drawn over a board with a corpse on it.
+/// different poll batches, up to a poll apart. In between, the body reads as
+/// standing at zero health, and the plan would be drawn over a board with a
+/// corpse on it.
 #[test]
 fn a_body_at_zero_health_is_not_in_the_position() {
     const NOW: &str = "\
