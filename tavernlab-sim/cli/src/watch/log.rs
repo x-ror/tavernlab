@@ -16,6 +16,10 @@
 pub enum Event {
     /// A new game is starting. Everything before it belongs to the last one.
     NewGame,
+    /// `Player EntityID=2 PlayerID=1` from the CREATE_GAME dump: the entity
+    /// the later `CURRENT_PLAYER Entity=2` lines name, mapped onto the
+    /// `player=N` the zone lines use.
+    PlayerSlot { entity: u32, player: u8 },
     /// A card entered or left a zone, from the point of view of the player
     /// whose client wrote the log.
     Zone(ZoneMove),
@@ -46,6 +50,10 @@ pub enum Event {
     CurrentPlayer {
         player_name: String,
         player: Option<u8>,
+        /// Set when `Entity=` was a bare number -- the player entity from
+        /// CREATE_GAME, not a battletag. The tracker maps it through
+        /// [`Event::PlayerSlot`].
+        entity: Option<u32>,
         current: bool,
     },
     /// The game ended for one player.
@@ -218,6 +226,18 @@ pub fn parse(line: &str) -> Option<Event> {
     if line.contains("CREATE_GAME") {
         return Some(Event::NewGame);
     }
+    // Lives on the CREATE_GAME dump, one line per player: `Player EntityID=2
+    // PlayerID=1`. The first CURRENT_PLAYER of the game names that entity
+    // (`Entity=2`), and the zone lines name the PlayerID (`player=1`).
+    if let Some(rest) = line.split("Player EntityID=").nth(1) {
+        let entity: u32 = rest
+            .split(|c: char| !c.is_ascii_digit())
+            .next()?
+            .parse()
+            .ok()?;
+        let player: u8 = field(line, "PlayerID=")?.parse().ok()?;
+        return Some(Event::PlayerSlot { entity, player });
+    }
 
     // A zone move, from Zone.log. The richest line in either file: it names
     // the card, its entity, its owner, and which side of the board it is on.
@@ -317,9 +337,15 @@ pub fn parse(line: &str) -> Option<Event> {
             });
         }
         "CURRENT_PLAYER" => {
+            let numeric = !who.is_empty() && who.bytes().all(|b| b.is_ascii_digit());
             return Some(Event::CurrentPlayer {
-                player_name: player_name(who)?.to_string(),
+                player_name: if numeric {
+                    String::new()
+                } else {
+                    player_name(who)?.to_string()
+                },
                 player: player_number(who),
+                entity: if numeric { who.parse().ok() } else { None },
                 current: value == "1",
             });
         }
@@ -422,6 +448,32 @@ mod tests {
         // A tag with no model here is dropped rather than half-read.
         let other = rush.replace("tag=RUSH value=1", "tag=ZONE_POSITION value=2");
         assert_eq!(parse(&other), None);
+    }
+
+    #[test]
+    fn create_game_binds_player_entities_and_numeric_current_player() {
+        assert_eq!(
+            parse(
+                "D 01:38:49.8 GameState.DebugPrintPower() -     \
+                 Player EntityID=2 PlayerID=1 GameAccountId=[hi=1 lo=1]"
+            ),
+            Some(Event::PlayerSlot {
+                entity: 2,
+                player: 1
+            })
+        );
+        assert_eq!(
+            parse(
+                "D 01:38:49.8 GameState.DebugPrintPower() -     \
+                 TAG_CHANGE Entity=2 tag=CURRENT_PLAYER value=1 "
+            ),
+            Some(Event::CurrentPlayer {
+                player_name: String::new(),
+                player: None,
+                entity: Some(2),
+                current: true
+            })
+        );
     }
 
     #[test]
@@ -551,6 +603,7 @@ mod tests {
             Some(Event::CurrentPlayer {
                 player_name: "Player#12345".into(),
                 player: None,
+                entity: None,
                 current: true
             })
         );

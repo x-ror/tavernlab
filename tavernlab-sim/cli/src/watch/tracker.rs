@@ -286,6 +286,11 @@ pub struct Tracker {
     /// Whether a `CURRENT_PLAYER` line was ever attributed to a player.
     /// While this is false, `my_turn` is not an answer but a default.
     pub turn_read: bool,
+    /// Player entity id for `player=1` and `player=2`, from CREATE_GAME.
+    /// `CURRENT_PLAYER Entity=2` names the first of these, not a battletag.
+    player_entities: [Option<u32>; 2],
+    /// The `player=N` whose `CURRENT_PLAYER` is 1, once one has been seen.
+    current_pid: Option<u8>,
     /// True once the mulligan is done and the game proper has started.
     ///
     /// Driven by `STEP=MAIN_READY`, not by the turn counter: `TURN=1` is set
@@ -406,14 +411,32 @@ impl Tracker {
     /// stays necessary for a log that only ever writes the bare-battletag
     /// form, which carries no player number at all.
     fn learn_me(&mut self, name: &str, player: Option<u8>) {
+        let Some(p) = player else { return };
+        self.learn_me_as(name, p);
+    }
+
+    fn learn_me_as(&mut self, name: &str, player: u8) {
         if self.me_name.is_some() || name.is_empty() {
             return;
         }
-        if let (Some(p), Some(me)) = (player, self.me)
-            && p == me
-        {
+        if self.me == Some(player) {
             self.me_name = Some(name.to_string());
             self.me_learned = true;
+        }
+    }
+
+    fn pid_of_entity(&self, entity: u32) -> Option<u8> {
+        self.player_entities
+            .iter()
+            .enumerate()
+            .find_map(|(i, slot)| (*slot == Some(entity)).then_some(i as u8 + 1))
+    }
+
+    fn set_current_pid(&mut self, pid: u8) {
+        self.current_pid = Some(pid);
+        if let Some(me) = self.me {
+            self.my_turn = pid == me;
+            self.turn_read = true;
         }
     }
 
@@ -426,6 +449,11 @@ impl Tracker {
     pub fn feed(&mut self, ev: Event) {
         match ev {
             Event::NewGame => *self = Tracker::new(self.me_name.clone()),
+            Event::PlayerSlot { entity, player } => {
+                if player == 1 || player == 2 {
+                    self.player_entities[(player - 1) as usize] = Some(entity);
+                }
+            }
             Event::Turn(t) => {
                 self.turn = t;
                 // Turn 1 is written at CREATE_GAME, before the opening is
@@ -467,41 +495,50 @@ impl Tracker {
             Event::CurrentPlayer {
                 player_name,
                 player,
+                entity,
                 current,
             } => {
-                self.learn_me(&player_name, player);
                 self.note_name(&player_name);
-                // A name is learnable here even with no number on the line.
-                // The opening hand says whose turn this is -- see
-                // `whose_turn` -- and a `CURRENT_PLAYER value=1` names the
-                // player whose turn it is. Put together they name you, which
-                // is the bridge between the zone lines that carry a player
-                // number and the Power lines that carry only a battletag.
-                //
-                // Only the positive direction: "it is my turn and this line
-                // says who is current" identifies you. "It is their turn"
-                // would identify you only by elimination, and a log that has
-                // shown one name so far would then pin the wrong one.
-                if self.me_name.is_none()
-                    && current
-                    && self.whose_turn() == Some(true)
-                    && !player_name.is_empty()
-                {
-                    self.me_name = Some(player_name.clone());
-                    self.me_learned = true;
-                }
-                // The player number first, when the line carries one: it
-                // says whose turn it is without anyone's name being matched.
-                if let (Some(p), Some(me)) = (player, self.me) {
-                    if p == me {
-                        self.my_turn = current;
-                        self.turn_read = true;
-                    } else if current {
+                // Prefer a player number the line itself carried, then the
+                // CREATE_GAME entity map. Bare battletags have neither, and
+                // are bound below from who is stepping down -- not from the
+                // Coin and the turn counter. The client writes CURRENT_PLAYER
+                // *before* it increments TURN, so "it is my turn and this
+                // name is current" at a turn boundary names the opponent.
+                let pid = player.or_else(|| entity.and_then(|e| self.pid_of_entity(e)));
+                if let Some(p) = pid {
+                    self.learn_me_as(&player_name, p);
+                    if current {
+                        self.set_current_pid(p);
+                    } else if self.me == Some(p) {
                         self.my_turn = false;
                         self.turn_read = true;
                     }
                     return;
                 }
+                if player_name.is_empty() {
+                    return;
+                }
+                if !current {
+                    if let Some(c) = self.current_pid {
+                        self.learn_me_as(&player_name, c);
+                    }
+                    if self.is_me(&player_name) {
+                        self.my_turn = false;
+                        self.turn_read = true;
+                    }
+                    return;
+                }
+                // Becoming current, no number on the line: the other player
+                // than whoever `current_pid` still says, because this line
+                // arrives before TURN moves.
+                if let Some(c) = self.current_pid {
+                    let other = if c == 1 { 2 } else { 1 };
+                    self.learn_me_as(&player_name, other);
+                    self.set_current_pid(other);
+                    return;
+                }
+                self.learn_me(&player_name, player);
                 if self.me_name.is_none() {
                     return;
                 }
@@ -605,6 +642,10 @@ impl Tracker {
         let zone = m.zone.as_str();
         if mine && self.me.is_none() {
             self.me = Some(player);
+            if let Some(c) = self.current_pid {
+                self.my_turn = c == player;
+                self.turn_read = true;
+            }
         }
         let Some(i) = self.index(player) else { return };
         let card = card_of(&m.card_id);
@@ -816,6 +857,37 @@ mod tests {
     }
 
     #[test]
+    fn the_real_wine_session_does_not_name_the_opponent_as_me() {
+        // Extracted from Hearthstone_2026_08_31_01_37_31, timestamps in order.
+        // FRIENDLY is player 2 / The Lich King / xror; the opponent is
+        // player 1 / Prince Renathal / modish. The Coin is dealt to us.
+        let mut t = Tracker::new(None);
+        feed(&mut t, &[
+            "D 01:38:49.8744450 GameState.DebugPrintPower() - CREATE_GAME",
+            "D 01:38:49.8744450 GameState.DebugPrintPower() -     Player EntityID=2 PlayerID=1 GameAccountId=[hi=1 lo=1]",
+            "D 01:38:49.8744450 GameState.DebugPrintPower() -     Player EntityID=3 PlayerID=2 GameAccountId=[hi=1 lo=2]",
+            "D 01:38:49.8744450 GameState.DebugPrintPower() -     TAG_CHANGE Entity=2 tag=CURRENT_PLAYER value=1 ",
+            "D 01:38:49.8744450 GameState.DebugPrintPower() -     TAG_CHANGE Entity=1 tag=TURN value=1 ",
+            "D 01:38:51.9362492 ZoneChangeList.ProcessChanges() - id=1 local=False [entityName=Prince Renathal id=64 zone=PLAY zonePos=0 cardId=HERO_01w player=1] zone from  -> OPPOSING PLAY (Hero)",
+            "D 01:38:52.0350597 ZoneChangeList.ProcessChanges() - id=1 local=False [entityName=The Lich King id=66 zone=PLAY zonePos=0 cardId=HERO_11 player=2] zone from  -> FRIENDLY PLAY (Hero)",
+            "D 01:38:53.5311114 ZoneChangeList.ProcessChanges() - id=2 local=False [entityName=The Coin id=68 zone=HAND zonePos=5 cardId=GAME_005 player=2] zone from  -> FRIENDLY HAND",
+            "D 01:39:37.1457474 GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=STEP value=MAIN_READY",
+            "D 01:40:21.6660906 GameState.DebugPrintPower() -     TAG_CHANGE Entity=modish#2144 tag=CURRENT_PLAYER value=0 ",
+            "D 01:40:21.6660906 GameState.DebugPrintPower() -     TAG_CHANGE Entity=xror#21652 tag=CURRENT_PLAYER value=1 ",
+            "D 01:40:21.6660906 GameState.DebugPrintPower() -     TAG_CHANGE Entity=GameEntity tag=TURN value=2 ",
+        ]);
+        assert_eq!(t.me, Some(2), "FRIENDLY named player 2");
+        assert_eq!(t.had_coin(), Some(true), "GAME_005 landed in the opening");
+        assert_eq!(
+            t.me_name.as_deref(),
+            Some("xror#21652"),
+            "got {} instead",
+            t.me_name.as_deref().unwrap_or("(none)")
+        );
+        assert_eq!(t.whose_turn(), Some(true), "turn 2 is the Coin holder's");
+    }
+
+    #[test]
     fn the_coin_says_which_turns_are_mine_when_the_log_will_not() {
         // A client that writes CURRENT_PLAYER as a bare battletag carries no
         // player number, so no name is ever matched to one. The opening hand
@@ -842,8 +914,12 @@ mod tests {
         let mut t = Tracker::new(None);
         feed(&mut t, &[
             "D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME",
-            "D 09:00:00.2 [Zone] ZoneChangeList.ProcessChanges() - id=3 local=False [entityName=The Coin id=11 zone=DECK zonePos=0 cardId=GAME_005 player=1] zone from  -> FRIENDLY HAND",
+            "D 09:00:00.0 [Power] GameState.DebugPrintPower() -     Player EntityID=2 PlayerID=1 GameAccountId=[hi=1 lo=1]",
+            "D 09:00:00.0 [Power] GameState.DebugPrintPower() -     Player EntityID=3 PlayerID=2 GameAccountId=[hi=1 lo=2]",
+            "D 09:00:00.0 [Power] GameState.DebugPrintPower() -     TAG_CHANGE Entity=2 tag=CURRENT_PLAYER value=1",
+            "D 09:00:00.2 [Zone] ZoneChangeList.ProcessChanges() - id=3 local=False [entityName=The Coin id=11 zone=DECK zonePos=0 cardId=GAME_005 player=2] zone from  -> FRIENDLY HAND",
             "D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=2",
+            "D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Them#1 tag=CURRENT_PLAYER value=0",
             "D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=xror#21652 tag=CURRENT_PLAYER value=1",
             "D 09:00:01.3 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=xror#21652 tag=RESOURCES value=1",
             "D 09:00:01.4 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=xror#21652 tag=RESOURCES_USED value=0",
