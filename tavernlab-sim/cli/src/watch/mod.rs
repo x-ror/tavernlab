@@ -421,22 +421,6 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
     if !tr.secrets[1].is_empty() {
         out.push(Line::new("live.plan.their_secrets").with("n", tr.secrets[1].len() as i64));
     }
-    // A gap in the advice, said rather than hidden.
-    //
-    // `Planner::eval` weighs boards, hero totals, cards in hand and unspent
-    // mana. Setting a secret moves a card out of hand and changes none of
-    // the rest, so every line that sets one scores below the line that does
-    // not, and the plan never offers it -- with seven mana and nothing else
-    // in hand it still does not. Giving the evaluation a number for a secret
-    // would be inventing one; until it is measured, this says what the plan
-    // is not telling you.
-    if tr
-        .hand
-        .iter()
-        .any(|b| b.card.def().keywords.has(tavernlab_core::cards::Keywords::SECRET))
-    {
-        out.push(Line::new("live.plan.secret_in_hand"));
-    }
     out
 }
 

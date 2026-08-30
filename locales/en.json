@@ -74,7 +74,6 @@
  "live.plan.play": "play {card}",
  "live.plan.play_at": "play {card} → {target}",
  "live.plan.prepare": "Prepare {card}",
- "live.plan.secret_in_hand": "(the plan never offers a secret from hand: the evaluation has no number for one and inventing it here is not allowed — all it sees is a card leaving your hand)",
  "live.plan.their_secrets": "(secrets the opponent has: {n} — the plan does not account for them, because the log does not say which)",
  "live.plan.trade": "Trade {card}",
  "live.pos.empty": "empty",

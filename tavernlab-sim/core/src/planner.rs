@@ -78,10 +78,15 @@ impl Weights {
     /// they cancel rather than decide, and any value from 0 to 1 plays the
     /// same. `card` has a narrow peak around 2.0 and should be held loosely.
     ///
-    /// `secret` stays at zero until `tavernsim weights` says otherwise; a
-    /// price nobody measured is a number invented, whatever it buys.
+    /// `secret` prices what the search cannot reach. It is held as loosely
+    /// as `card`: every value from 4 to 12 played the same, and 4 is the
+    /// smallest that bought the whole difference, so it is the one that
+    /// distorts the rest of the evaluation least. Below 2 it bought nothing
+    /// at all -- the weight was too small to flip a single decision, and the
+    /// games came out identical.
     pub const MEASURED: Weights = Weights {
         card: 2.0,
+        secret: 4.0,
         ..Weights::GUESSED
     };
 }

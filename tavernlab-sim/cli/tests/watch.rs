@@ -931,14 +931,14 @@ fn a_secret_that_fired_is_no_longer_in_the_position() {
     );
 }
 
-/// The plan does not offer a secret, and says so.
+/// A secret is a play now, and a secret already set is not.
 ///
 /// `Planner::eval` weighs boards, hero totals, cards in hand and unspent
-/// mana. Setting a secret moves a card out of hand and changes none of the
-/// rest, so every line that sets one scores below the line that does not.
-/// With seven mana and nothing in hand but the secret, the plan still does
-/// not offer it -- which is a real limit on the advice, and the reason it is
-/// printed rather than left to be noticed.
+/// mana, so before `Weights::secret` every line that set a secret scored
+/// below the line that did not, and the plan never offered one. With a price
+/// on it -- measured, see the README -- it does, and the engine's own rule
+/// that a secret cannot be set twice becomes something the plan obeys rather
+/// than something no plan ever reached.
 const ONLY_A_SECRET: &str = "\
 D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME
 D 09:00:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=1 local=False [entityName=Jaina Proudmoore id=64 zone=PLAY zonePos=0 cardId=HERO_08 player=1] zone from  -> FRIENDLY PLAY (Hero)
@@ -951,18 +951,32 @@ D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=CU
 ";
 
 #[test]
-fn a_secret_in_hand_is_never_planned_and_the_plan_admits_it() {
+fn a_secret_in_hand_is_a_play_the_plan_offers() {
     let out = run("secret-hand", ONLY_A_SECRET, &["--me", "Me#1"]);
     assert!(
-        out.contains("рука: Counterspell"),
-        "three mana of seven buys it: {out}"
+        out.contains("зіграти Counterspell"),
+        "the evaluation prices it now, so the plan spends the mana: {out}"
+    );
+}
+
+#[test]
+fn the_copy_of_a_secret_already_set_is_not_offered() {
+    // The same hand and the same mana, with one already in the zone. The
+    // engine refuses to offer a secret it holds a copy of, and the rebuilt
+    // position carries the real zone -- so the plan does not suggest the
+    // set that the game would not allow.
+    let already = format!(
+        "{ONLY_A_SECRET}D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=9 local=False \
+         [entityName=Counterspell id=50 zone=HAND zonePos=1 cardId=EX1_287 player=1] \
+         zone from FRIENDLY HAND -> FRIENDLY SECRET\n"
+    );
+    let out = run("secret-dup", &already, &["--me", "Me#1"]);
+    assert!(
+        out.contains("ваші секрети: Counterspell"),
+        "one is set: {out}"
     );
     assert!(
         !out.contains("зіграти Counterspell"),
-        "and the evaluation still never wants it: {out}"
-    );
-    assert!(
-        out.contains("секрет у руці план не пропонує"),
-        "so the advice says what it is not saying: {out}"
+        "so the copy in hand is not a play: {out}"
     );
 }

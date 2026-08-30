@@ -74,7 +74,6 @@
  "live.plan.play": "зіграти {card}",
  "live.plan.play_at": "зіграти {card} → {target}",
  "live.plan.prepare": "Prepare {card}",
- "live.plan.secret_in_hand": "(секрет у руці план не пропонує: оцінка позиції не має для секрету числа, і вигадувати його тут не можна — вона бачить лише втрату карти з руки)",
  "live.plan.their_secrets": "(у суперника секретів: {n} — план їх не враховує, бо лог не каже, які саме)",
  "live.plan.trade": "Trade {card}",
  "live.pos.empty": "порожня",
