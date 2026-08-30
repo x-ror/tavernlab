@@ -260,6 +260,9 @@ pub struct Tracker {
     /// battletag could be matched to. `None` on a game the log never
     /// resolved, and on one where `--me` was never supplied.
     pub won: Option<bool>,
+    /// Whether a `CURRENT_PLAYER` line was ever attributed to a player.
+    /// While this is false, `my_turn` is not an answer but a default.
+    pub turn_read: bool,
     /// True once the mulligan is done and the game proper has started.
     ///
     /// Driven by `STEP=MAIN_READY`, not by the turn counter: `TURN=1` is set
@@ -301,6 +304,32 @@ impl Tracker {
     ///
     /// `None` before the opening hand is complete: an empty opening hand is
     /// not "no Coin", it is "not dealt yet".
+    /// Whose turn it is: read from the log, else worked out, else unknown.
+    ///
+    /// The log states it on a `CURRENT_PLAYER` line, but only usably when
+    /// that line carries a player number or a name that has been matched to
+    /// one. A client that writes those lines as a bare battletag and never
+    /// as a bracketed descriptor gives neither, and then the turn was never
+    /// attributed at all -- which used to mean no turn plan for the whole
+    /// game, on every turn, in silence.
+    ///
+    /// The opening hand answers it anyway, by two rules rather than a guess:
+    /// The Coin is "granted at the start of each game to whichever player is
+    /// selected to go second", and the second player takes the even-numbered
+    /// turns -- the wiki's own turn limit note counts them, "Player 1 has 45
+    /// complete turns (turn 1, 3, 5...), while Player 2 has 44 (turn 2, 4,
+    /// 6...)". So a Coin in the opening hand says which parity is mine.
+    ///
+    /// `None` only when the opening was never seen either, which is the
+    /// watcher having been started in the middle of a game.
+    pub fn whose_turn(&self) -> Option<bool> {
+        if self.turn_read {
+            return Some(self.my_turn);
+        }
+        let coin = self.had_coin()?;
+        (self.turn > 0).then_some((self.turn % 2 == 0) == coin)
+    }
+
     pub fn had_coin(&self) -> Option<bool> {
         if self.opening.is_empty() {
             return None;
@@ -396,13 +425,27 @@ impl Tracker {
             } => {
                 self.learn_me(&player_name, player);
                 self.note_name(&player_name);
+                // The player number first, when the line carries one: it
+                // says whose turn it is without anyone's name being matched.
+                if let (Some(p), Some(me)) = (player, self.me) {
+                    if p == me {
+                        self.my_turn = current;
+                        self.turn_read = true;
+                    } else if current {
+                        self.my_turn = false;
+                        self.turn_read = true;
+                    }
+                    return;
+                }
                 if self.me_name.is_none() {
                     return;
                 }
                 if self.is_me(&player_name) {
                     self.my_turn = current;
+                    self.turn_read = true;
                 } else if current {
                     self.my_turn = false;
+                    self.turn_read = true;
                 }
             }
             Event::Resources {
@@ -687,6 +730,46 @@ mod tests {
         ]);
         assert_eq!(t.crystals, Some(7));
         assert_eq!(t.mana_left(), Some(4));
+    }
+
+    #[test]
+    fn the_coin_says_which_turns_are_mine_when_the_log_will_not() {
+        // A client that writes CURRENT_PLAYER as a bare battletag carries no
+        // player number, so no name is ever matched to one. The opening hand
+        // answers it: The Coin goes to the player on the draw, and that
+        // player takes the even turns.
+        let mut t = Tracker::new(None);
+        feed(&mut t, &[
+            "D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME",
+            "D 09:00:00.2 [Zone] ZoneChangeList.ProcessChanges() - id=3 local=False [entityName=The Coin id=11 zone=DECK zonePos=0 cardId=GAME_005 player=1] zone from  -> FRIENDLY HAND",
+            "D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=2",
+        ]);
+        assert_eq!(t.me_name, None, "the name was never learned");
+        assert_eq!(t.whose_turn(), Some(true), "but turn two is the Coin holder's");
+
+        t.feed(crate::watch_mod::log::Event::Turn(3));
+        assert_eq!(t.whose_turn(), Some(false), "and turn three is not");
+    }
+
+    #[test]
+    fn no_coin_means_the_odd_turns_are_mine() {
+        let mut t = Tracker::new(None);
+        feed(&mut t, &[
+            "D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME",
+            "D 09:00:00.2 [Zone] ZoneChangeList.ProcessChanges() - id=3 local=False [entityName=Corpse Cannon id=12 zone=DECK zonePos=0 cardId=JAIL_450 player=1] zone from  -> FRIENDLY HAND",
+            "D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=1",
+        ]);
+        assert_eq!(t.whose_turn(), Some(true), "no Coin is going first");
+        t.feed(crate::watch_mod::log::Event::Turn(2));
+        assert_eq!(t.whose_turn(), Some(false));
+    }
+
+    #[test]
+    fn a_log_read_from_the_middle_admits_it_does_not_know() {
+        // No opening hand to reason from, and no attributable CURRENT_PLAYER.
+        let mut t = Tracker::new(None);
+        t.feed(crate::watch_mod::log::Event::Turn(5));
+        assert_eq!(t.whose_turn(), None);
     }
 
     #[test]

@@ -980,3 +980,45 @@ fn the_copy_of_a_secret_already_set_is_not_offered() {
         "so the copy in hand is not a play: {out}"
     );
 }
+
+/// The turn plan does not need to know your name to know it is your turn.
+///
+/// A client that writes `CURRENT_PLAYER` as a bare battletag gives no player
+/// number, so the name can never be matched to one and the turn was never
+/// attributed -- which meant no plan at all, every turn, for the whole game,
+/// in silence. The opening hand answers it anyway: The Coin goes to the
+/// player on the draw, and that player takes the even-numbered turns.
+const BARE_TAGS: &str = "\
+D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME
+D 09:00:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=1 local=False [entityName=The Lich King id=64 zone=PLAY zonePos=0 cardId=HERO_11 player=1] zone from  -> FRIENDLY PLAY (Hero)
+D 09:00:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=2 local=False [entityName=Gul'dan id=65 zone=PLAY zonePos=0 cardId=HERO_07 player=2] zone from  -> OPPOSING PLAY (Hero)
+D 09:00:00.2 [Zone] ZoneChangeList.ProcessChanges() - id=3 local=False [entityName=The Coin id=11 zone=DECK zonePos=0 cardId=GAME_005 player=1] zone from  -> FRIENDLY HAND
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=2
+D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=xror#21652 tag=CURRENT_PLAYER value=1
+D 09:00:01.2 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=starkalpha#2221 tag=CURRENT_PLAYER value=0
+";
+
+#[test]
+fn a_log_that_never_names_you_still_gets_a_turn_plan() {
+    let out = run("baretags", BARE_TAGS, &[]);
+    assert!(out.contains("хід 2 (ваш)"), "the Coin says the even turns are mine: {out}");
+    assert!(out.contains("ХІД"), "and so there is a plan at all: {out}");
+    assert!(
+        out.contains("у лозі трапилися імена: xror#21652, starkalpha#2221"),
+        "the names are still offered, because the battletag is still unmatched: {out}"
+    );
+}
+
+#[test]
+fn the_guessed_mana_is_the_crystals_the_turn_has() {
+    // Each player gains one at the start of their own turn and the two
+    // alternate, so turn two is the second player's first: one crystal, not
+    // two. `turn / 2 + 1` said two, and a plan drawn at two spends what you
+    // do not have.
+    let out = run("guessmana", BARE_TAGS, &[]);
+    assert!(out.contains("рахував як 1"), "{out}");
+    assert!(
+        out.contains("зіграти The Coin"),
+        "and with one crystal the Coin is what buys the turn: {out}"
+    );
+}

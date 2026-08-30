@@ -279,6 +279,10 @@ fn remaining_deck(tr: &Tracker, deck: &str) -> Vec<CardId> {
 }
 
 fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
+    let mut caveats = Vec::new();
+    if tr.whose_turn().is_none() {
+        caveats.push(Line::new("live.plan.whose_turn_unknown"));
+    }
     let (Some(mine), Some(theirs)) = (tr.my_class(), tr.opponent_class()) else {
         return vec![Line::new("live.plan.no_classes")];
     };
@@ -331,8 +335,17 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
     }
     // Without a battletag the log's mana lines cannot be attributed, so the
     // plan is drawn at the turn's worth of crystals rather than at a made-up
-    // number: it will suggest more than you can pay for, and says so.
-    g.players[0].crystals = tr.crystals.unwrap_or_else(|| (tr.turn as i16 / 2 + 1).min(10));
+    // number, and says that it guessed.
+    //
+    // Each player gains a crystal at the start of their own turn, and the
+    // two alternate -- turns 1 and 2 are the first for their respective
+    // players, 3 and 4 the second. So the count is the same for both sides
+    // and is `ceil(turn / 2)`, which the old `turn / 2 + 1` overstated by one
+    // on every even turn: it gave the player on the draw two crystals on
+    // turn two, and a plan that spends what you do not have.
+    g.players[0].crystals = tr
+        .crystals
+        .unwrap_or_else(|| ((tr.turn as i16 + 1) / 2).clamp(1, 10));
     g.players[0].mana = tr.mana_left().unwrap_or(g.players[0].crystals);
     g.turn = tr.turn;
     for side in 0..2 {
@@ -429,6 +442,7 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
     if !deck_known {
         out.push(Line::new("live.plan.no_deck"));
     }
+    out.extend(caveats);
     // The opponent's secrets are known to exist and not known to be
     // anything. The plan is drawn without them, and the reader is the one
     // who can play around what the plan cannot see.
@@ -677,11 +691,12 @@ pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice
             sections: Vec::new(),
         };
     }
+    let mine = tr.whose_turn();
     let mut title = vec![
-        Line::new(if tr.my_turn {
-            "live.title.turn_mine"
-        } else {
-            "live.title.turn_theirs"
+        Line::new(match mine {
+            Some(true) => "live.title.turn_mine",
+            Some(false) => "live.title.turn_theirs",
+            None => "live.title.turn_unknown",
         })
         .with("turn", tr.turn as i64),
     ];
@@ -709,7 +724,11 @@ pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice
         // is left alone: it also decides what counts as the opening hand, and
         // setting it from "someone is the current player" would empty every
         // recorded opening if that line arrived before the deal.
-        if tr.my_turn && !tr.over {
+        // A positive answer only. Before the game starts there is no turn to
+        // plan, and "nothing to do this turn" during the mulligan is noise
+        // rather than advice -- unlike mid-game, where not knowing whose
+        // turn it is still leaves a plan worth showing.
+        if mine == Some(true) && !tr.over {
             sections.push(section("live.head.turn", plan(tr, deck)));
         }
         return Advice { title, sections };
@@ -718,7 +737,11 @@ pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice
     // The turn first: it is the thing being looked up mid-game, and a reader
     // glancing at a browser window beside the client should not have to
     // scroll past the board they can already see.
-    if tr.my_turn && !tr.over {
+    // Silence is the one answer that helps nobody. When the log never said
+    // whose turn it is and the opening did not settle it either, the plan is
+    // still what you would do on your turn -- so it is shown, and says that
+    // it could not tell.
+    if mine != Some(false) && !tr.over {
         sections.push(section("live.head.turn", plan(tr, deck)));
     }
     sections.push(section("live.head.opponent", opponent_read(app, format, tr)));
