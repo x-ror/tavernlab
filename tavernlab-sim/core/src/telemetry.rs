@@ -68,14 +68,9 @@ impl CardStat {
     /// Half-width of the 95% interval on [`opening_delta`], in win-rate
     /// points, or `None` with nothing to measure.
     ///
-    /// A card's opening record is a fraction of the games in a run -- it has
-    /// to be drawn and then kept -- so it is far narrower than the matchup
-    /// it sits in, and the difference it reports is correspondingly wider
-    /// than it looks. Without this the tab printed a confident ЛИШИТИ or
-    /// СКИНУТИ for a card whose measured difference was inside its own error
-    /// bar: rerunning the same deck on a different seed list flipped 28% of
-    /// those verdicts, which is the honest size of a verdict that says
-    /// nothing.
+    /// A card's opening record covers only the games where it was drawn and
+    /// then kept, so it is far narrower than the matchup it sits in and the
+    /// difference it reports is correspondingly wider than it looks.
     pub fn opening_margin(&self) -> Option<f64> {
         (self.open_n > 0).then(|| {
             let p = self.open_w as f64 / self.open_n as f64;
@@ -83,12 +78,11 @@ impl CardStat {
         })
     }
 
-    /// What the run can actually say about keeping this card.
+    /// What the run can say about keeping this card.
     ///
-    /// Three answers, not two. "No measurable difference" is the honest
-    /// third, and at a realistic number of games it is the commonest -- most
-    /// cards in a deck really do sit near the line, and a binary verdict
-    /// over them is a coin toss wearing a number.
+    /// Three answers, not two: most cards in a deck sit near the line, and a
+    /// binary verdict over a difference smaller than its own error bar says
+    /// nothing.
     pub fn opening_verdict(&self, base: f64, min_n: u32) -> Verdict {
         let (Some(delta), Some(margin)) = (self.opening_delta(base, min_n), self.opening_margin())
         else {
@@ -178,12 +172,10 @@ pub fn instrumented_parallel(
 /// [`instrumented_parallel`] played by a named policy rather than the
 /// engine's greedy one.
 ///
-/// The mulligan advice is built out of these runs, and it is a comparison
-/// *between the cards of one deck* rather than between decks -- so the
-/// argument that a policy's bias cancels, which holds for a deck measured
-/// against a field, does not obviously hold here. A card the greedy policy
-/// misplays looks bad whoever it is played against. This is what lets that
-/// be checked instead of assumed.
+/// The mulligan advice is built from these runs and compares the cards
+/// *inside one deck*, so a policy that misplays a card marks it down against
+/// every opponent. `tavernsim mulligan` uses this to measure how much of the
+/// advice depends on the policy.
 pub fn instrumented_parallel_with(
     me: Contender,
     opp: Contender,

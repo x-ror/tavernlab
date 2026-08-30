@@ -9,9 +9,8 @@
 //! The card database is baked into the binary as Rust source rather than parsed
 //! at startup. Three reasons: a batch run starting thousands of games should not
 //! re-parse 5 MB of JSON; the table ends up in read-only memory shared by every
-//! thread, where the Python engine paid ~32 MB per worker process for Wild; and
-//! it removes the last excuse for a serialisation dependency, which Smart App
-//! Control would block anyway.
+//! thread, rather than per worker; and it removes the last excuse for a
+//! serialisation dependency, which Smart App Control would block anyway.
 //!
 //! The generator also emits the [`Keywords`] and [`Races`] bit constants it used
 //! to encode the table. Hand-writing those in the engine and the encoding here
@@ -343,9 +342,9 @@ fn generate_cards() -> Result<String, String> {
     // the corpus builder learned to write them has none, and the card text is
     // then the only source. One built after it writes them only where they are
     // non-zero -- so an absent field means zero, and falling back to the text
-    // there would reinstate the very bug the field exists to fix: the text
-    // parse also matches the cards that *hand out* Spell Damage rather than
-    // carry it, and made 52 collectible minions a permanent +1.
+    // there would reinstate what the field exists to avoid: the text parse
+    // also matches the cards that *hand out* Spell Damage rather than carry
+    // it.
     let has_sd = raw.values().any(|e| e.get("sd").is_some());
     let has_ovl = raw.values().any(|e| e.get("ovl").is_some());
 
@@ -850,10 +849,9 @@ fn render(cards: &[Card]) -> (String, usize) {
     }
     s.push_str("];\n\n");
 
-    // Name lookup resolves to one printing. Collectible wins over tokens, and a
-    // hero portrait never wins over a real card sharing its name — the Python
-    // engine shipped three gauntlet decks built from blank portraits before
-    // that rule existed.
+    // Name lookup resolves to one printing. Collectible wins over tokens, and
+    // a hero portrait never wins over a real card sharing its name: a deck
+    // list naming a card means the card, not the skin.
     let mut best_by_name: BTreeMap<&str, (i32, usize)> = BTreeMap::new();
     for (i, c) in cards.iter().enumerate() {
         // Non-portrait dominates collectibility: a hero skin is never what a

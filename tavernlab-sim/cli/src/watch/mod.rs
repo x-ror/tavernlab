@@ -110,10 +110,9 @@ fn files_of(power: PathBuf, zone: Option<PathBuf>) -> Vec<PathBuf> {
 /// wrote them.
 ///
 /// Chronological, not file by file. Only Power.log carries `CREATE_GAME`, so
-/// replaying one file and then the other puts every reset at the front and
-/// then lays every zone move of every game in the session on top of the last
-/// one — finished games' boards piling up on the current one, and their
-/// heroes deciding the classes. That is what the first real log showed.
+/// replaying one file and then the other would put every reset at the front
+/// and then lay every zone move of every game in the session on top of the
+/// last one.
 /// What one pass over the new lines produced.
 pub struct Batch {
     pub lines: usize,
@@ -234,11 +233,9 @@ fn class_name(c: Class) -> &'static str {
 /// What is left of your deck, as far as the deck code and the log together
 /// can say.
 ///
-/// This matters more than it looks. Without it the rebuilt game has an empty
-/// deck, and every draw effect in your hand reads as fatigue damage to your
-/// own hero -- so the advice quietly refuses to play the card that draws. The
-/// greedy policy scored one action at a time and mostly did not notice; a
-/// search plays the line out and notices every time.
+/// Without it the rebuilt game has an empty deck, and every draw effect in
+/// your hand reads as fatigue damage to your own hero, so the advice refuses
+/// to play the card that draws.
 ///
 /// The subtraction is approximate, and approximate in the safe direction. A
 /// card played from hand has left the deck and a card in hand is not in it,
@@ -292,16 +289,14 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<String> {
     for side in 0..2 {
         // A body the log has taken to zero health is dead; the line that
         // moves it out of play arrives in a later batch, up to a poll behind.
-        // Leaving it in means the plan is drawn over a board with a corpse on
-        // it -- a real session showed `Accelerated Whelp 4/0` still standing.
+        // Leaving it in would draw the plan over a board with a corpse on it.
         for b in tr.board[side].iter().filter(|b| b.stats().1 > 0) {
             let mut m = Permanent::summon(b.card);
-            // Summoning sickness is kept for whatever landed this turn. It is
-            // not a detail: without it the plan tells you to swing with the
-            // minion you have only just put down, and a Rush minion is told
-            // to go face on the turn it arrives, which is the one thing Rush
-            // does not do. `Permanent::summon` sets the flag, so a body that
-            // has been there since an earlier turn is the one that clears it.
+            // Summoning sickness is kept for whatever landed this turn:
+            // without it the plan swings with a minion that has only just
+            // been put down, and sends a Rush minion face on the turn it
+            // arrives. `Permanent::summon` sets the flag, so a body that has
+            // been there since an earlier turn is the one that clears it.
             if b.turn < tr.turn {
                 m.flags.remove(tavernlab_core::state::Flags::JUST_SUMMONED);
             }
@@ -336,11 +331,9 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<String> {
     };
     g.recompute_auras();
 
-    // The search, not the greedy policy. Live advice is one decision at a
-    // time rather than a batch of two thousand games, so the two hundredfold
-    // cost that keeps the search out of the engine buys, here, the difference
-    // between the policy that loses two games in three and the one that wins
-    // them. See the README on how that was measured.
+    // The search, not the greedy policy: live advice is one decision at a
+    // time rather than a batch, so the cost that keeps the search out of the
+    // engine is affordable here. The README compares the two.
     let mut agent = Planner::new(Style::Midrange, 4000, 4);
     let mut out = Vec::new();
     let mut legal: tavernlab_core::inline::Inline<Action, 512> =
@@ -463,12 +456,9 @@ fn opponent_read(app: &App, format: &str, tr: &Tracker) -> Vec<String> {
             class_name(class)
         )];
     }
-    // `Read::frac` is 1.0 on no evidence by design -- the web UI wants a
-    // neutral prior -- which printed here read as "Herald Warlock 100%"
-    // before the opponent had played a card. The empty case is answered
-    // above; a best match of nothing is answered here, because naming a deck
-    // beside 0% is a claim with the confidence stripped off but the name
-    // left standing.
+    // `Read::frac` is 1.0 on no evidence by design, because the web UI wants
+    // a neutral prior. Here that would name a deck before the opponent had
+    // played a card, so a best match of nothing names nothing.
     if reads.iter().all(|r| r.hits == 0) {
         return vec![format!(
             "{}: жодна колода гаунтлета не пояснює зіграного ({} карт)",
@@ -596,18 +586,14 @@ fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice {
     let mut sections: Vec<(&'static str, Vec<String>)> = Vec::new();
     if !tr.started && !tr.opening.is_empty() {
         sections.push(("МУЛІГАН", mulligan(app, format, tr, deck)));
-        // The mulligan being on does not mean the turn is not. "Started" is
-        // `STEP=MAIN_READY`, or a turn counter past one -- and the first turn
-        // of the player who goes first is turn one, so on it the watcher had
-        // the mulligan on screen and nothing at all about what to play. It
-        // knew: the heading already said "(ваш)".
+        // The mulligan being on does not mean the turn is not: "started" is
+        // `STEP=MAIN_READY` or a turn counter past one, and the first turn of
+        // the player who goes first is turn one.
         //
         // The plan is added rather than the mulligan replaced, and `started`
-        // is deliberately left alone. It also decides what counts as the
-        // opening hand, and setting it from "someone is the current player"
-        // would empty every recorded opening if that line ever arrives before
-        // the deal. Showing both costs a few seconds of a stale mulligan in
-        // that case; the other way round costs the data.
+        // is left alone: it also decides what counts as the opening hand, and
+        // setting it from "someone is the current player" would empty every
+        // recorded opening if that line arrived before the deal.
         if tr.my_turn && !tr.over {
             sections.push(("ХІД", plan(tr, deck)));
         }
@@ -633,8 +619,8 @@ fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice {
                     .into(),
             );
             // The client does not always spell a battletag the way the
-            // launcher shows it, and guessing is the one thing this must not
-            // do -- so print what it actually wrote and let the user pick.
+            // launcher shows it, so print what it wrote and let the user
+            // pick rather than guessing.
             if !tr.names.is_empty() {
                 position.push(format!("у лозі трапилися імена: {}", tr.names.join(", ")));
             }

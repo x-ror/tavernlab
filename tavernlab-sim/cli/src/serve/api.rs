@@ -511,12 +511,9 @@ pub fn mulligan(app: &App, req: &Request) -> Response {
                             let delta = stat.opening_delta(base, MIN_APPEARANCES);
                             let cost = card.def().cost;
                             // Three answers. A card whose difference does not
-                            // clear its own error bar has not been measured
-                            // to help or to hurt, and it falls back to the
-                            // curve the same way a card with too few games
-                            // does — which is the only thing still true about
-                            // it. Saying otherwise flipped 28% of these
-                            // verdicts between two runs of the same deck.
+                            // clear its own error bar falls back to the
+                            // curve, the same way a card with too few games
+                            // does.
                             let verdict = stat.opening_verdict(base, MIN_APPEARANCES);
                             let keep = match verdict {
                                 Verdict::Keep => true,
@@ -530,7 +527,7 @@ pub fn mulligan(app: &App, req: &Request) -> Response {
                                     o.bool_field("keep", keep);
                                     // Named so the front end can say "no
                                     // measurable difference" rather than
-                                    // dressing a fallback as a measurement.
+                                    // showing a fallback as a measurement.
                                     o.str_field(
                                         "verdict",
                                         match verdict {

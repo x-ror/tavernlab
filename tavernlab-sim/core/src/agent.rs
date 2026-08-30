@@ -209,11 +209,9 @@ impl Scripted {
                     if swapping && next <= now && !battlecry {
                         return 0.5;
                     }
-                    // And nothing else: an upgrade keeps exactly the score it
-                    // had. Weighting the size of the upgrade would reorder
-                    // every weapon against every other card, which is tuning
-                    // rather than a fix, and it moved a measured class by two
-                    // points when it was tried.
+                    // And nothing else: an upgrade keeps the score it had.
+                    // Weighting the size of the upgrade would reorder every
+                    // weapon against every other card.
                 }
                 s
             }
@@ -359,22 +357,17 @@ impl Scripted {
 
 impl Agent for Scripted {
     fn choose(&mut self, game: &Game, legal: &[Action]) -> Action {
-        // Whose character to point at is not in the corpus: a target spec of
-        // `AnyCharacter` is what Fireball and a heal both carry, so with the
-        // target unscored the pick fell to enumeration order -- and a real
-        // plan read `зіграти Fireball → свій герой`.
+        // Which side of a two-sided card to aim at is not in the corpus:
+        // `AnyCharacter` is the spec on Fireball and on a heal alike. Rather
+        // than guess the polarity from the printed text, play the action on
+        // a copy and see what it did to the hero.
         //
-        // Rather than guess the polarity from the printed text, ask the
-        // engine: play it on a copy and see what it did to the hero. That is
-        // exact, and it is asked of the action that has already *won* rather
-        // than of every action scored. Scoring is called for every legal
-        // action of every step of every turn -- probing there cost a fifth of
-        // the engine's throughput -- while a winner is one action, and one
-        // that points a two-sided card at your own face is rarer still.
-        // Scored twice rather than tracking a runner-up in one pass: keeping
-        // second place costs a compare on every action of every step, and
-        // measured slower than simply scoring again on the rare step where
-        // the winner turns out to be pointed the wrong way.
+        // Asked of the action that has already won rather than of every
+        // action scored, because scoring runs for every legal action of every
+        // step and a game copy there is expensive. Scored twice rather than
+        // keeping a runner-up, which would cost a compare on every action to
+        // save work on the rare step where the winner points the wrong
+        // way.
         let mut skip: Option<Action> = None;
         for _ in 0..2 {
             let mut best = Action::EndTurn;
@@ -395,8 +388,8 @@ impl Agent for Scripted {
             if !self_harming_play(game, best) {
                 return best;
             }
-            // Once: the second pick cannot be the same action, and a second
-            // self-harming one is a position with nothing better in it.
+            // One retry: the second pick cannot be the same action, and a
+            // second self-harming one is a position with nothing better.
             skip = Some(best);
         }
         Action::EndTurn

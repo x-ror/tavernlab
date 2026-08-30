@@ -191,13 +191,10 @@ impl App {
             let stat = matchup.stat(*card).unwrap_or_default();
             let delta = stat.opening_delta(base, MULLIGAN_MIN_N);
             let cost = card.def().cost;
-            // Three answers, not two. A card whose measured difference does
-            // not clear its own error bar has not been measured to help or
-            // to hurt, and saying otherwise is a coin toss with a number on
-            // it: rerunning the same deck on a different seed list used to
-            // flip 28% of these verdicts. Those cards fall back to the mana
-            // curve, the same as a card with too few games -- which is what
-            // the run can honestly support.
+            // Three answers, not two. A card whose difference does not
+            // clear its own error bar has not been measured to help or to
+            // hurt, and falls back to the mana curve like a card with too
+            // few games.
             let verdict = stat.opening_verdict(base, MULLIGAN_MIN_N);
             let by_curve = cost <= 3;
             let (label, note) = match verdict {
@@ -294,15 +291,12 @@ impl App {
         self.games.load(Ordering::Relaxed)
     }
 
-    /// Where the cached tier table for a format lives.
     /// Where a computed tier table is cached.
     ///
-    /// Keyed by the policy as well as the format. A table played by the
+    /// Keyed by the policy as well as the format: a table played by the
     /// greedy policy and one played by the search are different answers to
-    /// the same question -- three of twelve decks change tier between them --
-    /// so one must not overwrite the other and be read as the other. The
-    /// greedy table keeps the original path, so a cache written before this
-    /// existed still reads.
+    /// the same question, so neither may overwrite the other. The greedy
+    /// table keeps the unsuffixed path.
     pub fn tiers_path(&self, format: &str, policy: &str) -> PathBuf {
         if policy == "greedy" {
             return self.home.join(format!("tiers_{format}.json"));

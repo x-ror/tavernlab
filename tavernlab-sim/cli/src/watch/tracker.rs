@@ -17,9 +17,8 @@ pub struct Body {
     /// The turn counter when it entered this zone.
     ///
     /// A minion that landed this turn is still summoning sick, and one with
-    /// Rush may trade but not go face. The advice is worthless without it:
-    /// the first real logs had the watcher telling the player to swing with
-    /// the minion they had just put down.
+    /// Rush may trade but not go face. Advice drawn without it would swing
+    /// with the minion that was only just put down.
     pub turn: u16,
     /// Attack and maximum Health as the log last stated them, or `None` while
     /// it has said nothing and the printed numbers still stand.
@@ -140,9 +139,8 @@ impl Hero {
     /// Health, floored at zero.
     ///
     /// The killing blow's `DAMAGE` tag is the whole hit, not the part that
-    /// fit, so a dead hero's raw number goes below zero -- a real log showed
-    /// `ваш герой -3`. Zero is what "dead" means here; the game being over is
-    /// said separately.
+    /// fit, so a dead hero's raw number goes below zero. Zero is what "dead"
+    /// means here; the game being over is said separately.
     pub fn health(&self) -> i16 {
         (self.max_hp - self.damage).max(0)
     }
@@ -164,8 +162,7 @@ pub struct Tracker {
     pub me: Option<u8>,
     /// My battletag, as the `TAG_CHANGE` lines spell it. The log never says
     /// which of the two names is the one holding it, so this is supplied
-    /// (`--me`, `HS_ME`) -- the same thing the project's earlier reader
-    /// required, and for the same reason. Without it the mana and
+    /// (`--me`, `HS_ME`) when it cannot be learned. Without it the mana and
     /// whose-turn-it-is lines cannot be attributed and are left unknown
     /// rather than guessed.
     pub me_name: Option<String>,
@@ -202,9 +199,9 @@ pub struct Tracker {
     pub won: Option<bool>,
     /// True once the mulligan is done and the game proper has started.
     ///
-    /// Driven by `STEP=MAIN_READY`, not by the turn counter: a real log sets
-    /// `TURN=1` inside `CREATE_GAME`, before any card is dealt, and treating
-    /// that as "started" left every recorded game with an empty opening.
+    /// Driven by `STEP=MAIN_READY`, not by the turn counter: `TURN=1` is set
+    /// inside `CREATE_GAME`, before any card is dealt, so a turn counter of
+    /// one does not mean the opening has been handed out.
     pub started: bool,
 }
 
@@ -583,8 +580,7 @@ mod tests {
 
     #[test]
     fn a_battletag_without_its_numbers_is_still_me() {
-        // The client does not always write the `#12345` half, and losing
-        // every mana line over that is what a real session did.
+        // The client does not always write the `#12345` half.
         let mut t = Tracker::new(Some("xror#21652".into()));
         feed(&mut t, &[
             "D [Power] TAG_CHANGE Entity=xror tag=RESOURCES value=6",

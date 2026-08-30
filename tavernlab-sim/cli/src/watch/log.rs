@@ -48,8 +48,7 @@ pub enum Event {
         won: bool,
     },
     /// Mulligan is over: `STEP=MAIN_READY`. Turn 1 is set at `CREATE_GAME`,
-    /// so a turn counter is not this — treating it as such made every real
-    /// log skip the opening hand.
+    /// so a turn counter is not this.
     Started,
     /// A tag changed on one entity -- a minion or a hero, not a player.
     ///
@@ -263,15 +262,13 @@ pub fn parse(line: &str) -> Option<Event> {
     // Dispatch on the tag, not on how the entity was written.
     //
     // The log spells `Entity=` three ways -- a battletag, a bare number, or
-    // a bracketed descriptor -- and it does not keep one shape per kind of
-    // tag. Reading the shape first meant a player written as a descriptor
-    // lost its mana lines, which is what a real log did with `--me` supplied
-    // and correct. So: player tags take the name out of whichever shape
-    // arrived, entity tags take the id, and each says which it wants.
+    // a bracketed descriptor -- and does not keep one shape per kind of tag.
+    // So the dispatch is on the tag: player tags take the name out of
+    // whichever shape arrived, entity tags take the id.
     match tag {
-        // Only the game's own counter. Players also carry a TURN tag (how
-        // many turns they have taken), and reading those made the tracker
-        // jump to 1 the moment the opponent's mulligan finished.
+        // Only the game's own counter. Players also carry a TURN tag,
+        // counting how many turns they have taken, which is a different
+        // number.
         "TURN" if who == "GameEntity" || who == "1" => {
             return value.parse().ok().map(Event::Turn);
         }
@@ -409,8 +406,8 @@ mod tests {
 
     #[test]
     fn a_player_written_as_a_descriptor_still_gives_its_mana() {
-        // The shape that lost every mana line when the reader dispatched on
-        // how the entity was written instead of on the tag.
+        // A player tag written as a bracketed descriptor rather than as a
+        // bare battletag.
         let line = "D 09:12:33.1 [Power] GameState.DebugPrintPower() - \
              TAG_CHANGE Entity=[entityName=xror id=2 zone=PLAY zonePos=0 \
              cardId= player=1] tag=RESOURCES value=7";

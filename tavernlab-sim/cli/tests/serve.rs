@@ -248,10 +248,9 @@ fn a_deck_the_engine_cannot_field_is_refused_by_name() {
     // with an unimplemented card must come back naming it, not scored.
     //
     // The offending card is chosen at run time rather than frozen into a
-    // deck code. A hard-coded list stops testing anything the moment its one
-    // unimplemented card gets implemented, which is exactly what happened to
-    // the code this used to carry: the deck quietly became legal and the
-    // test passed for the wrong reason.
+    // deck code: a hard-coded list stops testing anything the moment its one
+    // unimplemented card gets implemented, and the test then passes because
+    // the deck became legal.
     let server = Server::start();
     let base = "AAECAaoICsmeBsODB9C/B/nDB4LUB5vUB8/bB9DbB4jdB9/lBwqe1ATt5gbgnQexsAePvge1wAfJwAfJ2wfI5Qfm/QcAAA==";
     let mut deck = tavernlab_core::deckstring::decode(base).expect("the base list decodes");

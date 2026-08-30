@@ -397,11 +397,10 @@ fn session(tag: &str, power: &str, zone: &str) -> std::path::PathBuf {
 
 #[test]
 fn a_finished_games_board_does_not_pile_up_on_the_next_one() {
-    // The bug the first real log showed. `CREATE_GAME` is written only to
-    // Power.log, so reading one file and then the other puts every reset at
-    // the front and lays every zone move of the whole session on top of the
-    // last game: minions on boards that are empty, and the classes of a game
-    // that finished an hour ago.
+    // `CREATE_GAME` is written only to Power.log, so reading one file and
+    // then the other would put every reset at the front and lay every zone
+    // move of the whole session on top of the last game: minions on boards
+    // that are empty, and the classes of a game that finished an hour ago.
     let power = "\
 D 09:00:00.0000000 [Power] GameState.DebugPrintPower() - CREATE_GAME
 D 09:30:00.0000000 [Power] GameState.DebugPrintPower() - CREATE_GAME
@@ -631,9 +630,9 @@ D 09:00:04.2 [Zone] ZoneChangeList.ProcessChanges() - id=8 local=False [entityNa
 /// A minion the log has taken to zero health is off the board already.
 ///
 /// The `DAMAGE` line and the line that moves the body out of play arrive in
-/// different poll batches, up to seven hundred milliseconds apart. In between,
-/// a real session showed `Accelerated Whelp 4/0` standing in the position —
-/// and the plan was drawn over a board with a corpse on it.
+/// different poll batches, up to a poll apart. In between, the body reads as
+/// standing at zero health, and the plan would be drawn over a board with a
+/// corpse on it.
 #[test]
 fn a_body_at_zero_health_is_not_in_the_position() {
     const NOW: &str = "\
