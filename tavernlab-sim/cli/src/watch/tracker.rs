@@ -154,6 +154,18 @@ impl Weapon {
     }
 }
 
+/// A secret in its own zone.
+///
+/// `card` is `None` for the opponent's, and that is the honest state rather
+/// than a gap to fill: a secret is set face down, so the log names yours and
+/// says only that theirs exists. What is done with each is different -- see
+/// the plan.
+#[derive(Clone, Copy, Debug)]
+pub struct Secret {
+    pub entity: u32,
+    pub card: Option<CardId>,
+}
+
 /// A hero, as far as the log states it.
 #[derive(Clone, Copy, Debug)]
 pub struct Hero {
@@ -227,6 +239,8 @@ pub struct Tracker {
     pub heroes: [Hero; 2],
     /// The weapon each hero has equipped, when the log has shown one.
     pub weapons: [Option<Weapon>; 2],
+    /// Secrets in play, yours named and theirs not.
+    pub secrets: [Vec<Secret>; 2],
     /// Every player name the log has used on a line that needs one, in the
     /// order they first appeared. Printed when `me_name` matched none of
     /// them, because the fix is to pass one of these and the user cannot
@@ -420,6 +434,13 @@ impl Tracker {
                             }
                         }
                     }
+                    for side in 0..2 {
+                        for sec in self.secrets[side].iter_mut() {
+                            if sec.entity == entity {
+                                sec.card = Some(card);
+                            }
+                        }
+                    }
                     for b in self.hand.iter_mut() {
                         if b.entity == entity {
                             b.reveal(card);
@@ -499,8 +520,10 @@ impl Tracker {
         }
 
         // Leaving a zone: drop it from wherever it was. A weapon leaves when
-        // it breaks, and a broken weapon is no swings rather than a stale one.
+        // it breaks, and a broken weapon is no swings rather than a stale one;
+        // a secret leaves when it fires, and a spent secret is not a threat.
         self.board[i].retain(|b| b.entity != entity);
+        self.secrets[i].retain(|s| s.entity != entity);
         if self.weapons[i].is_some_and(|w| w.entity == entity) {
             self.weapons[i] = None;
         }
@@ -539,6 +562,18 @@ impl Tracker {
                         }
                         _ => {}
                     }
+                    self.played[i].push(c);
+                    if c.def().class() != Class::Neutral && self.classes[i].is_none() {
+                        self.classes[i] = Some(c.def().class());
+                    }
+                }
+            }
+            // Set face down. Yours carries a card id because it is your own
+            // client writing the log; theirs does not, and is kept as the one
+            // thing the log did say -- that there is one.
+            "SECRET" => {
+                self.secrets[i].push(Secret { entity, card });
+                if let Some(c) = card {
                     self.played[i].push(c);
                     if c.def().class() != Class::Neutral && self.classes[i].is_none() {
                         self.classes[i] = Some(c.def().class());
