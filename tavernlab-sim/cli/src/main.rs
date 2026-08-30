@@ -71,7 +71,11 @@ fn main() {
             num(4, 1) as u8,
         ),
         "weights" => weights(num(1, 200), num(2, 4000) as u32, args.get(3).map(String::as_str)),
-        "mulligan" => mulligan_bias(num(1, 300), args.get(2).map(String::as_str)),
+        "mulligan" => mulligan_bias(
+            num(1, 300),
+            args.get(2).filter(|a| !a.starts_with("--")).map(String::as_str),
+            args.iter().any(|a| a == "--noise-only"),
+        ),
         "demo" => demo(num(1, 1) as u64),
         "coverage" => coverage(),
         "implemented" => list_implemented(match args.get(1).map(String::as_str) {
@@ -285,7 +289,7 @@ fn weights(per_deck: usize, budget: u32, gauntlet: Option<&str>) {
 ///
 /// A card counts as flipped when the two policies disagree about keeping it.
 /// That is the only difference a reader of the tab would ever see.
-fn mulligan_bias(games: usize, gauntlet: Option<&str>) {
+fn mulligan_bias(games: usize, gauntlet: Option<&str>, noise_only: bool) {
     use tavernlab_core::batch::Policy;
     use tavernlab_core::telemetry::instrumented_parallel_with;
 
@@ -342,9 +346,17 @@ fn mulligan_bias(games: usize, gauntlet: Option<&str>) {
             _ => Say::NoData,
         };
 
+    // The noise arm is greedy on both sides and costs seconds; the policy arm
+    // has the search on both and costs half an hour. `--noise-only` runs the
+    // cheap half, which is the one that answers whether the guard works.
     println!(
-        "{path}: {} колод, {games} ігор на пару, по обидві політики\n",
-        playable.len()
+        "{path}: {} колод, {games} ігор на пару{}\n",
+        playable.len(),
+        if noise_only {
+            ", лише шумове плече"
+        } else {
+            ", по обидві політики"
+        }
     );
     println!(
         "{:<22}{:>6}{:>13}{:>13}{:>13}{:>13}",
@@ -395,12 +407,24 @@ fn mulligan_bias(games: usize, gauntlet: Option<&str>) {
         }
         (same, diff, none)
     };
-    let share = |(same, diff, _): (usize, usize, usize)| {
-        let judged = same + diff;
-        if judged == 0 {
+    // Out of every card, not only the judged ones. Under the guarded rule
+    // most cards stop being judged at all, so a rate over judged cards can
+    // rise while the number of cards a reader sees flipped falls -- and it is
+    // the second that the tab shows.
+    let share = |(_, diff, _): (usize, usize, usize), cards: usize| {
+        if cards == 0 {
             return "—".to_string();
         }
-        format!("{diff}/{judged} ({:.0}%)", 100.0 * diff as f64 / judged as f64)
+        format!("{diff}/{cards} ({:.0}%)", 100.0 * diff as f64 / cards as f64)
+    };
+    // An arm that was not run prints as not run. A zero there would be a
+    // measurement nobody took, which is the one thing this must never say.
+    let arm = |v, cards| {
+        if noise_only {
+            "не міряно".to_string()
+        } else {
+            share(v, cards)
+        }
     };
 
     let add =
@@ -410,7 +434,11 @@ fn mulligan_bias(games: usize, gauntlet: Option<&str>) {
     for me in &playable {
         let greedy = against_field(me, [Policy::Greedy; 2], &s);
         let noise = against_field(me, [Policy::Greedy; 2], &other);
-        let searched = against_field(me, [search; 2], &s);
+        let searched = if noise_only {
+            tavernlab_core::telemetry::Matchup::default()
+        } else {
+            against_field(me, [search; 2], &s)
+        };
         let row = (
             compare(&greedy, &noise, &binary),
             compare(&greedy, &noise, &guarded),
@@ -421,43 +449,52 @@ fn mulligan_bias(games: usize, gauntlet: Option<&str>) {
             "{:<22}{:>6}{:>13}{:>13}{:>13}{:>13}",
             me.name,
             greedy.cards.len(),
-            share(row.0),
-            share(row.1),
-            share(row.2),
-            share(row.3)
+            share(row.0, greedy.cards.len()),
+            share(row.1, greedy.cards.len()),
+            arm(row.2, greedy.cards.len()),
+            arm(row.3, greedy.cards.len())
         );
         cb = add(cb, row.0);
         cg = add(cg, row.1);
         pb = add(pb, row.2);
         pg = add(pg, row.3);
     }
+    let all = cb.0 + cb.1 + cb.2;
     println!(
         "\n{:<22}{:>6}{:>13}{:>13}{:>13}{:>13}",
         "разом",
-        cb.0 + cb.1 + cb.2,
-        share(cb),
-        share(cg),
-        share(pb),
-        share(pg)
+        all,
+        share(cb, all),
+        share(cg, all),
+        arm(pb, all),
+        arm(pg, all)
     );
-    let pct = |(same, diff, _): (usize, usize, usize)| {
-        let judged = same + diff;
-        if judged == 0 {
+    let pct = |(_, diff, _): (usize, usize, usize)| {
+        if all == 0 {
             0.0
         } else {
-            100.0 * diff as f64 / judged as f64
+            100.0 * diff as f64 / all as f64
         }
     };
-    println!(
-        "\nстаре правило: шум перевертає {:.0}% порад, зміна політики — {:.0}%",
-        pct(cb),
-        pct(pb)
-    );
-    println!(
-        "нове правило:  шум перевертає {:.0}% порад, зміна політики — {:.0}%",
-        pct(cg),
-        pct(pg)
-    );
+    if noise_only {
+        println!(
+            "\nстаре правило: шум перевертає {:.0}% порад\nнове правило:  {:.0}%\n\
+             (плече політики не міряне — прогін із --noise-only)",
+            pct(cb),
+            pct(cg)
+        );
+    } else {
+        println!(
+            "\nстаре правило: шум перевертає {:.0}% порад, зміна політики — {:.0}%",
+            pct(cb),
+            pct(pb)
+        );
+        println!(
+            "нове правило:  шум перевертає {:.0}% порад, зміна політики — {:.0}%",
+            pct(cg),
+            pct(pg)
+        );
+    }
 }
 
 /// Whether the tier list is a statement about decks or about the policy.
