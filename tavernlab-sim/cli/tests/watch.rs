@@ -1010,6 +1010,19 @@ fn a_log_that_never_names_you_still_gets_a_turn_plan() {
 }
 
 #[test]
+fn the_corpses_the_log_banked_are_in_the_position() {
+    // The log writes CORPSES on the player entity the same way it writes
+    // mana, and the watcher used to drop the line. A Death Knight plan drawn
+    // at zero spends none of what the deck is built on.
+    let with_corpses = format!(
+        "{BARE_TAGS}D 09:00:01.3 [Power] GameState.DebugPrintPower() - TAG_CHANGE \
+         Entity=xror#21652 tag=CORPSES value=3\n"
+    );
+    let out = run("corpses", &with_corpses, &[]);
+    assert!(out.contains("трупів: 3"), "{out}");
+}
+
+#[test]
 fn the_guessed_mana_is_the_crystals_the_turn_has() {
     // Each player gains one at the start of their own turn and the two
     // alternate, so turn two is the second player's first: one crystal, not

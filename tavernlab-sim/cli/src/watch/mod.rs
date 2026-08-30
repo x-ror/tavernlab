@@ -343,6 +343,10 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
     // and is `ceil(turn / 2)`, which the old `turn / 2 + 1` overstated by one
     // on every even turn: it gave the player on the draw two crystals on
     // turn two, and a plan that spends what you do not have.
+    // The Death Knight resource, when the log said it. Zero where it did
+    // not, which is the same thing a fresh game has -- but a plan drawn at
+    // zero for a deck built on Corpses spends none of what it has.
+    g.players[0].corpses = tr.corpses.unwrap_or(0);
     g.players[0].crystals = tr
         .crystals
         .unwrap_or_else(|| ((tr.turn as i16 + 1) / 2).clamp(1, 10));
@@ -798,6 +802,9 @@ pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice
     }
     if !tr.secrets[1].is_empty() {
         position.push(Line::new("live.pos.their_secrets").with("n", tr.secrets[1].len() as i64));
+    }
+    if let Some(n) = tr.corpses {
+        position.push(Line::new("live.pos.corpses").with("n", n as i64));
     }
     position.push(Line::new("live.pos.my_board").with("board", side_line(&tr.board[0])));
     position.push(Line::new("live.pos.their_board").with("board", side_line(&tr.board[1])));

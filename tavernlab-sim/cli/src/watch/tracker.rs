@@ -251,6 +251,10 @@ pub struct Tracker {
     pub played: [Vec<CardId>; 2],
     pub turn: u16,
     pub my_turn: bool,
+    /// Corpses banked, for me. `None` until a `CORPSES` line could be
+    /// attributed, which is not the same as zero: a Death Knight plan drawn
+    /// at zero when the log said three spends nothing it actually has.
+    pub corpses: Option<i16>,
     /// Mana crystals and mana spent, for me. `None` until a `RESOURCES` line
     /// could be attributed -- see `me_name`.
     pub crystals: Option<i16>,
@@ -358,6 +362,18 @@ impl Tracker {
         !name.is_empty() && base(mine) == base(name)
     }
 
+    /// Whether a player line is about me, by number where the line carries
+    /// one and by name where it does not.
+    ///
+    /// The number is the surer of the two and needs nothing matched first,
+    /// so it is asked first; the name is what a bare-battletag line leaves.
+    fn mine(&self, name: &str, player: Option<u8>) -> bool {
+        match (player, self.me) {
+            (Some(p), Some(me)) => p == me,
+            _ => self.is_me(name),
+        }
+    }
+
     /// Work out which battletag is yours, from a line that says so.
     ///
     /// The log never states it in words, but it does state it in numbers:
@@ -417,6 +433,17 @@ impl Tracker {
                     self.won = Some(if self.is_me(&player_name) { won } else { !won });
                 }
                 self.over = true;
+            }
+            Event::Corpses {
+                player_name,
+                player,
+                value,
+            } => {
+                self.note_name(&player_name);
+                self.learn_me(&player_name, player);
+                if self.mine(&player_name, player) {
+                    self.corpses = Some(value);
+                }
             }
             Event::CurrentPlayer {
                 player_name,

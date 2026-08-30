@@ -77,6 +77,7 @@
  "live.plan.their_secrets": "(у суперника секретів: {n} — план їх не враховує, бо лог не каже, які саме)",
  "live.plan.trade": "Trade {card}",
  "live.plan.whose_turn_unknown": "(лог не сказав, чий це хід, і в стартовій руці не було з чого вивести — план показано як для вашого)",
+ "live.pos.corpses": "трупів: {n}",
  "live.pos.empty": "порожня",
  "live.pos.hand": "рука: {hand}",
  "live.pos.hero": "{hp}",

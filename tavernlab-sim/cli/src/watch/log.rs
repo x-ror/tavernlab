@@ -35,6 +35,13 @@ pub enum Event {
         total: i16,
         used: i16,
     },
+    /// Corpses banked, for one player. The Death Knight resource; the log
+    /// writes it on the player entity the same way it writes mana.
+    Corpses {
+        player_name: String,
+        player: Option<u8>,
+        value: i16,
+    },
     /// Whose turn it is, by player name and whether they are now current.
     CurrentPlayer {
         player_name: String,
@@ -294,6 +301,13 @@ pub fn parse(line: &str) -> Option<Event> {
                 player: player_number(who),
                 total: -1,
                 used: value.parse().ok()?,
+            });
+        }
+        "CORPSES" => {
+            return Some(Event::Corpses {
+                player_name: player_name(who)?.to_string(),
+                player: player_number(who),
+                value: value.parse().ok()?,
             });
         }
         "CURRENT_PLAYER" => {

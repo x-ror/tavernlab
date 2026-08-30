@@ -77,6 +77,7 @@
  "live.plan.their_secrets": "(secrets the opponent has: {n} — the plan does not account for them, because the log does not say which)",
  "live.plan.trade": "Trade {card}",
  "live.plan.whose_turn_unknown": "(the log never said whose turn this is, and the opening hand gave nothing to work it out from — the plan is drawn as if it were yours)",
+ "live.pos.corpses": "corpses: {n}",
  "live.pos.empty": "empty",
  "live.pos.hand": "hand: {hand}",
  "live.pos.hero": "{hp}",
