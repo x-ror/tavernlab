@@ -408,20 +408,38 @@ function Mulligan() {
             {t('mull.vs', { deck: result.opp_deck, base: Math.round((result.base || 0) * 100) })}{' '}
             {t('mull.sample', { games: result.games })}
           </Text>
-          {result.cards.map((c) => (
-            <Flex key={c.card} direction="row" gap="size-150" alignItems="center" wrap>
-              <Pill tone={c.keep ? 'pos' : 'neg'}>{c.keep ? t('mull.keep') : t('mull.toss')}</Pill>
-              <Text UNSAFE_style={{ fontWeight: 600, minWidth: '10rem' }}>
-                ({c.cost}) {c.card}
-              </Text>
-              <Text UNSAFE_style={{ fontVariantNumeric: 'tabular-nums', minWidth: '4rem' }}>
-                {c.delta === null ? '—' : signedPct(c.delta)}
-              </Text>
-              <Text UNSAFE_style={{ fontSize: '.85rem', opacity: 0.8, flex: '1 1 14rem' }}>
-                {why(c.why, t)}
-              </Text>
-            </Flex>
-          ))}
+          {result.cards.map((c) => {
+            // A verdict the run could not measure is still an answer -- keep
+            // the cheap card, throw the dear one -- but it is the curve
+            // talking, not the simulation, and the pill says which. Colouring
+            // it like a measured one is how a coin toss gets read as a
+            // finding: rerunning the same deck on other seeds used to flip
+            // 28% of these.
+            const measured = c.verdict === 'keep' || c.verdict === 'toss'
+            const tone = measured ? (c.keep ? 'pos' : 'neg') : undefined
+            return (
+              <Flex key={c.card} direction="row" gap="size-150" alignItems="center" wrap>
+                <Pill tone={tone}>{c.keep ? t('mull.keep') : t('mull.toss')}</Pill>
+                <Text UNSAFE_style={{ fontWeight: 600, minWidth: '10rem' }}>
+                  ({c.cost}) {c.card}
+                </Text>
+                <Text UNSAFE_style={{ fontVariantNumeric: 'tabular-nums', minWidth: '4rem' }}>
+                  {measured ? signedPct(c.delta) : '—'}
+                </Text>
+                <Text UNSAFE_style={{ fontSize: '.85rem', opacity: 0.8, flex: '1 1 14rem' }}>
+                  {measured
+                    ? why(c.why, t)
+                    : c.verdict === 'flat'
+                      ? t('mull.flat', {
+                          delta: signedPct(c.delta),
+                          margin: Math.round((c.margin || 0) * 1000) / 10,
+                          n: c.n,
+                        })
+                      : t('mull.few')}
+                </Text>
+              </Flex>
+            )
+          })}
           <Caveats items={[t('coach.note')]} />
         </Flex>
       )}

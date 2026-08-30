@@ -27,8 +27,7 @@
 //! hands that were going to win anyway. The API is expected to say so
 //! wherever it prints one.
 
-use crate::agent::Scripted;
-use crate::batch::Contender;
+use crate::batch::{Contender, Policy};
 use crate::cards::CardId;
 use crate::game::Agent;
 use crate::state::{Game, Outcome, Side};
@@ -65,6 +64,57 @@ impl CardStat {
     pub fn drawn_delta(&self, base: f64, min_n: u32) -> Option<f64> {
         (self.drawn_n >= min_n).then(|| self.drawn_w as f64 / self.drawn_n as f64 - base)
     }
+
+    /// Half-width of the 95% interval on [`opening_delta`], in win-rate
+    /// points, or `None` with nothing to measure.
+    ///
+    /// A card's opening record is a fraction of the games in a run -- it has
+    /// to be drawn and then kept -- so it is far narrower than the matchup
+    /// it sits in, and the difference it reports is correspondingly wider
+    /// than it looks. Without this the tab printed a confident ЛИШИТИ or
+    /// СКИНУТИ for a card whose measured difference was inside its own error
+    /// bar: rerunning the same deck on a different seed list flipped 28% of
+    /// those verdicts, which is the honest size of a verdict that says
+    /// nothing.
+    pub fn opening_margin(&self) -> Option<f64> {
+        (self.open_n > 0).then(|| {
+            let p = self.open_w as f64 / self.open_n as f64;
+            1.96 * (p * (1.0 - p) / self.open_n as f64).sqrt()
+        })
+    }
+
+    /// What the run can actually say about keeping this card.
+    ///
+    /// Three answers, not two. "No measurable difference" is the honest
+    /// third, and at a realistic number of games it is the commonest -- most
+    /// cards in a deck really do sit near the line, and a binary verdict
+    /// over them is a coin toss wearing a number.
+    pub fn opening_verdict(&self, base: f64, min_n: u32) -> Verdict {
+        let (Some(delta), Some(margin)) = (self.opening_delta(base, min_n), self.opening_margin())
+        else {
+            return Verdict::TooFew;
+        };
+        if delta.abs() <= margin {
+            Verdict::NoDifference
+        } else if delta > 0.0 {
+            Verdict::Keep
+        } else {
+            Verdict::Toss
+        }
+    }
+}
+
+/// What an instrumented run can say about keeping one card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// Measurably better than the deck's own average.
+    Keep,
+    /// Measurably worse.
+    Toss,
+    /// Measured, and the difference does not clear its own error bar.
+    NoDifference,
+    /// Not enough games to measure at all.
+    TooFew,
 }
 
 /// One deck's record against one opponent.
@@ -90,7 +140,9 @@ impl Matchup {
         self.cards.iter().find(|(c, _)| *c == card).map(|(_, s)| *s)
     }
 
-    fn merge(mut self, other: Matchup) -> Matchup {
+    /// Fold another run's counts in. Public because a caller measuring one
+    /// deck against a whole field builds the same sum the app does.
+    pub fn merge(mut self, other: Matchup) -> Matchup {
         self.games += other.games;
         self.wins += other.wins;
         for (card, stat) in &other.cards {
@@ -109,7 +161,7 @@ impl Matchup {
 /// [`batch::play_batch`](crate::batch::play_batch) — a telemetry run and a
 /// win-rate run over the same seeds play the same games.
 pub fn instrumented(me: Contender, opp: Contender, seeds: &[u64]) -> Matchup {
-    run_range(me, opp, seeds, 0)
+    run_range(me, opp, [Policy::Greedy; 2], seeds, 0)
 }
 
 /// [`instrumented`] spread across `threads` OS threads. Deterministic
@@ -120,16 +172,35 @@ pub fn instrumented_parallel(
     seeds: &[u64],
     threads: usize,
 ) -> Matchup {
+    instrumented_parallel_with(me, opp, [Policy::Greedy; 2], seeds, threads)
+}
+
+/// [`instrumented_parallel`] played by a named policy rather than the
+/// engine's greedy one.
+///
+/// The mulligan advice is built out of these runs, and it is a comparison
+/// *between the cards of one deck* rather than between decks -- so the
+/// argument that a policy's bias cancels, which holds for a deck measured
+/// against a field, does not obviously hold here. A card the greedy policy
+/// misplays looks bad whoever it is played against. This is what lets that
+/// be checked instead of assumed.
+pub fn instrumented_parallel_with(
+    me: Contender,
+    opp: Contender,
+    policies: [Policy; 2],
+    seeds: &[u64],
+    threads: usize,
+) -> Matchup {
     let threads = threads.max(1).min(seeds.len().max(1));
     if threads == 1 {
-        return instrumented(me, opp, seeds);
+        return run_range(me, opp, policies, seeds, 0);
     }
     let chunk = seeds.len().div_ceil(threads);
     std::thread::scope(|scope| {
         let handles: Vec<_> = seeds
             .chunks(chunk)
             .enumerate()
-            .map(|(c, part)| scope.spawn(move || run_range(me, opp, part, c * chunk)))
+            .map(|(c, part)| scope.spawn(move || run_range(me, opp, policies, part, c * chunk)))
             .collect();
         handles
             .into_iter()
@@ -138,7 +209,13 @@ pub fn instrumented_parallel(
     })
 }
 
-fn run_range(me: Contender, opp: Contender, seeds: &[u64], first_index: usize) -> Matchup {
+fn run_range(
+    me: Contender,
+    opp: Contender,
+    policies: [Policy; 2],
+    seeds: &[u64],
+    first_index: usize,
+) -> Matchup {
     // One slot per distinct card in the deck. Thirty entries scanned
     // linearly beats a hash map at this size, and it keeps the result in
     // deck order rather than in whatever order a hasher produces.
@@ -166,9 +243,9 @@ fn run_range(me: Contender, opp: Contender, seeds: &[u64], first_index: usize) -
         let Ok(mut g) = Game::new((me.class, me.cards), (opp.class, opp.cards), seed) else {
             continue;
         };
-        let mut sa = Scripted::new(me.style);
-        let mut sb = Scripted::new(opp.style);
-        let mut agents: [&mut dyn Agent; 2] = [&mut sa, &mut sb];
+        let mut sa = policies[0].agent(me.style);
+        let mut sb = policies[1].agent(opp.style);
+        let mut agents: [&mut dyn Agent; 2] = [sa.as_mut(), sb.as_mut()];
 
         g.start(first, &mut agents);
         opening.clear();

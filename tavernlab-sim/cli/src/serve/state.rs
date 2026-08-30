@@ -23,7 +23,7 @@ use tavernlab_core::agent::Style;
 use tavernlab_core::batch::{Contender, seeds};
 use tavernlab_core::cards::{CardId, Formats};
 use tavernlab_core::gauntlet::{MetaDeck, class_by_name, style_by_name};
-use tavernlab_core::telemetry::{self, Matchup};
+use tavernlab_core::telemetry::{self, Matchup, Verdict};
 use tavernlab_json::Json;
 
 use super::jobs::Jobs;
@@ -191,20 +191,47 @@ impl App {
             let stat = matchup.stat(*card).unwrap_or_default();
             let delta = stat.opening_delta(base, MULLIGAN_MIN_N);
             let cost = card.def().cost;
-            let keep = match delta {
-                Some(d) => d > -0.01,
-                None => cost <= 3,
+            // Three answers, not two. A card whose measured difference does
+            // not clear its own error bar has not been measured to help or
+            // to hurt, and saying otherwise is a coin toss with a number on
+            // it: rerunning the same deck on a different seed list used to
+            // flip 28% of these verdicts. Those cards fall back to the mana
+            // curve, the same as a card with too few games -- which is what
+            // the run can honestly support.
+            let verdict = stat.opening_verdict(base, MULLIGAN_MIN_N);
+            let by_curve = cost <= 3;
+            let (label, note) = match verdict {
+                Verdict::Keep => (
+                    "ЛИШИТИ",
+                    format!(
+                        "{:+.1} в.п. на {} іграх",
+                        delta.unwrap_or(0.0) * 100.0,
+                        stat.open_n
+                    ),
+                ),
+                Verdict::Toss => (
+                    "СКИНУТИ",
+                    format!(
+                        "{:+.1} в.п. на {} іграх",
+                        delta.unwrap_or(0.0) * 100.0,
+                        stat.open_n
+                    ),
+                ),
+                Verdict::NoDifference => (
+                    if by_curve { "ЛИШИТИ" } else { "СКИНУТИ" },
+                    format!(
+                        "різниці не видно ({:+.1} ± {:.1} на {}), лишається крива",
+                        delta.unwrap_or(0.0) * 100.0,
+                        stat.opening_margin().unwrap_or(0.0) * 100.0,
+                        stat.open_n
+                    ),
+                ),
+                Verdict::TooFew => (
+                    if by_curve { "ЛИШИТИ" } else { "СКИНУТИ" },
+                    "мало даних, лишається крива".to_string(),
+                ),
             };
-            let note = match delta {
-                Some(d) => format!("{:+.1} в.п. на {} іграх", d * 100.0, stat.open_n),
-                None => "мало даних, лишається крива".to_string(),
-            };
-            out.push(format!(
-                "{} ({}) {:24} {note}",
-                if keep { "ЛИШИТИ" } else { "СКИНУТИ" },
-                cost,
-                card.name()
-            ));
+            out.push(format!("{label} ({cost}) {:24} {note}", card.name()));
         }
         Ok(out)
     }

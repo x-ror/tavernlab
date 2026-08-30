@@ -219,7 +219,7 @@ pub enum Policy {
 }
 
 impl Policy {
-    fn agent(self, style: Style) -> Box<dyn crate::game::Agent> {
+    pub(crate) fn agent(self, style: Style) -> Box<dyn crate::game::Agent> {
         match self {
             Policy::Greedy => Box::new(Scripted::new(style)),
             Policy::Plan {
