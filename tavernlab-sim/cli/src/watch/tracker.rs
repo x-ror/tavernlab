@@ -425,6 +425,25 @@ impl Tracker {
             } => {
                 self.learn_me(&player_name, player);
                 self.note_name(&player_name);
+                // A name is learnable here even with no number on the line.
+                // The opening hand says whose turn this is -- see
+                // `whose_turn` -- and a `CURRENT_PLAYER value=1` names the
+                // player whose turn it is. Put together they name you, which
+                // is the bridge between the zone lines that carry a player
+                // number and the Power lines that carry only a battletag.
+                //
+                // Only the positive direction: "it is my turn and this line
+                // says who is current" identifies you. "It is their turn"
+                // would identify you only by elimination, and a log that has
+                // shown one name so far would then pin the wrong one.
+                if self.me_name.is_none()
+                    && current
+                    && self.whose_turn() == Some(true)
+                    && !player_name.is_empty()
+                {
+                    self.me_name = Some(player_name.clone());
+                    self.me_learned = true;
+                }
                 // The player number first, when the line carries one: it
                 // says whose turn it is without anyone's name being matched.
                 if let (Some(p), Some(me)) = (player, self.me) {
@@ -749,6 +768,40 @@ mod tests {
 
         t.feed(crate::watch_mod::log::Event::Turn(3));
         assert_eq!(t.whose_turn(), Some(false), "and turn three is not");
+    }
+
+    #[test]
+    fn the_turn_you_can_place_names_the_player_who_is_taking_it() {
+        // The bridge between the two halves of the log: zone lines carry a
+        // player number and no name, Power lines carry a name and no number.
+        // Knowing whose turn it is from the opening hand puts them together.
+        let mut t = Tracker::new(None);
+        feed(&mut t, &[
+            "D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME",
+            "D 09:00:00.2 [Zone] ZoneChangeList.ProcessChanges() - id=3 local=False [entityName=The Coin id=11 zone=DECK zonePos=0 cardId=GAME_005 player=1] zone from  -> FRIENDLY HAND",
+            "D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=2",
+            "D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=xror#21652 tag=CURRENT_PLAYER value=1",
+            "D 09:00:01.3 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=xror#21652 tag=RESOURCES value=1",
+            "D 09:00:01.4 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=xror#21652 tag=RESOURCES_USED value=0",
+        ]);
+        assert_eq!(t.me_name.as_deref(), Some("xror#21652"));
+        assert!(t.me_learned, "worked out rather than supplied");
+        assert_eq!(t.mana_left(), Some(1), "so the mana lines attribute too");
+    }
+
+    #[test]
+    fn the_opponents_turn_does_not_name_you_by_elimination() {
+        // "It is their turn and this line says who is current" identifies
+        // them, not you -- and with one name seen so far, eliminating would
+        // pin the wrong one.
+        let mut t = Tracker::new(None);
+        feed(&mut t, &[
+            "D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME",
+            "D 09:00:00.2 [Zone] ZoneChangeList.ProcessChanges() - id=3 local=False [entityName=The Coin id=11 zone=DECK zonePos=0 cardId=GAME_005 player=1] zone from  -> FRIENDLY HAND",
+            "D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=1",
+            "D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=starkalpha#2221 tag=CURRENT_PLAYER value=1",
+        ]);
+        assert_eq!(t.me_name, None, "turn one is not the Coin holder's");
     }
 
     #[test]
