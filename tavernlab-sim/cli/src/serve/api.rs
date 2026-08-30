@@ -26,6 +26,7 @@ use tavernlab_core::cards::{CardId, Class, Formats, Kind, by_name, is_implemente
 use tavernlab_core::deckstring::{self, Resolved};
 use tavernlab_core::gauntlet::{self, MetaDeck, Unfieldable, class_name};
 use tavernlab_core::optimize::{self, Budget};
+use tavernlab_core::telemetry::Verdict;
 use tavernlab_core::tiers;
 use tavernlab_json::{Json, Out, to_string};
 
@@ -509,19 +510,40 @@ pub fn mulligan(app: &App, req: &Request) -> Response {
                             let stat = matchup.stat(*card).unwrap_or_default();
                             let delta = stat.opening_delta(base, MIN_APPEARANCES);
                             let cost = card.def().cost;
-                            // No measurement is not "throw it": a card the
-                            // sample cannot speak about falls back to the
-                            // only thing that is still true — its cost.
-                            let keep = match delta {
-                                Some(d) => d > -0.01,
-                                None => cost <= 3,
+                            // Three answers. A card whose difference does not
+                            // clear its own error bar has not been measured
+                            // to help or to hurt, and it falls back to the
+                            // curve the same way a card with too few games
+                            // does — which is the only thing still true about
+                            // it. Saying otherwise flipped 28% of these
+                            // verdicts between two runs of the same deck.
+                            let verdict = stat.opening_verdict(base, MIN_APPEARANCES);
+                            let keep = match verdict {
+                                Verdict::Keep => true,
+                                Verdict::Toss => false,
+                                Verdict::NoDifference | Verdict::TooFew => cost <= 3,
                             };
                             a.item(|v| {
                                 v.obj(|o| {
                                     o.str_field("card", card.name());
                                     o.int_field("cost", cost as i64);
                                     o.bool_field("keep", keep);
+                                    // Named so the front end can say "no
+                                    // measurable difference" rather than
+                                    // dressing a fallback as a measurement.
+                                    o.str_field(
+                                        "verdict",
+                                        match verdict {
+                                            Verdict::Keep => "keep",
+                                            Verdict::Toss => "toss",
+                                            Verdict::NoDifference => "flat",
+                                            Verdict::TooFew => "few",
+                                        },
+                                    );
                                     o.field("delta", |v| v.opt(delta, |v, d| v.round(d, 4)));
+                                    o.field("margin", |v| {
+                                        v.opt(stat.opening_margin(), |v, m| v.round(m, 4))
+                                    });
                                     o.int_field("n", stat.open_n as i64);
                                     o.field("why", |v| reasons(v, *card, opp.style, delta));
                                 })

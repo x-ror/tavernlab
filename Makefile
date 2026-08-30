@@ -24,7 +24,7 @@ ENV  := $(DATA)/watch.env
 # kill. Nothing here is worth parallelising anyway; cargo does its own.
 .NOTPARALLEL:
 
-.PHONY: help build serve live watch watch-start watch-stop watch-restart watch-status watch-log history bench callgrind policy weights tiers
+.PHONY: help build serve live watch watch-start watch-stop watch-restart watch-status watch-log history bench callgrind policy weights mulligan tiers
 
 help:
 	@echo "make live           жива порада під час гри + сторінка в браузері"
@@ -39,6 +39,7 @@ help:
 	@echo "make callgrind      підрахунок інструкцій (детермінований A/B)"
 	@echo "make policy         скільки віддає жадібний агент проти пошуку"
 	@echo "make weights        чи ті числа стоять в оцінці позиції"
+	@echo "make mulligan       чи порада мулігану залежить від політики"
 	@echo "make tiers          чи їде тір-лист, коли політика міняється"
 	@echo
 	@echo "тека логів — у $(ENV), не в репозиторії:"
@@ -136,6 +137,13 @@ policy: build
 # cannot differ, and anything else means the harness is measuring itself.
 weights: build
 	$(BIN) weights 400 4000
+
+# Whether the mulligan advice depends on how well the agent plays -- and on
+# how much of it is a coin toss either way. The first column is the control:
+# the same policy on different seeds, which is the floor any policy
+# difference has to clear.
+mulligan: build
+	$(BIN) mulligan 1500 data/gauntlet_standard.json
 
 # Whether the tier list is a statement about decks or about the policy: the
 # same table built twice, once by each. Slow -- the search side is ~200x the

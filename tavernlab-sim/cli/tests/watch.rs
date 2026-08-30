@@ -133,25 +133,37 @@ impl View {
     }
 
     fn get(&self, path: &str) -> (u16, String) {
-        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).expect("connect");
+        // Retried on a transport failure, not on a bad answer. A machine
+        // busy enough that the watcher's thread cannot be scheduled inside
+        // the read timeout drops the connection, and that is the test's own
+        // environment rather than the server's behaviour -- this failed once
+        // under a benchmark saturating every core. A status the server
+        // actually sent is never retried away.
+        for attempt in 0..3 {
+            match self.try_get(path) {
+                Some(answer) => return answer,
+                None => std::thread::sleep(Duration::from_millis(200 * (attempt + 1))),
+            }
+        }
+        panic!("no answer from the view on {path} after three tries");
+    }
+
+    fn try_get(&self, path: &str) -> Option<(u16, String)> {
+        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).ok()?;
         stream
             .set_read_timeout(Some(Duration::from_secs(30)))
-            .expect("timeout");
+            .ok()?;
         let head = format!(
             "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
             self.port
         );
-        stream.write_all(head.as_bytes()).expect("write");
+        stream.write_all(head.as_bytes()).ok()?;
         let mut raw = Vec::new();
-        stream.read_to_end(&mut raw).expect("read");
+        stream.read_to_end(&mut raw).ok()?;
         let text = String::from_utf8_lossy(&raw).into_owned();
-        let (head, body) = text.split_once("\r\n\r\n").expect("a complete response");
-        let status = head
-            .split_whitespace()
-            .nth(1)
-            .and_then(|s| s.parse().ok())
-            .expect("a status line");
-        (status, body.to_string())
+        let (head, body) = text.split_once("\r\n\r\n")?;
+        let status = head.split_whitespace().nth(1)?.parse().ok()?;
+        Some((status, body.to_string()))
     }
 
     /// The advice, once the watcher has read the log. It polls the file, so

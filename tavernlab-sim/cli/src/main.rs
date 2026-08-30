@@ -18,6 +18,7 @@
 use std::time::Instant;
 
 use tavernlab_core::agent::{Scripted, Style};
+use crate::serve::state::MULLIGAN_MIN_N;
 use tavernlab_core::planner::Weights;
 use tavernlab_core::batch::{Contender, play_batch, play_batch_parallel, seeds};
 use tavernlab_core::cards::{Class, Formats, PLAYABLE_CLASSES};
@@ -70,6 +71,7 @@ fn main() {
             num(4, 1) as u8,
         ),
         "weights" => weights(num(1, 200), num(2, 4000) as u32, args.get(3).map(String::as_str)),
+        "mulligan" => mulligan_bias(num(1, 300), args.get(2).map(String::as_str)),
         "demo" => demo(num(1, 1) as u64),
         "coverage" => coverage(),
         "implemented" => list_implemented(match args.get(1).map(String::as_str) {
@@ -84,7 +86,7 @@ fn main() {
         other => {
             eprintln!("unknown command {other:?}");
             eprintln!(
-                "usage: tavernsim [serve|watch|history|bench|matrix|policy|weights|tiers|demo|coverage|gauntlet|decks|backlog|art-urls] [args]"
+                "usage: tavernsim [serve|watch|history|bench|matrix|policy|weights|mulligan|tiers|demo|coverage|gauntlet|decks|backlog|art-urls] [args]"
             );
             std::process::exit(2);
         }
@@ -269,6 +271,193 @@ fn weights(per_deck: usize, budget: u32, gauntlet: Option<&str>) {
             report(format!("{name} = {v}"), &run(apply(base, v)));
         }
     }
+}
+
+/// Does the mulligan advice depend on how well the agent plays?
+///
+/// The README says the policy's bias largely cancels on this screen, because
+/// a deck is measured against the same field either way. That argument is
+/// about *decks*. The mulligan is a comparison between the **cards of one
+/// deck**, and a card the greedy policy misplays looks bad against every
+/// opponent -- nothing there cancels. So the claim is checked rather than
+/// repeated: the same instrumented runs, on the same seeds, once with each
+/// policy, and what is compared is the advice, not the win rate.
+///
+/// A card counts as flipped when the two policies disagree about keeping it.
+/// That is the only difference a reader of the tab would ever see.
+fn mulligan_bias(games: usize, gauntlet: Option<&str>) {
+    use tavernlab_core::batch::Policy;
+    use tavernlab_core::telemetry::instrumented_parallel_with;
+
+    let path = gauntlet.unwrap_or("../data/gauntlet_standard.json");
+    let field = serve::state::load_gauntlet(std::path::Path::new(path));
+    let playable: Vec<_> = field.iter().filter(|d| d.playable()).collect();
+    if playable.len() < 2 {
+        eprintln!("замало колод у {path}");
+        std::process::exit(1);
+    }
+    let threads = default_threads();
+    let search = Policy::Plan {
+        budget: 4000,
+        depth: 4,
+        samples: 1,
+        iterative: true,
+        weights: tavernlab_core::planner::Weights::default(),
+    };
+    // Two seed lists. The advice moves when the *sample* changes as well as
+    // when the policy does, and at any affordable number of games a card's
+    // opening record is a few dozen games wide -- so "greedy against itself
+    // on different seeds" is the floor that any policy difference has to
+    // clear. Without it this whole measurement would read noise as a finding.
+    let s = seeds(31, games);
+    let other = seeds(97, games);
+
+    // Two rules over the same games, so the fix can be shown to work rather
+    // than argued for. `binary` is what the tab used to say -- keep unless
+    // the measured difference is below the line, whatever its error bar.
+    // `guarded` is `opening_verdict`: a difference inside its own bar is no
+    // difference, and falls back to the curve like a card with too few games.
+    #[derive(PartialEq)]
+    enum Say {
+        Keep,
+        Toss,
+        NoData,
+    }
+    let binary =
+        |st: &tavernlab_core::telemetry::CardStat, base: f64| match st
+            .opening_delta(base, MULLIGAN_MIN_N)
+        {
+            Some(d) if d > -0.01 => Say::Keep,
+            Some(_) => Say::Toss,
+            None => Say::NoData,
+        };
+    let guarded =
+        |st: &tavernlab_core::telemetry::CardStat, base: f64| match st
+            .opening_verdict(base, MULLIGAN_MIN_N)
+        {
+            tavernlab_core::telemetry::Verdict::Keep => Say::Keep,
+            tavernlab_core::telemetry::Verdict::Toss => Say::Toss,
+            // Both fall back to the curve, which is the same answer under
+            // either policy, so neither is a judgement to disagree about.
+            _ => Say::NoData,
+        };
+
+    println!(
+        "{path}: {} колод, {games} ігор на пару, по обидві політики\n",
+        playable.len()
+    );
+    println!(
+        "{:<22}{:>6}{:>13}{:>13}{:>13}{:>13}",
+        "колода", "карт", "шум (було)", "шум (стало)", "політ.(було)", "політ.(стало)"
+    );
+
+    // Against the whole field, the way the tab builds a deck's telemetry,
+    // summed rather than one opponent picked -- "which card to keep" is not a
+    // question about one matchup.
+    let against_field = |me: &tavernlab_core::gauntlet::MetaDeck,
+                         policies: [Policy; 2],
+                         seeds: &[u64]| {
+        let mut all = tavernlab_core::telemetry::Matchup::default();
+        for opp in &playable {
+            if opp.name == me.name {
+                continue;
+            }
+            all = all.merge(instrumented_parallel_with(
+                me.contender(),
+                opp.contender(),
+                policies,
+                seeds,
+                threads,
+            ));
+        }
+        all
+    };
+
+    // How many cards the two runs disagree about keeping, and how many
+    // neither could judge.
+    let compare = |a: &tavernlab_core::telemetry::Matchup,
+                   b: &tavernlab_core::telemetry::Matchup,
+                   rule: &dyn Fn(&tavernlab_core::telemetry::CardStat, f64) -> Say| {
+        let (ab, bb) = (a.base(), b.base());
+        let (mut same, mut diff, mut none) = (0usize, 0usize, 0usize);
+        for (card, stat) in &a.cards {
+            let (x, y) = match b.cards.iter().find(|(c, _)| c == card) {
+                Some((_, st)) => (rule(stat, ab), rule(st, bb)),
+                None => (Say::NoData, Say::NoData),
+            };
+            if x == Say::NoData || y == Say::NoData {
+                none += 1;
+            } else if x == y {
+                same += 1;
+            } else {
+                diff += 1;
+            }
+        }
+        (same, diff, none)
+    };
+    let share = |(same, diff, _): (usize, usize, usize)| {
+        let judged = same + diff;
+        if judged == 0 {
+            return "—".to_string();
+        }
+        format!("{diff}/{judged} ({:.0}%)", 100.0 * diff as f64 / judged as f64)
+    };
+
+    let add =
+        |a: (usize, usize, usize), b: (usize, usize, usize)| (a.0 + b.0, a.1 + b.1, a.2 + b.2);
+    let zero = (0usize, 0usize, 0usize);
+    let (mut cb, mut cg, mut pb, mut pg) = (zero, zero, zero, zero);
+    for me in &playable {
+        let greedy = against_field(me, [Policy::Greedy; 2], &s);
+        let noise = against_field(me, [Policy::Greedy; 2], &other);
+        let searched = against_field(me, [search; 2], &s);
+        let row = (
+            compare(&greedy, &noise, &binary),
+            compare(&greedy, &noise, &guarded),
+            compare(&greedy, &searched, &binary),
+            compare(&greedy, &searched, &guarded),
+        );
+        println!(
+            "{:<22}{:>6}{:>13}{:>13}{:>13}{:>13}",
+            me.name,
+            greedy.cards.len(),
+            share(row.0),
+            share(row.1),
+            share(row.2),
+            share(row.3)
+        );
+        cb = add(cb, row.0);
+        cg = add(cg, row.1);
+        pb = add(pb, row.2);
+        pg = add(pg, row.3);
+    }
+    println!(
+        "\n{:<22}{:>6}{:>13}{:>13}{:>13}{:>13}",
+        "разом",
+        cb.0 + cb.1 + cb.2,
+        share(cb),
+        share(cg),
+        share(pb),
+        share(pg)
+    );
+    let pct = |(same, diff, _): (usize, usize, usize)| {
+        let judged = same + diff;
+        if judged == 0 {
+            0.0
+        } else {
+            100.0 * diff as f64 / judged as f64
+        }
+    };
+    println!(
+        "\nстаре правило: шум перевертає {:.0}% порад, зміна політики — {:.0}%",
+        pct(cb),
+        pct(pb)
+    );
+    println!(
+        "нове правило:  шум перевертає {:.0}% порад, зміна політики — {:.0}%",
+        pct(cg),
+        pct(pg)
+    );
 }
 
 /// Whether the tier list is a statement about decks or about the policy.
