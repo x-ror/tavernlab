@@ -30,6 +30,18 @@ export default function Settings() {
             onChange={set('deckstring')}
             width="100%"
           />
+          {/* The watcher works out which of the two names in the log is
+              yours from the log's own player numbers. This is the override
+              for a client that only ever writes the bare battletag, which
+              carries no number to match on. */}
+          <TextField
+            label={t('ui.settings.battletag')}
+            description={t('ui.settings.battletag_help')}
+            placeholder="Name#12345"
+            value={draft.battletag || ''}
+            onChange={set('battletag')}
+            width="100%"
+          />
           <Picker
             label={t('settings.language')}
             selectedKey={draft.language || 'auto'}

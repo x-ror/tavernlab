@@ -428,3 +428,90 @@ D 09:09:00.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Them#2 tag=
         );
     }
 }
+
+/// The watcher, started from the page instead of from a second terminal.
+///
+/// The wiring is the thing that breaks: a thread started but never publishing,
+/// a position built and never reaching the handler. Both ends are checked
+/// here rather than trusted -- the log goes in as a file the client could have
+/// written, and the assertion is on the advice the browser would render.
+#[test]
+fn the_app_watches_the_game_log_without_a_second_command() {
+    const LOG: &str = "\
+D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME
+D 09:00:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=1 local=False [entityName=Jaina Proudmoore id=64 zone=PLAY zonePos=0 cardId=HERO_08 player=1] zone from  -> FRIENDLY PLAY (Hero)
+D 09:00:00.1 [Zone] ZoneChangeList.ProcessChanges() - id=2 local=False [entityName=Garrosh Hellscream id=65 zone=PLAY zonePos=0 cardId=HERO_01 player=2] zone from  -> OPPOSING PLAY (Hero)
+D 09:00:00.2 [Zone] ZoneChangeList.ProcessChanges() - id=3 local=False [entityName=Chillwind Yeti id=10 zone=DECK zonePos=0 cardId=CS2_182 player=1] zone from FRIENDLY DECK -> FRIENDLY HAND
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=xror id=2 zone=PLAY zonePos=0 cardId= player=1] tag=RESOURCES value=4
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=xror id=2 zone=PLAY zonePos=0 cardId= player=1] tag=RESOURCES_USED value=0
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7
+D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=xror id=2 zone=PLAY zonePos=0 cardId= player=1] tag=CURRENT_PLAYER value=1
+D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=6 local=False [entityName=Bloodfen Raptor id=20 zone=HAND zonePos=1 cardId=CS2_172 player=2] zone from OPPOSING HAND -> OPPOSING PLAY
+";
+    let root = std::env::temp_dir().join(format!("tavernlab-live-e2e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let home = root.join("home");
+    let session = root.join("logs").join("Hearthstone_2026_08_30");
+    std::fs::create_dir_all(&home).expect("home");
+    std::fs::create_dir_all(&session).expect("session");
+    // A Power.log under the verbose-logging floor is the line the client
+    // writes with logging off, and the watcher is right to skip it -- so the
+    // fixture is padded past the floor the way a real session would be.
+    let pad = "D 09:00:00.0 [Power] pad ".to_string() + &"#".repeat(5000) + "\n";
+    std::fs::write(session.join("Power.log"), format!("{pad}{LOG}")).expect("write the log");
+
+    let s = Server::start_with_home(&home);
+
+    // Everything the watcher needs is set on the site: the directory here,
+    // the deck on the Deck tab, and the battletag out of the log itself.
+    let (status, body) = s.post(
+        "/api/settings",
+        &format!(
+            "{{\"logs_dir\":{}}}",
+            tavernlab_json::to_string(|o| o.str(root.join("logs").to_str().expect("path")))
+        ),
+    );
+    assert_eq!(status, 200, "{body}");
+
+    let (status, body) = s.post("/api/live", "{\"action\":\"start\"}");
+    assert_eq!(status, 200, "{body}");
+    assert!(json(&body).bool_or_false("running"), "{body}");
+
+    // The watcher polls the file, so the first read can land before the
+    // first position is built.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let advice = loop {
+        let (status, body) = s.get("/api/live");
+        assert_eq!(status, 200, "{body}");
+        if !json(&body).str_or_empty("title").is_empty() || Instant::now() > deadline {
+            break body;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let doc = json(&advice);
+    assert!(doc.str_or_empty("title").contains("хід 7"), "{advice}");
+    let headings: Vec<&str> = doc
+        .arr_or_empty("sections")
+        .iter()
+        .map(|s| s.str_or_empty("heading"))
+        .collect();
+    assert!(headings.contains(&"ХІД"), "the turn is planned: {advice}");
+    assert!(
+        advice.contains("зіграти Chillwind Yeti"),
+        "four mana buys the Yeti: {advice}"
+    );
+    assert!(
+        advice.contains("Bloodfen Raptor"),
+        "and the position it read is there beside it: {advice}"
+    );
+
+    let (status, body) = s.post("/api/live", "{\"action\":\"stop\"}");
+    assert_eq!(status, 200, "{body}");
+    assert!(!json(&body).bool_or_false("running"), "{body}");
+
+    // A request for neither state is refused rather than guessed at.
+    let (status, _) = s.post("/api/live", "{\"action\":\"maybe\"}");
+    assert_eq!(status, 400);
+
+    let _ = std::fs::remove_dir_all(&root);
+}

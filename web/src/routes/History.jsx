@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Flex, Text } from '@adobe/react-spectrum'
+import { Button, Flex, Text } from '@adobe/react-spectrum'
 import * as api from '../api'
 import { useT } from '../i18n'
+import { go } from '../store'
 import ClassCrest from '../components/ClassCrest'
 import { CopyButton, ErrorNote, Loading, Panel, RateBar, Stat } from '../components/ui'
 import { classColor } from '../classes'
@@ -15,7 +16,7 @@ import { pct, plural } from '../format'
  * confused — so nothing here is estimated, smoothed or predicted. A
  * column the log could not read is blank.
  *
- * The record is a SQLite file written by `tavernsim watch`, and the path
+ * The record is a SQLite file the Live tab's watcher writes, and the path
  * to it is on the page on purpose. It is yours: copyable, queryable, and
  * not a cache this program may decide to rebuild.
  */
@@ -163,8 +164,10 @@ export default function History() {
       {!data.games ? (
         <Panel>
           <Text>{t('ui.history.empty')}</Text>
-          <div style={{ marginTop: 10 }}>
-            <code className="tl-code">tavernsim watch --me &lt;battletag&gt;</code>
+          <div style={{ marginTop: 12 }}>
+            <Button variant="accent" onPress={() => go('live')}>
+              {t('ui.nav.live')}
+            </Button>
           </div>
         </Panel>
       ) : (

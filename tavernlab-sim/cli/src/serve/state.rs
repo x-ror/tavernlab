@@ -34,7 +34,19 @@ pub const MULLIGAN_MIN_N: u32 = 30;
 /// Settings the app actually has. A key outside this list is refused rather
 /// than stored: an unknown setting that silently persists is a setting
 /// nobody can find again.
-pub const SETTING_KEYS: [&str; 3] = ["deckstring", "deck_name", "language"];
+pub const SETTING_KEYS: [&str; 6] = [
+    "deckstring",
+    "deck_name",
+    "language",
+    // Where the client writes its logs, and who you are in them. Both are
+    // the live watcher's, and both live here rather than in a flag so that
+    // the page that starts the watcher is the page that configures it.
+    "logs_dir",
+    "battletag",
+    // Start the watcher with the server, for the session that opens the lab
+    // and then plays.
+    "live_auto",
+];
 
 /// Games per opponent behind the mulligan and coach screens.
 ///
@@ -56,6 +68,8 @@ pub struct App {
     /// Threads a simulation batch may use.
     pub threads: usize,
     pub jobs: Jobs,
+    /// The log watcher, when one has been switched on.
+    pub live: super::live::Live,
     pub started: Instant,
     /// Games simulated since start, for `/api/metrics`.
     games: AtomicU64,
@@ -79,6 +93,7 @@ impl App {
             home,
             threads,
             jobs: Jobs::default(),
+            live: super::live::Live::default(),
             started: Instant::now(),
             games: AtomicU64::new(0),
             settings: Mutex::new(settings),

@@ -1,9 +1,11 @@
-# Local commands. Identity is not in this file: HS_ME / HS_LOGS / HS_DECK
-# live in the environment, or in $(DATA)/watch.env, so a git pull cannot
-# overwrite them.
+# Local commands.
 #
-# After updating the checkout: `make watch` rebuilds and restarts the
-# recorder. History lives in the data home, not in the tree.
+# `make serve` is the whole product: one process, one page. Watching the
+# game log, recording what you played and reading the record are all on
+# that page now, so nothing here has to be typed while you play.
+#
+# What is left below the line is measurement -- the runs that check a claim
+# the README makes. Those are deliberate, slow, and belong in a terminal.
 
 .DEFAULT_GOAL := help
 
@@ -15,26 +17,18 @@ CARGOFLAGS := --release
 endif
 BIN  := tavernlab-sim/target/$(if $(filter release,$(PROFILE)),release,debug)/tavernsim
 DATA := $(if $(TAVERNLAB_HOME),$(TAVERNLAB_HOME),$(HOME)/.local/share/TavernLab)
-PID  := $(DATA)/watch.pid
-LOG  := $(DATA)/watch.log
-ENV  := $(DATA)/watch.env
 
-# `watch-restart` names stop and start as prerequisites, and `make -j` would
-# be free to run them at once -- starting a recorder the stop is about to
-# kill. Nothing here is worth parallelising anyway; cargo does its own.
 .NOTPARALLEL:
 
-.PHONY: help build serve live watch watch-start watch-stop watch-restart watch-status watch-log history bench callgrind policy weights mulligan tiers
+.PHONY: help build serve web history bench callgrind policy weights mulligan tiers
 
 help:
-	@echo "make live           жива порада під час гри + сторінка в браузері"
-	@echo "make watch          перезібрати й (пере)запустити запис ігор"
-	@echo "make watch-stop     зупинити запис"
-	@echo "make watch-status   чи працює"
-	@echo "make watch-log      останні рядки лога демона"
-	@echo "make history        показати записані бої"
-	@echo "make serve          зібрати й відкрити інтерфейс"
+	@echo "make serve          зібрати й відкрити застосунок (усе там: колода, гра, історія)"
+	@echo "make web            перезібрати інтерфейс після зміни у web/"
 	@echo "make build          лише зібрати (PROFILE=release для оптимізованого)"
+	@echo "make history        показати записані бої в терміналі"
+	@echo
+	@echo "перевірки тверджень README:"
 	@echo "make bench          пропускна здатність (див. tools/ab-bench.sh для порівнянь)"
 	@echo "make callgrind      підрахунок інструкцій (детермінований A/B)"
 	@echo "make policy         скільки віддає жадібний агент проти пошуку"
@@ -42,82 +36,24 @@ help:
 	@echo "make mulligan       чи порада мулігану залежить від політики"
 	@echo "make tiers          чи їде тір-лист, коли політика міняється"
 	@echo
-	@echo "тека логів — у $(ENV), не в репозиторії:"
-	@echo "  HS_LOGS='/шлях/до/Hearthstone/Logs'"
-	@echo "бойовий тег визначається з логу; HS_ME потрібен, лише якщо не вийшло"
-	@echo "деккод береться з налаштувань лабораторії або запам'ятовується з --deck"
+	@echo "дані лежать у $(DATA), не в репозиторії"
 
 build:
 	cargo build --manifest-path $(MANIFEST) $(CARGOFLAGS)
 
+# The interface is a build artefact, not a checked-in one, so a fresh clone
+# needs this once. `serve` says so itself if it is missing.
+web:
+	cd web && npm install && npm run build
+
 serve: build
 	$(BIN) serve
 
-# Advice while you play, in the foreground: the terminal report plus the page
-# at http://127.0.0.1:8766/ to leave open beside the client. Ctrl-C stops it.
-#
-# Foreground on purpose, unlike the recorder below. This one is watched while
-# it runs and stopped when the session ends, so a pid file and a start/stop
-# pair would be ceremony around something that lives as long as the terminal
-# it was typed in.
-#
-# Neither the battletag nor the deck is required: the first comes out of the
-# log, the second out of the lab's settings. HS_LOGS is, outside Windows,
-# because there is no standard place to look.
-live: build
-	@if [ -f "$(ENV)" ]; then set -a; . "$(ENV)"; set +a; fi; \
-	exec "$(CURDIR)/$(BIN)" watch --serve
-
-# Rebuild and (re)start. The command to run after a git pull.
-watch: watch-restart
-
-watch-restart: watch-stop watch-start
-
-watch-start: build
-	@mkdir -p "$(DATA)"
-	@if [ -f "$(PID)" ] && kill -0 $$(cat "$(PID)") 2>/dev/null; then \
-		echo "вже працює, pid $$(cat "$(PID)"). make watch-restart — щоб перезібрати."; \
-		exit 0; \
-	fi; \
-	if [ -f "$(ENV)" ]; then set -a; . "$(ENV)"; set +a; fi; \
-	if [ -z "$$HS_LOGS" ]; then \
-		echo "немає теки логів. Допишіть HS_LOGS у $(ENV):"; \
-		echo "  HS_LOGS='/шлях/до/Hearthstone/Logs'"; \
-		exit 2; \
-	fi; \
-	nohup env HS_ME="$$HS_ME" HS_LOGS="$$HS_LOGS" HS_DECK="$$HS_DECK" \
-		"$(CURDIR)/$(BIN)" watch --quiet >> "$(LOG)" 2>&1 & \
-	echo $$! > "$(PID)"; \
-	echo "записую ігри, pid $$(cat "$(PID)")"; \
-	echo "лог: $(LOG)"
-
-watch-stop:
-	@if [ -f "$(PID)" ]; then \
-		pid=$$(cat "$(PID)"); \
-		if kill -0 $$pid 2>/dev/null; then \
-			kill $$pid; \
-			echo "зупинено pid $$pid"; \
-		else \
-			echo "процес уже не живий"; \
-		fi; \
-		rm -f "$(PID)"; \
-	else \
-		echo "не запущено"; \
-	fi
-
-watch-status:
-	@if [ -f "$(PID)" ] && kill -0 $$(cat "$(PID)") 2>/dev/null; then \
-		echo "працює, pid $$(cat "$(PID)")"; \
-		echo "лог: $(LOG)"; \
-	else \
-		echo "не запущено"; \
-	fi
-
-watch-log:
-	@if [ -f "$(LOG)" ]; then tail -n 80 "$(LOG)"; else echo "лога ще немає: $(LOG)"; fi
-
+# The same rows the History tab shows, for a terminal that is already open.
 history: build
 	$(BIN) history
+
+# ------------------------------------------------------------ measurements
 
 # Throughput of this checkout. To compare two builds, use tools/ab-bench.sh
 # instead -- and read its header first: a naive best-of-five comparison on a
