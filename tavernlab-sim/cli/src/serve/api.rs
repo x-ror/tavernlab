@@ -1470,7 +1470,7 @@ pub fn live_read(app: &Arc<App>) -> Response {
 pub fn live_write(app: &Arc<App>, req: &Request) -> Response {
     let payload = body(req);
     match field_str(&payload, "action") {
-        "start" => match super::live::start(app, "standard") {
+        "start" => match super::live::start(app) {
             Ok(_) => live_read(app),
             Err(e) => Response::error(400, &e),
         },

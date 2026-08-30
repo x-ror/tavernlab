@@ -370,7 +370,13 @@ pub(crate) fn position(tr: &Tracker, deck: &str) -> Result<(Game, bool), Line> {
         // A body the log has taken to zero health is dead; the line that
         // moves it out of play arrives in a later batch, up to a poll behind.
         // Leaving it in would draw the plan over a board with a corpse on it.
-        for b in tr.board[side].iter().filter(|b| b.stats().1 > 0) {
+        // Zero health is dead -- for a minion. A Location prints no Health
+        // at all (its own number is durability, in another field), so the
+        // same test read every Location as a corpse and left it off the
+        // board entirely.
+        for b in tr.board[side].iter().filter(|b| {
+            b.card.def().kind() == tavernlab_core::cards::Kind::Location || b.stats().1 > 0
+        }) {
             let mut m = Permanent::summon(b.card);
             // Summoning sickness is kept for whatever landed this turn:
             // without it the plan swings with a minion that has only just
@@ -392,6 +398,11 @@ pub(crate) fn position(tr: &Tracker, deck: &str) -> Result<(Game, bool), Line> {
             m.attacks_done = b.attacks;
             if b.frozen {
                 m.flags.insert(tavernlab_core::state::Flags::FROZEN);
+            }
+            // A Location used this turn cannot be used again, and the log
+            // says so with the same `EXHAUSTED` a spent Hero Power carries.
+            if b.exhausted && b.card.def().kind() == tavernlab_core::cards::Kind::Location {
+                m.flags.insert(tavernlab_core::state::Flags::USED);
             }
             stated.push((side, g.players[side].board.len(), b.atk, b.hp));
             g.players[side].board.push(m);
@@ -919,9 +930,23 @@ fn side_line(board: &[tracker::Body]) -> Arg {
     let names: Vec<String> = board
         .iter()
         // Same rule as the plan: a body at zero health is already dead, and
-        // showing it would make the advice look like it ignored a minion.
-        .filter(|b| b.stats().1 > 0)
+        // showing it would make the advice look like it ignored a minion --
+        // and, as there, a Location prints no Health and is not a corpse for
+        // having none.
+        .filter(|b| {
+            b.card.def().kind() == tavernlab_core::cards::Kind::Location || b.stats().1 > 0
+        })
         .map(|b| {
+            // A Location has no Attack and no Health; what it carries is
+            // durability, and `0/0` would be two numbers nobody wrote. The
+            // log's own figure where it gave one, the printed one otherwise
+            // -- the same rule everything else here follows. No word for
+            // "location": the shape of the entry is the word, and prose in
+            // this line would be prose the page cannot translate.
+            if b.card.def().kind() == tavernlab_core::cards::Kind::Location {
+                let left = b.durability.unwrap_or(b.card.def().dur);
+                return format!("{} ({left})", b.card.name());
+            }
             let (atk, health) = b.stats();
             let mut s = format!("{} {atk}/{health}", b.card.name());
             // Only what the log granted on top of the card, so the line stays
@@ -1475,6 +1500,36 @@ mod position_tests {
         let spent = tracked(&lines);
         let (g, _) = position(&spent, "").expect("a position");
         assert_eq!(g.players[0].hero_power_uses, 1, "the log said it was used");
+    }
+
+    /// A Location is a play, so it belongs on the board.
+    ///
+    /// The engine offers `UseLocation` for one in play, and the zone branch
+    /// used to drop everything that was not a minion or a weapon -- so a
+    /// whole play was missing from every turn that had one.
+    #[test]
+    fn a_location_is_on_the_board_and_can_be_used() {
+        let mut lines = HEROES.to_vec();
+        lines.push("D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7");
+        lines.push("D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=9 local=False [entityName=Ruby Sanctum id=40 zone=HAND zonePos=1 cardId=CATA_301 player=1] zone from FRIENDLY HAND -> FRIENDLY PLAY");
+        let tr = tracked(&lines);
+        let (g, _) = position(&tr, "").expect("a position");
+        let m = g.players[0].board.first().expect("the Location is in play");
+        assert_eq!(m.card.name(), "Ruby Sanctum");
+        assert!(
+            !m.flags.has(tavernlab_core::state::Flags::USED),
+            "and it has not been used yet"
+        );
+
+        lines.push("D 09:00:02.5 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=Ruby Sanctum id=40 zone=PLAY zonePos=1 cardId=CATA_301 player=1] tag=EXHAUSTED value=1");
+        let spent = tracked(&lines);
+        let (g, _) = position(&spent, "").expect("a position");
+        assert!(
+            g.players[0].board[0]
+                .flags
+                .has(tavernlab_core::state::Flags::USED),
+            "used this turn, so not a play the plan may offer again"
+        );
     }
 
     /// The Corpses the log banked reach the game the search runs on.

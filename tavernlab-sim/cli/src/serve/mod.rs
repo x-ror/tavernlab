@@ -96,7 +96,7 @@ pub fn run(port: u16, threads: usize, open_browser: bool) -> Result<(), String> 
     // game should start because you asked it to and go on starting because
     // you asked it to stay on.
     if app.settings().get("live_auto").map(String::as_str) == Some("on") {
-        match live::start(&app, "standard") {
+        match live::start(&app) {
             Ok(dir) => println!("  стежу за {}", dir.display()),
             Err(e) => println!("  стеження не почалося: {e}"),
         }

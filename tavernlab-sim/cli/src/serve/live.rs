@@ -102,7 +102,24 @@ pub fn logs_dir(app: &App) -> Option<PathBuf> {
 /// the lab's own settings, the battletag is learned from the log (and can be
 /// overridden in Settings when the log never spells it), and the directory is
 /// guessed and then editable.
-pub fn start(app: &Arc<App>, format: &str) -> Result<PathBuf, String> {
+/// Which gauntlet the mulligan and the opponent read are measured against.
+///
+/// The deck code says so itself, so nothing has to be chosen twice: a Wild
+/// list is read against the Wild field. Standard where the code did not say,
+/// which is what every other screen assumes for the same reason.
+///
+/// Hardcoding Standard here meant a Wild deck was advised against a field it
+/// does not play in, silently.
+fn format_of(app: &App) -> &'static str {
+    let deck = app.settings().get("deckstring").cloned().unwrap_or_default();
+    tavernlab_core::deckstring::resolve(&deck)
+        .ok()
+        .and_then(|r| r.format)
+        .map(super::state::format_name)
+        .unwrap_or("standard")
+}
+
+pub fn start(app: &Arc<App>) -> Result<PathBuf, String> {
     if app.live.running() {
         return Err("вже стежу".into());
     }
@@ -134,7 +151,7 @@ pub fn start(app: &Arc<App>, format: &str) -> Result<PathBuf, String> {
     }
 
     let worker = Arc::clone(app);
-    let format = format.to_string();
+    let format = format_of(app).to_string();
     let here = dir.clone();
     let token = Arc::clone(&stop);
     if let Err(e) = std::thread::Builder::new()

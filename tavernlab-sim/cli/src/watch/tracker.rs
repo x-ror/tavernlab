@@ -38,8 +38,12 @@ pub struct Body {
     /// taxes are already in that number; the printed cost is not.
     pub cost: Option<i16>,
     /// Spent for this turn. On a minion this is what `attacks` already says;
-    /// on a Hero Power it is the whole of it.
+    /// on a Hero Power or a Location it is the whole of it.
     pub exhausted: bool,
+    /// Uses left, for the entities that count them rather than health --
+    /// Locations. `None` while the log has said nothing and the printed
+    /// number stands.
+    pub durability: Option<i16>,
 }
 
 impl Body {
@@ -56,6 +60,7 @@ impl Body {
             attacks: 0,
             cost: None,
             exhausted: false,
+            durability: None,
         }
     }
 
@@ -89,9 +94,10 @@ impl Body {
             EntityTag::Attacks(n) => self.attacks = n,
             EntityTag::Cost(n) => self.cost = Some(n),
             EntityTag::Exhausted(on) => self.exhausted = on,
-            // Neither belongs on a minion. Dropped rather than guessed at:
-            // a durability tag on a body is not a fact about that body.
-            EntityTag::Armor(_) | EntityTag::Durability(_) => {}
+            EntityTag::Durability(n) => self.durability = Some(n),
+            // Armor is a hero's. Dropped rather than guessed at: an armour
+            // tag on a body is not a fact about that body.
+            EntityTag::Armor(_) => {}
             EntityTag::Keyword("FROZEN", on) => self.frozen = on,
             EntityTag::Keyword(name, on) => {
                 let Some(k) = keyword_of(name) else { return };
@@ -658,7 +664,12 @@ impl Tracker {
             "PLAY" => {
                 if let Some(c) = card {
                     match c.def().kind() {
-                        tavernlab_core::cards::Kind::Minion => {
+                        // A Location takes a board slot the way a minion
+                        // does, and the engine offers `UseLocation` for one
+                        // that is in play -- so leaving them out was leaving
+                        // a whole play out of the turn.
+                        tavernlab_core::cards::Kind::Minion
+                        | tavernlab_core::cards::Kind::Location => {
                             self.board[i].push(Body::new(entity, c, self.turn));
                         }
                         // What the card is, not what the line called it. The
