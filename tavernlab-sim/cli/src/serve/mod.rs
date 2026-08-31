@@ -27,6 +27,7 @@ mod draft;
 pub mod http;
 mod jobs;
 mod live;
+mod memory;
 pub mod paths;
 pub mod state;
 
@@ -132,6 +133,7 @@ fn route(app: &Arc<App>, req: &Request) -> Response {
         ("POST", "/api/arena/pick") => return draft::pick(app, req),
         ("GET", "/api/live") => return api::live_read(app),
         ("POST", "/api/live") => return api::live_write(app, req),
+        ("GET", "/api/memory") => return memory::snapshot(),
         _ => {}
     }
 

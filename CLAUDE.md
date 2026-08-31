@@ -60,7 +60,9 @@ doc-comments are in English.
     `gauntlet.rs`, `tiers.rs`, `deckstring.rs`.
 - `tavernlab-sim/cli/` — the `tavernsim` binary.
   - `serve/` — hand-rolled HTTP server (`api.rs` is the `/api` surface,
-    `jobs.rs` async job queue, `live.rs` hosts the watcher in the server).
+    `jobs.rs` async job queue, `live.rs` hosts the watcher in the server,
+    `memory.rs` shells out to the sibling `memreader` binary for
+    `/api/memory` — a separate source from `live.rs`, see rule 4).
   - `watch/` — live `Power.log` reader: `log.rs` (scanner, no regex),
     `tracker.rs` (game reconstruction), `advice.rs`, `mod.rs`.
     Log dir: `HS_LOGS` env or `--logs` flag on Linux/Wine.
