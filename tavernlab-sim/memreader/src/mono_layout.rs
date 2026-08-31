@@ -124,3 +124,56 @@ pub const MONO_CLASS_RUNTIME_INFO_DOMAIN_VTABLES: u64 = 8;
 /// `MONO_VTABLE_VTABLE_ARRAY + klass.vtable_size * 8`.
 pub const MONO_VTABLE_KLASS: u64 = 0; // field #1, sanity/validation check
 pub const MONO_VTABLE_VTABLE_ARRAY: u64 = 0x48;
+
+// ---- Hearthstone's own `Entity`/`Player` instance fields (not Mono's own
+// structs) -- found 2026-08-31 against a real, active ranked game by
+// cross-checking heap-scan hits against ground truth read straight from
+// that game's own `Power.log` (a plain file read, no relation to memory
+// reading). See `dump_entity_table`/`cross_check_known_values` in
+// `main.rs`.
+
+/// `Entity` instances are exactly 64 (`0x40`) bytes each on this build --
+/// confirmed by consecutive heap-scan hits sitting exactly this far apart
+/// repeatedly (`0x7387b300, 0x7387b340, 0x7387b380, ...`).
+pub const ENTITY_INSTANCE_SIZE: u64 = 0x40;
+
+/// `Entity.cardId` -- a `System.String*` (UTF-16, see `try_mono_string` in
+/// main.rs). **Confirmed live**: decodes to real card ids on every live
+/// Entity found (`"HERO_11bpt"`, `"CORE_RLK_121"`, ...).
+pub const ENTITY_CARD_ID: u64 = 0x30;
+
+/// `Entity.id` (the `EntityID` `Power.log` reports as `id=`). **Confirmed
+/// live, exact match**: the entity whose `ENTITY_CARD_ID` decoded to
+/// `"HERO_09dbp"` (Lesser Heal) had `57` here -- Power.log recorded that
+/// exact hero power as `id=57`. Not a coincidence at that specificity.
+pub const ENTITY_ID: u64 = 0x38;
+
+/// `Player.playerId` (the 1-indexed `PlayerID` `Power.log`'s `CREATE_GAME`
+/// reports, distinct from `EntityID`). **Confirmed live**: the Player
+/// object whose name field decoded to `"xror"` had `1` here, and the one
+/// decoding to `"WildKid"` had `2` -- matching `Player EntityID=2
+/// PlayerID=1` / `Player EntityID=3 PlayerID=2` from that game's
+/// `Power.log` exactly. Only 2 live samples so far (both players of one
+/// game) -- worth another confirmation next session before fully trusting
+/// it the way `ENTITY_ID` is trusted.
+pub const PLAYER_PLAYER_ID: u64 = 0x164;
+
+/// `Player.battleTag` (the short name before `#`, e.g. `"xror"`) -- a
+/// `System.String*`. **Confirmed live** the same way as the two above.
+pub const PLAYER_NAME: u64 = 0x120;
+
+/// `Player.playerId` -- promoted from "2 samples" to fully confirmed: 20
+/// live Player objects across many different past games all agree without
+/// exception (`xror` -> 1 every time, every opponent -> 2 every time). No
+/// longer a "needs more evidence" note.
+
+/// Entity's remaining unidentified fields, `+0x10/+0x18/+0x20/+0x28` --
+/// four pointer-shaped values, not small ints, so `Zone`/`Controller`
+/// (both need to hold small ints like `PLAYER_ID`) aren't directly one of
+/// these the way `ENTITY_ID` was. Hearthstone's own tag model (every
+/// `TAG_CHANGE` line in `Power.log` is `<GameTag> = <value>`) suggests
+/// these fields hold something dictionary-shaped instead -- most likely a
+/// `Dictionary<int,int>` of every `GameTag` (`ZONE`, `CONTROLLER`, `COST`,
+/// ...) for this entity, reachable through one of these four pointers.
+/// Nothing here confirms which one yet.
+pub const ENTITY_UNKNOWN_PTRS: [u64; 4] = [0x10, 0x18, 0x20, 0x28];

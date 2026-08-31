@@ -187,6 +187,15 @@ fn main() {
                         for &addr in hits.iter().take(3) {
                             dump_object_fields(&remote, addr, target);
                         }
+                        if target == "Entity" && !hits.is_empty() {
+                            dump_entity_table(&remote, &hits);
+                        }
+                        if target == "Player" && !hits.is_empty() {
+                            dump_player_table(&remote, &hits);
+                        }
+                        if !hits.is_empty() {
+                            cross_check_known_values(&remote, target, &hits);
+                        }
                         if !hits.is_empty() {
                             println!(
                                 "\nСкиньте мені весь вивід. \"рядки\" — якщо там \
@@ -245,6 +254,15 @@ fn plausible_ptr(v: u64) -> bool {
 /// the domain_assemblies and MonoAssembly.image scans (both now resolved,
 /// see mono_layout.rs) from reporting noise, and does the same job for
 /// `scan_for_class_table` below.
+///
+/// This only ever matches single-byte (Latin-1/ASCII) C strings -- which is
+/// exactly right for `MonoClass`/`MonoAssembly` names (those are plain
+/// `char*`, confirmed by every offset in `mono_layout.rs`), but wrong for
+/// an actual C# `System.String` field, which Mono stores as UTF-16. That
+/// mismatch is almost certainly why the Entity/Player instance dumps came
+/// back empty or with 4-character noise ("HA6b", "8POs"): a `MonoString`
+/// pointer's bytes just don't look like this. `try_mono_string` below
+/// handles that shape instead.
 fn looks_like_name(bytes: &[u8]) -> Option<String> {
     let end = bytes.iter().position(|&b| b == 0)?;
     if !(2..48).contains(&end) {
@@ -254,6 +272,36 @@ fn looks_like_name(bytes: &[u8]) -> Option<String> {
     s.chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+' | '`'))
         .then(|| s.to_string())
+}
+
+/// Decode `ptr` as a `System.String` (`MonoString`), on the well-documented
+/// layout every Mono-introspection tool (HearthMirror, MemorySharp, ...)
+/// relies on: a 16-byte `MonoObject` header (`vtable*`, `sync*`), then a
+/// `gint32 length` field, then `length` UTF-16LE code units, then a
+/// trailing null. On x86-64 that puts `length` at `+0x10` and the char data
+/// at `+0x14` -- no padding gap, since `gint32` and `gunichar2[]` are both
+/// already aligned there. This is a stronger, more specific check than
+/// `looks_like_name`: it requires the length field's own value to agree
+/// with how far the string data actually runs before hitting embedded
+/// nulls/garbage.
+fn try_mono_string(remote: &Remote, ptr: u64) -> Option<String> {
+    if !plausible_ptr(ptr) {
+        return None;
+    }
+    let len_bytes = remote.read(ptr + 0x10, 4)?;
+    let len = i32::from_le_bytes(len_bytes.try_into().unwrap());
+    if !(1..=64).contains(&len) {
+        return None;
+    }
+    let char_bytes = remote.read(ptr + 0x14, len as usize * 2)?;
+    let units: Vec<u16> = char_bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+    let s = String::from_utf16(&units).ok()?;
+    s.chars()
+        .all(|c| c.is_ascii_graphic() || c == ' ')
+        .then(|| s)
 }
 
 /// Walk the confirmed `domain_assemblies` `GList` (see `mono_layout.rs`)
@@ -798,7 +846,7 @@ fn dump_object_fields(remote: &Remote, addr: u64, class_name: &str) {
         println!("    +0x{:03x}: {}", row * 16, hex(chunk));
     }
 
-    println!("  рядки, знайдені через вказівники в полях:");
+    println!("  рядки, знайдені через вказівники в полях (char* ascii):");
     let mut any_string = false;
     for off in (8..DUMP_LEN - 8).step_by(8) {
         let ptr = u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap());
@@ -815,6 +863,19 @@ fn dump_object_fields(remote: &Remote, addr: u64, class_name: &str) {
         println!("    (жодної)");
     }
 
+    println!("  рядки, знайдені через вказівники в полях (System.String / MonoString, UTF-16):");
+    let mut any_mono_string = false;
+    for off in (8..DUMP_LEN - 8).step_by(8) {
+        let ptr = u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap());
+        if let Some(s) = try_mono_string(remote, ptr) {
+            println!("    +0x{off:x}: \"{s}\"");
+            any_mono_string = true;
+        }
+    }
+    if !any_mono_string {
+        println!("    (жодної)");
+    }
+
     println!("  малі 32-бітні числа (кандидати на id/тег, діапазон 1..=2000):");
     let mut any_int = false;
     for off in (8..DUMP_LEN - 4).step_by(4) {
@@ -826,6 +887,187 @@ fn dump_object_fields(remote: &Remote, addr: u64, class_name: &str) {
     }
     if !any_int {
         println!("    (жодного)");
+    }
+}
+
+/// Ground-truth values read straight out of the currently active game's
+/// `Power.log` by plain file read (not memory) -- a real `PlayerID`/
+/// `EntityID`/hero-power `id=` seen in this exact session. Searching for
+/// these literal numbers across *every* live Entity/Player hit (not just
+/// the 3 we dump in full) is a much stronger signal than eyeballing "small
+/// numbers" in a handful of hex dumps: if the same offset produces one of
+/// these known values across independent objects, that's not a coincidence.
+const KNOWN_ENTITY_IDS: &[i32] = &[57]; // Lesser Heal hero power, player=2
+const KNOWN_PLAYER_IDS: &[i32] = &[2, 3]; // PlayerID from CREATE_GAME
+/// GameAccountId `lo` halves -- `hi` is identical for both (same region/
+/// shard prefix) so only `lo` is worth searching for as a plain 32-bit int.
+const KNOWN_ACCOUNT_ID_LO: &[(&str, u32)] =
+    &[("xror#21652", 84165946), ("WildKid#21665", 110765726)];
+
+/// Scan every hit (not just the handful fully dumped) for `KNOWN_ENTITY_IDS`
+/// / `KNOWN_PLAYER_IDS` at any 4-byte-aligned offset in the first `WINDOW`
+/// bytes, and for `KNOWN_ACCOUNT_ID_LO` the same way. Prints an offset
+/// histogram: an offset that keeps producing a *correct* known value across
+/// many different objects is real evidence for what that offset means; an
+/// offset that only ever matches by luck on one object is noise.
+fn cross_check_known_values(remote: &Remote, class_name: &str, hits: &[u64]) {
+    const WINDOW: usize = 0x200;
+    println!(
+        "\n--deep: звіряю {class_name} з реальними значеннями з поточної гри \
+         (Power.log): entity_id∈{KNOWN_ENTITY_IDS:?}, player_id∈{KNOWN_PLAYER_IDS:?}, \
+         account_lo∈{:?}",
+        KNOWN_ACCOUNT_ID_LO.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+    let mut int_offset_hits: std::collections::HashMap<u64, Vec<i32>> = Default::default();
+    let mut account_hits: Vec<(u64, u64, &str)> = Vec::new();
+
+    for &addr in hits {
+        let Some(bytes) = remote.read(addr, WINDOW) else { continue };
+        for off in (0..WINDOW - 4).step_by(4) {
+            let raw = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
+            let v = raw as i32;
+            if KNOWN_ENTITY_IDS.contains(&v) || KNOWN_PLAYER_IDS.contains(&v) {
+                int_offset_hits.entry(off as u64).or_default().push(v);
+            }
+            for &(name, lo) in KNOWN_ACCOUNT_ID_LO {
+                if raw == lo {
+                    account_hits.push((addr, off as u64, name));
+                }
+            }
+        }
+    }
+
+    if int_offset_hits.is_empty() {
+        println!("  жодного збігу з entity_id/player_id серед перших 0x{WINDOW:x} байтів жодного об'єкта");
+    } else {
+        let mut offs: Vec<_> = int_offset_hits.into_iter().collect();
+        offs.sort_by_key(|(_, v)| std::cmp::Reverse(v.len()));
+        println!("  офсети, де траплялись відомі id (offset: [значення, ...], скільки об'єктів):");
+        for (off, vals) in offs.iter().take(15) {
+            println!("    +0x{off:x}: {vals:?} ({} об'єктів)", vals.len());
+        }
+    }
+
+    if account_hits.is_empty() {
+        println!("  жодного збігу з account_id.lo — ці значення, схоже, не лежать прямим 32-бітним полем у цьому об'єкті");
+    } else {
+        println!("  !!! знайдено account_id.lo напряму в об'єкті (сильний доказ):");
+        for (addr, off, name) in &account_hits {
+            println!("    0x{addr:x} +0x{off:x} -> {name}");
+        }
+    }
+}
+
+/// The heap scan's own hit addresses are the strongest structural evidence
+/// found so far: for `Entity`, consecutive hits sit exactly `0x40` bytes
+/// apart (`0x7387b300, 0x7387b340, 0x7387b380, ...`) -- not because fields
+/// bleed across a wider dump window, but because that *is* the object's
+/// real size, and many are allocated contiguously. Combined with
+/// `try_mono_string` finding a real `cardId` (`"HERO_11bpt"`, ...) at every
+/// object's own `+0x30`, this reads every hit as its own tight 0x40-byte
+/// record: `+0x30` cardId, `+0x38` a candidate id field, instead of
+/// dumping 0x180 bytes (which was really 4-6 *different* objects at once
+/// and made the earlier "which offset means what" cross-check misleading).
+fn dump_entity_table(remote: &Remote, hits: &[u64]) {
+    println!(
+        "\n--deep: таблиця Entity (cardId @ +0x{:x}, id @ +0x{:x}, підтверджено live) для всіх {} знайдених об'єктів",
+        mono_layout::ENTITY_CARD_ID, mono_layout::ENTITY_ID, hits.len()
+    );
+    let mut rows: Vec<(u64, Option<String>, i32)> = Vec::new();
+    for &addr in hits {
+        let Some(bytes) = remote.read(addr, mono_layout::ENTITY_INSTANCE_SIZE as usize) else { continue };
+        let card_off = mono_layout::ENTITY_CARD_ID as usize;
+        let id_off = mono_layout::ENTITY_ID as usize;
+        let card_ptr = u64::from_le_bytes(bytes[card_off..card_off + 8].try_into().unwrap());
+        let card_id = try_mono_string(remote, card_ptr);
+        let id_field = i32::from_le_bytes(bytes[id_off..id_off + 4].try_into().unwrap());
+        rows.push((addr, card_id, id_field));
+    }
+    for (addr, card_id, id_field) in &rows {
+        println!(
+            "  0x{addr:x}: cardId={:<20} +0x38={id_field}",
+            card_id.as_deref().unwrap_or("?")
+        );
+    }
+    if let Some((addr, card_id, id_field)) = rows
+        .iter()
+        .find(|(_, c, _)| c.as_deref().map(|s| s.starts_with("HERO_09dbp")).unwrap_or(false))
+    {
+        println!(
+            "\n  !!! знайдено Lesser Heal (HERO_09dbp) на 0x{addr:x}: cardId={:?}, +0x38={id_field} \
+             -- у Power.log цей ентіті має id=57, player=2. Якщо {id_field}==57, +0x38 це EntityID; \
+             якщо {id_field}==2, це Controller (власник).",
+            card_id
+        );
+        inspect_entity_tag_pointers(remote, *addr, "Lesser Heal (HERO_09dbp, id=57, controller=2)");
+    } else {
+        println!("\n  (Lesser Heal серед знайдених 500 не трапився цього разу -- це не проблема, спробуйте ще раз під час гри, або назвіть мені яку карту зіграно щойно і її id з Power.log, шукатимемо саме її)");
+    }
+}
+
+/// Same idea as `dump_entity_table`, for `Player` -- `PLAYER_NAME` and
+/// `PLAYER_PLAYER_ID` are both confirmed live (see `mono_layout.rs`), but
+/// on only 2 samples so far (one game's two players), unlike `ENTITY_ID`'s
+/// exact single-value match. Worth another game's worth of confirmation
+/// before this is trusted as hard as the Entity table above.
+fn dump_player_table(remote: &Remote, hits: &[u64]) {
+    println!(
+        "\n--deep: таблиця Player (ім'я @ +0x{:x}, playerId @ +0x{:x}, підтверджено лише на 2 зразках) для всіх {} знайдених об'єктів",
+        mono_layout::PLAYER_NAME, mono_layout::PLAYER_PLAYER_ID, hits.len()
+    );
+    const WINDOW: usize = 0x200;
+    for &addr in hits {
+        let Some(bytes) = remote.read(addr, WINDOW) else { continue };
+        let name_off = mono_layout::PLAYER_NAME as usize;
+        let id_off = mono_layout::PLAYER_PLAYER_ID as usize;
+        let name_ptr = u64::from_le_bytes(bytes[name_off..name_off + 8].try_into().unwrap());
+        let name = try_mono_string(remote, name_ptr);
+        let player_id = i32::from_le_bytes(bytes[id_off..id_off + 4].try_into().unwrap());
+        println!(
+            "  0x{addr:x}: ім'я={:<20} playerId={player_id}",
+            name.as_deref().unwrap_or("?")
+        );
+    }
+}
+
+/// For one specific Entity, follow each of the 4 still-unidentified pointer
+/// fields (`ENTITY_UNKNOWN_PTRS`, see `mono_layout.rs`) and dump a chunk of
+/// what each points at, flagging anything that looks like a `Dictionary<K,
+/// V>`'s `buckets` array -- Mono/.NET's `Dictionary` stores empty buckets
+/// as `-1` (`0xffffffff`), so an int32 array with several of those mixed
+/// with small positive numbers is the standard tell for "this is a
+/// dictionary's bucket table", which is what `Entity`'s per-tag
+/// (`ZONE`/`CONTROLLER`/...) storage is expected to be shaped like.
+fn inspect_entity_tag_pointers(remote: &Remote, addr: u64, label: &str) {
+    println!("\n--deep: досліджую 4 невідомі вказівники {label} (0x{addr:x}) -- шукаю щось схоже на Dictionary<GameTag,int>");
+    let Some(obj) = remote.read(addr, mono_layout::ENTITY_INSTANCE_SIZE as usize) else {
+        eprintln!("  не зміг прочитати сам об'єкт");
+        return;
+    };
+    for &off in &mono_layout::ENTITY_UNKNOWN_PTRS {
+        let off = off as usize;
+        let ptr = u64::from_le_bytes(obj[off..off + 8].try_into().unwrap());
+        if !plausible_ptr(ptr) {
+            println!("  +0x{off:x}: 0x{ptr:x} -- не схоже на вказівник, пропускаю");
+            continue;
+        }
+        let Some(target) = remote.read(ptr, 0x90) else {
+            println!("  +0x{off:x}: 0x{ptr:x} -- не зміг прочитати ціль");
+            continue;
+        };
+        let ints: Vec<i32> = target
+            .chunks_exact(4)
+            .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        let neg_one_count = ints.iter().filter(|&&v| v == -1).count();
+        let small_positive_count = ints.iter().filter(|&&v| (0..64).contains(&v)).count();
+        let dict_like = neg_one_count >= 2 && small_positive_count >= 4;
+        println!(
+            "  +0x{off:x}: 0x{ptr:x}{}",
+            if dict_like { "  <-- схоже на Dictionary.buckets (кілька -1 + малі числа)" } else { "" }
+        );
+        println!("    {}", hex(&target[..0x40]));
+        println!("    {}", hex(&target[0x40..0x80]));
     }
 }
 
