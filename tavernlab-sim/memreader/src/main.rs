@@ -173,7 +173,8 @@ fn main() {
             if mode == "--scan-classes" {
                 scan_for_class_table(&remote, image);
             } else {
-                dump_class_names(&remote, image);
+                let classes = dump_class_names(&remote, image);
+                find_singletons(&remote, &classes);
             }
         }
     }
@@ -472,17 +473,21 @@ fn scan_for_class_table(remote: &Remote, image: u64) {
 /// the real table is very likely bigger (a Mono hash table that full is
 /// due for a resize), so this tries progressively larger reads and keeps
 /// the largest one that actually came back whole.
-fn dump_class_names(remote: &Remote, image: u64) {
+/// Returns every `(name, MonoClass*)` pair the class cache gives up —
+/// unlike the first version of this function, the pointer is kept, not
+/// just the name, because the next step (finding a live singleton
+/// instance) needs it.
+fn dump_class_names(remote: &Remote, image: u64) -> Vec<(String, u64)> {
     println!("\n--deep: MonoImage.class_cache -> усі класи Assembly-CSharp (офсети підтверджено)");
     let table_ptr_addr = image + mono_layout::MONO_IMAGE_CLASS_CACHE_TABLE;
     let Some(tp) = remote.read(table_ptr_addr, 8) else {
         eprintln!("не зміг прочитати вказівник таблиці за 0x{table_ptr_addr:x}");
-        return;
+        return Vec::new();
     };
     let table_ptr = u64::from_le_bytes(tp.try_into().unwrap());
     if !plausible_ptr(table_ptr) {
         eprintln!("0x{table_ptr:x} не схоже на вказівник — офсет міг застаріти");
-        return;
+        return Vec::new();
     }
 
     const CANDIDATE_SIZES: &[usize] = &[65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256];
@@ -499,11 +504,10 @@ fn dump_class_names(remote: &Remote, image: u64) {
     }
     if buckets.is_empty() {
         eprintln!("не зміг прочитати жоден розмір таблиці з 0x{table_ptr:x}");
-        return;
+        return Vec::new();
     }
 
-    let mut names: Vec<String> = Vec::new();
-    let mut interesting: Vec<String> = Vec::new();
+    let mut classes: Vec<(String, u64)> = Vec::new();
     for &bucket in buckets.iter().filter(|&&b| plausible_ptr(b)) {
         let Some(np) = remote.read(bucket + mono_layout::MONO_CLASS_NAME, 8) else { continue };
         let name_ptr = u64::from_le_bytes(np.try_into().unwrap());
@@ -511,38 +515,133 @@ fn dump_class_names(remote: &Remote, image: u64) {
         if name.is_empty() {
             continue;
         }
-        if INTERESTING_SUBSTRINGS.iter().any(|kw| name.contains(kw)) {
-            interesting.push(name.clone());
-        }
-        names.push(name);
+        classes.push((name, bucket));
     }
     println!(
         "  {} непорожніх бакетів, {} з них дали назву класу",
         buckets.iter().filter(|&&b| plausible_ptr(b)).count(),
-        names.len()
+        classes.len()
     );
+    let interesting: Vec<&str> = classes
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .filter(|n| INTERESTING_SUBSTRINGS.iter().any(|kw| n.contains(kw)))
+        .collect();
     if !interesting.is_empty() {
-        interesting.sort();
-        interesting.dedup();
         println!("\n  !!! класи, що збігаються з ключовими словами:");
         for n in &interesting {
             println!("    {n}");
         }
-    } else {
-        println!(
-            "\n  жодного класу не збігається з {:?}. Скиньте мені весь \
-             вивід — і, якщо можете, назвіть кілька класів з ним, які \
-             видались доречними (може, потрібне інше ключове слово, чи \
-             клас у іншій асемблі, не Assembly-CSharp).",
-            INTERESTING_SUBSTRINGS
-        );
+    }
+    classes
+}
+
+/// Given a `MonoClass*`, find `MonoVTable*` for it in whichever domain
+/// index actually has one, validated by checking `MonoVTable.klass`
+/// points back at the class we asked for — not just trusting index 0.
+fn find_vtable(remote: &Remote, class_ptr: u64) -> Option<u64> {
+    let ri_bytes = remote.read(class_ptr + mono_layout::MONO_CLASS_RUNTIME_INFO, 8)?;
+    let runtime_info = u64::from_le_bytes(ri_bytes.try_into().unwrap());
+    if !plausible_ptr(runtime_info) {
+        return None; // class exists but was never touched by the runtime -- no vtable yet
+    }
+    for slot in 0..4u64 {
+        let addr = runtime_info
+            + mono_layout::MONO_CLASS_RUNTIME_INFO_DOMAIN_VTABLES
+            + slot * 8;
+        let Some(vb) = remote.read(addr, 8) else { continue };
+        let vtable = u64::from_le_bytes(vb.try_into().unwrap());
+        if !plausible_ptr(vtable) {
+            continue;
+        }
+        let Some(kb) = remote.read(vtable + mono_layout::MONO_VTABLE_KLASS, 8) else { continue };
+        let klass = u64::from_le_bytes(kb.try_into().unwrap());
+        if klass == class_ptr {
+            return Some(vtable);
+        }
+    }
+    None
+}
+
+/// Look for a static field, anywhere in the class's static-data blob,
+/// whose value is a pointer to an object of *this same class* — the
+/// signature every Mono object has is its own first 8 bytes being a
+/// `MonoVTable*`, so `object -> vtable -> klass == class_ptr` is checked
+/// for every candidate rather than needing to know which field or its
+/// name. This is the same "known shape, unknown offset" trick as every
+/// other scan in this file, just one level further down.
+fn find_self_typed_static(remote: &Remote, class_ptr: u64, vtable: u64) -> Vec<u64> {
+    let Some(vs) = remote.read(class_ptr + mono_layout::MONO_CLASS_VTABLE_SIZE, 4) else {
+        return Vec::new();
+    };
+    let vtable_size = i32::from_le_bytes(vs.try_into().unwrap()).max(0) as u64;
+    let static_data = vtable + mono_layout::MONO_VTABLE_VTABLE_ARRAY + vtable_size * 8;
+    let Some(blob) = remote.read(static_data, 0x400) else {
+        return Vec::new();
+    };
+    let mut hits = Vec::new();
+    for (i, chunk) in blob.chunks_exact(8).enumerate() {
+        let candidate = u64::from_le_bytes(chunk.try_into().unwrap());
+        if !plausible_ptr(candidate) {
+            continue;
+        }
+        let Some(vt_bytes) = remote.read(candidate, 8) else { continue };
+        let obj_vtable = u64::from_le_bytes(vt_bytes.try_into().unwrap());
+        if !plausible_ptr(obj_vtable) {
+            continue;
+        }
+        let Some(kb) = remote.read(obj_vtable + mono_layout::MONO_VTABLE_KLASS, 8) else { continue };
+        if u64::from_le_bytes(kb.try_into().unwrap()) == class_ptr {
+            println!(
+                "    static-блок+0x{:x}: 0x{candidate:x} -> vtable 0x{obj_vtable:x} \
+                 -> klass збігається!",
+                i * 8
+            );
+            hits.push(candidate);
+        }
+    }
+    hits
+}
+
+/// For every class this session's chat named as a live-tracking target,
+/// try to find a static field holding an instance of itself -- the
+/// pattern every C# singleton (`Foo.Get()`, `Foo.Instance`, ...) compiles
+/// down to.
+fn find_singletons(remote: &Remote, classes: &[(String, u64)]) {
+    const TARGETS: &[&str] = &["DraftManager", "PowerProcessor", "GameState", "Entity", "Player"];
+    println!("\n--deep: пошук статичних синглтонів для {TARGETS:?}");
+    for &target in TARGETS {
+        let Some(&(_, class_ptr)) = classes.iter().find(|(n, _)| n == target) else {
+            println!("  {target}: класу з такою точною назвою немає в дампі");
+            continue;
+        };
+        println!("  {target}: MonoClass* = 0x{class_ptr:x}");
+        let Some(vtable) = find_vtable(remote, class_ptr) else {
+            println!(
+                "    немає vtable (runtime_info порожній або жоден із перших \
+                 4 слотів домену не пройшов перевірку klass) -- або клас ще \
+                 не використовувався рушієм, або MONO_CLASS_RUNTIME_INFO у \
+                 mono_layout.rs (обчислений, не підтверджений) невірний"
+            );
+            continue;
+        };
+        println!("    MonoVTable* = 0x{vtable:x}");
+        let hits = find_self_typed_static(remote, class_ptr, vtable);
+        if hits.is_empty() {
+            println!(
+                "    жодного статичного поля з екземпляром цього ж типу в перших \
+                 0x400 байтах статичного блоку -- або синглтон зберігається інакше \
+                 (не власним типом, чи глибше), або MONO_CLASS_VTABLE_SIZE/\
+                 MONO_VTABLE_VTABLE_ARRAY невірні для цього білда."
+            );
+        }
     }
     println!(
-        "\n  Повний список ({} класів) варто зберегти окремо, якщо хочете \
-         його переглянути — тут виводяться лише збіги з ключовими словами. \
-         Додайте --scan-classes замість --deep, якщо потрібен діагностичний \
-         режим сканування з нуля (повільніший, підтверджує офсети наново).",
-        names.len()
+        "\nСкиньте мені весь вивід. Кожен рядок \"klass збігається\" — це \
+         реальний живий екземпляр; його адреса дійсна лише для поточного \
+         запуску процесу, але офсети полів усередині нього — постійні, і з \
+         них можна буде читати конкретні дані (хід, руку, дошку, трійку \
+         драфту)."
     );
 }
 

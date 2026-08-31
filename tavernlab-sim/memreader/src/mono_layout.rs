@@ -75,3 +75,46 @@ pub const MONO_IMAGE_CLASS_CACHE_TABLE: u64 = 0x4f0;
 /// entries in `class_cache` are `MonoClass*`; this is where their display
 /// name sits.
 pub const MONO_CLASS_NAME: u64 = 0x48;
+
+// ---- Everything below: computed from source, not yet live-confirmed ----
+//
+// `struct _MonoClass`'s real field list was fetched this session from
+// `mono/metadata/class-private-definition.h` (61 fields, mono/mono main)
+// -- newer Mono hides the struct behind getters and keeps the real layout
+// in that file specifically because callers aren't meant to hardcode
+// offsets into it, which is exactly what this does anyway, for the reason
+// stated throughout this project: the log channel that would make this
+// unnecessary (Arena.log's draft offer) stopped existing.
+//
+// Offsets below are hand-computed under the System V AMD64 ABI's ordinary
+// struct packing rules (natural alignment, no packing pragma) from that
+// field list. One is independently confirmed by evidence already in
+// hand: the running total lands `name` at exactly 0x48 -- the same value
+// `MONO_CLASS_NAME` above was found through by live scanning, with no
+/// connection between the two derivations. That agreement is why the rest
+/// of the arithmetic (unverified past that point) is trusted enough to
+/// try, not proof every later field is right -- `this_arg`/`_byval_arg`
+/// (both embedded `MonoType`s) in particular assume `sizeof(MonoType)`
+/// is 16, computed from a *partial* fetch of that struct (its bitfield
+/// tail was cut off mid-response) rather than confirmed complete.
+
+/// `MonoClass.vtable_size` — field #44 in the fetched list.
+pub const MONO_CLASS_VTABLE_SIZE: u64 = 0x5c;
+
+/// `MonoClass.runtime_info` — field #59, immediately after the two
+/// embedded `MonoType` fields (`this_arg`, `_byval_arg`) and `gc_descr`.
+pub const MONO_CLASS_RUNTIME_INFO: u64 = 0xd0;
+
+/// `MonoClassRuntimeInfo.domain_vtables[0]` — the struct is
+/// `{guint16 max_domain; MonoVTable *domain_vtables[];}`; the flexible
+/// array starts at the next 8-byte-aligned offset after the `guint16`.
+pub const MONO_CLASS_RUNTIME_INFO_DOMAIN_VTABLES: u64 = 8;
+
+/// `MonoVTable.vtable[]` — field #17 of `struct MonoVTable`
+/// (`mono/metadata/class-internals.h`, confirmed field order from
+/// source). Where the per-class method table starts; static field data
+/// (for classes that have any, `has_static_fields`) lives immediately
+/// after the method table, i.e. at
+/// `MONO_VTABLE_VTABLE_ARRAY + klass.vtable_size * 8`.
+pub const MONO_VTABLE_KLASS: u64 = 0; // field #1, sanity/validation check
+pub const MONO_VTABLE_VTABLE_ARRAY: u64 = 0x48;
