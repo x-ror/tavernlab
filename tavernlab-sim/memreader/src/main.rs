@@ -165,9 +165,11 @@ fn main() {
         return;
     }
 
-    // --deep: best-effort walk past this point. Offsets are estimates —
-    // see mono_layout.rs — expect this section to need correction.
-    deep_walk(&remote, domain_addr);
+    // --deep: MonoDomain's own layout is unverified (mono_layout.rs), so
+    // rather than trust one guessed offset this scans for it — see
+    // `scan_for_assembly_list`. `deep_walk_fixed_offset` is what runs once
+    // that scan has told us the real offsets.
+    scan_for_assembly_list(&remote, domain_addr);
 }
 
 /// x86-64 Mono typically compiles `mono_get_root_domain` down to reading a
@@ -199,7 +201,96 @@ fn decode_root_domain_thunk(func_addr: u64, bytes: &[u8]) -> Option<u64> {
     None
 }
 
-fn deep_walk(remote: &Remote, domain_addr: u64) {
+/// A pointer value is "plausible" if it is non-null and sits in the
+/// canonical low half of the 64-bit address space (real user-mode
+/// pointers on Linux/Wine never set the high bits) -- cheap enough to
+/// filter obvious non-pointers (small integers, flags, counts) out of a
+/// brute-force scan without needing to know a single real offset first.
+fn plausible_ptr(v: u64) -> bool {
+    v != 0 && v < 0x0000_8000_0000_0000
+}
+
+/// Whether `bytes` looks like a short, printable identifier -- an assembly
+/// or class name, not binary data. Deliberately strict: this is what
+/// keeps the brute-force scan below from reporting noise.
+fn looks_like_name(bytes: &[u8]) -> Option<String> {
+    let end = bytes.iter().position(|&b| b == 0)?;
+    if !(2..48).contains(&end) {
+        return None;
+    }
+    let s = std::str::from_utf8(&bytes[..end]).ok()?;
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+' | '`'))
+        .then(|| s.to_string())
+}
+
+/// `MonoDomain` layout is unverified (see `mono_layout.rs`), so instead of
+/// trusting one guessed offset this scans every 8-byte-aligned slot in the
+/// first 2 KiB of the domain struct, treats each as a candidate
+/// `GList*` (`{data, next}`), and treats *its* `data` as a candidate
+/// `MonoAssembly*` by trying a handful of small offsets for a name
+/// pointer. A hit that decodes to a real-looking name (`mscorlib`,
+/// `Assembly-CSharp`, ...) tells us three things it is otherwise very
+/// hard to separately guess right: the domain_assemblies offset, the
+/// GList node shape, and where the name pointer sits inside MonoAssembly
+/// — all from one piece of positive evidence instead of one blind offset.
+fn scan_for_assembly_list(remote: &Remote, domain_addr: u64) {
+    println!("\n--deep: MonoDomain layout невідомий, скануюсь замість здогадки");
+    let Some(region) = remote.read(domain_addr, 0x800) else {
+        eprintln!("не зміг прочитати 0x800 байтів з MonoDomain* — сама адреса, найімовірніше, хибна");
+        return;
+    };
+    let candidate_name_offsets: &[u64] = &[0, 8, 16, 24, 32, 40, 48];
+    let mut hits = 0;
+    for domain_off in (0..region.len() - 8).step_by(8) {
+        let head = u64::from_le_bytes(region[domain_off..domain_off + 8].try_into().unwrap());
+        if !plausible_ptr(head) {
+            continue;
+        }
+        let Some(node) = remote.read(head, 16) else { continue };
+        let data = u64::from_le_bytes(node[0..8].try_into().unwrap());
+        if !plausible_ptr(data) {
+            continue;
+        }
+        for &name_off in candidate_name_offsets {
+            let Some(ptr_bytes) = remote.read(data + name_off, 8) else { continue };
+            let name_ptr = u64::from_le_bytes(ptr_bytes.try_into().unwrap());
+            if !plausible_ptr(name_ptr) {
+                continue;
+            }
+            let Some(str_bytes) = remote.read(name_ptr, 64) else { continue };
+            if let Some(name) = looks_like_name(&str_bytes) {
+                hits += 1;
+                println!(
+                    "  кандидат: MonoDomain+0x{domain_off:x} -> GList.data=0x{data:x} \
+                     -> +0x{name_off:x} -> \"{name}\""
+                );
+                if hits > 40 {
+                    println!("  (зупиняюсь на 40 кандидатах, щоб не заспамити вивід)");
+                    return;
+                }
+            }
+        }
+    }
+    if hits == 0 {
+        eprintln!(
+            "жодного кандидата не знайдено в перших 0x800 байтах MonoDomain. \
+             Можливо GList-вузол лежить не одразу за вказівником-головою (є \
+             ще один рівень непрямості), або назва читається не з перших \
+             48 байтів MonoAssembly. Надішліть мені весь вивід — розширю \
+             діапазон сканування."
+        );
+        return;
+    }
+    println!(
+        "\nПодивіться на список вище: рядок \"mscorlib\" або \"Assembly-CSharp\" \
+         серед кандидатів — це знахідка. Скиньте мені весь блок \"кандидат: ...\", \
+         і я перетворю правильний рядок на постійні офсети в mono_layout.rs."
+    );
+}
+
+#[allow(dead_code)]
+fn deep_walk_fixed_offset(remote: &Remote, domain_addr: u64) {
     use mono_layout::*;
 
     println!("\n--deep: пробую пройти MonoDomain -> assemblies -> Assembly-CSharp");
