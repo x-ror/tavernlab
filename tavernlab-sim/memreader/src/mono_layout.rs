@@ -61,12 +61,17 @@ pub const MONO_IMAGE_NAME: u64 = 0x30;
 /// `MonoImage.filename` — **confirmed live**.
 pub const MONO_IMAGE_FILENAME: u64 = 0x38;
 
-/// `MonoImage.class_cache` — **not yet approached**. `struct _MonoImage`
-/// is long; getting to this field needs the same evidence-based scan
-/// technique run one level deeper from the now-confirmed `MonoImage*` —
-/// this time looking for something that behaves like a hash table (an
-/// array of pointers, several leading to class-name-shaped strings)
-/// rather than a single string, since `MonoInternalHashTable` isn't a
-/// simple pointer-to-string field.
-#[allow(dead_code)] // next milestone
-pub const MONO_IMAGE_CLASS_CACHE: u64 = 0;
+/// `MonoImage` field holding the `class_cache.table` bucket array pointer
+/// directly — **confirmed live**, found by the offset-agreement scan: a
+/// 256/256-full bucket array whose entries, read at `MONO_CLASS_NAME`,
+/// decoded to real Hearthstone class names (`DALA_MissionEntity`,
+/// `DALA_Dungeon_Boss_*`, ...). This is `class_cache`'s `table` field
+/// itself, not the `MonoInternalHashTable` struct's own start (that would
+/// sit `size`+`num_entries`+2 function pointers, 24 bytes, earlier) —
+/// nothing here needed that struct's start, so it was never located.
+pub const MONO_IMAGE_CLASS_CACHE_TABLE: u64 = 0x4f0;
+
+/// `MonoClass.name` — **confirmed live**, same evidence as above. Bucket
+/// entries in `class_cache` are `MonoClass*`; this is where their display
+/// name sits.
+pub const MONO_CLASS_NAME: u64 = 0x48;

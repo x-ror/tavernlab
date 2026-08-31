@@ -170,7 +170,11 @@ fn main() {
     // image the same evidence-based way that offset was found.
     if let Some(csharp) = walk_assembly_list(&remote, domain_addr) {
         if let Some(image) = read_image(&remote, csharp) {
-            scan_for_class_table(&remote, image);
+            if mode == "--scan-classes" {
+                scan_for_class_table(&remote, image);
+            } else {
+                dump_class_names(&remote, image);
+            }
         }
     }
 }
@@ -458,6 +462,87 @@ fn scan_for_class_table(remote: &Remote, image: u64) {
          Player — саме там і продовжимо: наступний крок — прочитати поля \
          цього MonoClass (vtable/статичні поля, пошук екземпляра гри, що \
          зараз йде)."
+    );
+}
+
+/// `MonoImage.class_cache`'s table and `MonoClass.name` are confirmed
+/// (`mono_layout.rs`) — this is the payoff: every class name
+/// `Assembly-CSharp` actually has, not the 256-entry sample the scan that
+/// found the offsets was capped to. The 256/256 density seen there means
+/// the real table is very likely bigger (a Mono hash table that full is
+/// due for a resize), so this tries progressively larger reads and keeps
+/// the largest one that actually came back whole.
+fn dump_class_names(remote: &Remote, image: u64) {
+    println!("\n--deep: MonoImage.class_cache -> усі класи Assembly-CSharp (офсети підтверджено)");
+    let table_ptr_addr = image + mono_layout::MONO_IMAGE_CLASS_CACHE_TABLE;
+    let Some(tp) = remote.read(table_ptr_addr, 8) else {
+        eprintln!("не зміг прочитати вказівник таблиці за 0x{table_ptr_addr:x}");
+        return;
+    };
+    let table_ptr = u64::from_le_bytes(tp.try_into().unwrap());
+    if !plausible_ptr(table_ptr) {
+        eprintln!("0x{table_ptr:x} не схоже на вказівник — офсет міг застаріти");
+        return;
+    }
+
+    const CANDIDATE_SIZES: &[usize] = &[65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256];
+    let mut buckets: Vec<u64> = Vec::new();
+    for &n in CANDIDATE_SIZES {
+        if let Some(bytes) = remote.read(table_ptr, n * 8) {
+            buckets = bytes
+                .chunks_exact(8)
+                .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            println!("  прочитано таблицю з {n} бакетів");
+            break;
+        }
+    }
+    if buckets.is_empty() {
+        eprintln!("не зміг прочитати жоден розмір таблиці з 0x{table_ptr:x}");
+        return;
+    }
+
+    let mut names: Vec<String> = Vec::new();
+    let mut interesting: Vec<String> = Vec::new();
+    for &bucket in buckets.iter().filter(|&&b| plausible_ptr(b)) {
+        let Some(np) = remote.read(bucket + mono_layout::MONO_CLASS_NAME, 8) else { continue };
+        let name_ptr = u64::from_le_bytes(np.try_into().unwrap());
+        let Some(name) = read_cstring(remote, name_ptr, 96) else { continue };
+        if name.is_empty() {
+            continue;
+        }
+        if INTERESTING_SUBSTRINGS.iter().any(|kw| name.contains(kw)) {
+            interesting.push(name.clone());
+        }
+        names.push(name);
+    }
+    println!(
+        "  {} непорожніх бакетів, {} з них дали назву класу",
+        buckets.iter().filter(|&&b| plausible_ptr(b)).count(),
+        names.len()
+    );
+    if !interesting.is_empty() {
+        interesting.sort();
+        interesting.dedup();
+        println!("\n  !!! класи, що збігаються з ключовими словами:");
+        for n in &interesting {
+            println!("    {n}");
+        }
+    } else {
+        println!(
+            "\n  жодного класу не збігається з {:?}. Скиньте мені весь \
+             вивід — і, якщо можете, назвіть кілька класів з ним, які \
+             видались доречними (може, потрібне інше ключове слово, чи \
+             клас у іншій асемблі, не Assembly-CSharp).",
+            INTERESTING_SUBSTRINGS
+        );
+    }
+    println!(
+        "\n  Повний список ({} класів) варто зберегти окремо, якщо хочете \
+         його переглянути — тут виводяться лише збіги з ключовими словами. \
+         Додайте --scan-classes замість --deep, якщо потрібен діагностичний \
+         режим сканування з нуля (повільніший, підтверджує офсети наново).",
+        names.len()
     );
 }
 
