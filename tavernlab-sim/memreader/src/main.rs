@@ -353,11 +353,11 @@ const INTERESTING_SUBSTRINGS: &[&str] = &[
 /// what actually separates a real table from scan noise.
 fn scan_for_class_table(remote: &Remote, image: u64) {
     println!("\n--deep: MonoImage.class_cache (сканую — найширший і найповільніший крок)");
-    const SEARCH_RANGE: u64 = 0x1000;
+    const SEARCH_RANGE: u64 = 0x6000;
     const BUCKETS_TO_PROBE: usize = 256;
     const NAME_OFFSETS: &[u64] = &[0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80];
     const MIN_DENSITY: usize = 6;
-    const MAX_TABLES_PROBED: usize = 24;
+    const MAX_TABLES_PROBED: usize = 80;
     /// A dominant offset needs at least this many agreeing hits, and to
     /// account for at least this fraction of everything found, before the
     /// table counts as structurally consistent rather than noise.
