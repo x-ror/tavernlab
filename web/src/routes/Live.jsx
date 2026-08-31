@@ -3,7 +3,7 @@ import { Button, Flex, StatusLight, Switch, Text, TextField } from '@adobe/react
 import * as api from '../api'
 import { useApp } from '../store'
 import { renderLine, useT } from '../i18n'
-import { ErrorNote, Panel } from '../components/ui'
+import { ErrorNote, Loading, Panel } from '../components/ui'
 
 /* Advice while you play.
  *
@@ -145,7 +145,86 @@ export default function Live() {
       </Panel>
 
       <Advice live={live} />
+      <MemoryPanel />
     </Flex>
+  )
+}
+
+/* A separate, opt-in read of `/api/memory` (see `memreader/README.md` and
+ * `cli/src/serve/memory.rs`) — never merged into the log-based `live` state
+ * above, on purpose (CLAUDE.md rule 4). Off by default and refreshed only
+ * on request, not polled: a snapshot is a full heap scan on the server side
+ * (gigabytes read every time), unlike `/api/live`'s cheap struct read. */
+function MemoryPanel() {
+  const { t } = useT()
+  const [enabled, setEnabled] = useState(false)
+  const [snap, setSnap] = useState(null)
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  const refresh = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      setSnap(await api.get('/api/memory'))
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const entities = snap?.entities || []
+  const players = snap?.players || []
+  // `zone == null` is the common case for a heap hit that is stale data
+  // from a past game rather than this one — see memreader/README.md's note
+  // on why the scan finds far more objects than are actually live.
+  const withZone = entities.filter((e) => e.zone != null)
+
+  return (
+    <Panel
+      title={t('ui.memory.title')}
+      action={
+        <Flex direction="row" gap="size-150" alignItems="center">
+          <Switch
+            isSelected={enabled}
+            onChange={(v) => {
+              setEnabled(v)
+              if (v && !snap && !busy) refresh()
+            }}
+          >
+            {t('ui.memory.enable')}
+          </Switch>
+          {enabled && (
+            <Button variant="secondary" isDisabled={busy} onPress={refresh}>
+              {t('ui.memory.refresh')}
+            </Button>
+          )}
+        </Flex>
+      }
+    >
+      <Text UNSAFE_style={{ fontSize: '.9rem', opacity: 0.85 }}>{t('ui.memory.intro')}</Text>
+      {enabled && error && <ErrorNote error={error} />}
+      {enabled && busy && <Loading label={t('ui.memory.loading')} />}
+      {enabled && snap && !busy && (
+        <Flex direction="column" gap="size-150" marginTop="size-200">
+          {players.length === 0 ? (
+            <Text UNSAFE_style={{ color: 'var(--tl-muted)' }}>{t('ui.memory.no_players')}</Text>
+          ) : (
+            <ul style={{ margin: 0, paddingLeft: 20, lineHeight: 1.7 }}>
+              {players.map((p) => (
+                <li key={p.addr}>
+                  {p.name || '?'} — {t('ui.memory.player_id')} {p.playerId}
+                </li>
+              ))}
+            </ul>
+          )}
+          <Text UNSAFE_style={{ fontSize: '.8rem', color: 'var(--tl-muted)' }}>
+            {t('ui.memory.entity_count', { n: withZone.length, total: entities.length })}
+          </Text>
+        </Flex>
+      )}
+    </Panel>
   )
 }
 

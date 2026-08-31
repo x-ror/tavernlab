@@ -46,7 +46,7 @@ export const EXTRA = {
     'ui.nav.live': 'Гра',
 
     'ui.live.title': 'Порада під час гри',
-    'ui.live.intro': 'Читає лог самої гри — той файл, який клієнт пише, коли це ввімкнено в log.config. Нічого не читається з памʼяті гри, не перехоплюється трафік і не емулюється введення. Колода береться з вкладки «Колода», бойовий тег — із самого логу, а завершені бої лягають в «Історію».',
+    'ui.live.intro': 'Цей трекер читає лише лог самої гри — той файл, який клієнт пише, коли це ввімкнено в log.config. Не перехоплює трафік, не емулює введення. Колода береться з вкладки «Колода», бойовий тег — із самого логу, а завершені бої лягають в «Історію». Нижче є окрема, вимкнена за замовчуванням панель, що читає памʼять клієнта.',
     'ui.live.on': 'стежу',
     'ui.live.off': 'вимкнено',
     'ui.live.start': 'Почати',
@@ -56,6 +56,15 @@ export const EXTRA = {
     'ui.live.auto': 'Вмикати стеження разом із застосунком',
     'ui.live.no_deck': 'Деккод ще не вказано: муліган і план ходу без нього рахувати нема з чого. Вставте колоду на вкладці «Колода».',
     'ui.live.nothing_yet': 'Ще нічого не видно — почніть бій.',
+
+    'ui.memory.title': "Пам'ять клієнта (експериментально)",
+    'ui.memory.intro': "Читає стан гри напряму з пам'яті запущеного Hearthstone.exe — тільки читання, ніколи запис. Окреме, необов'язкове джерело: трекер вище на нього не покладається. Дані сирі й можуть містити застарілі об'єкти з минулих ігор.",
+    'ui.memory.enable': "Читати пам'ять",
+    'ui.memory.refresh': 'Оновити',
+    'ui.memory.loading': 'Скидаю памʼять…',
+    'ui.memory.entity_count': 'Ентіті з відомою зоною: {n} з {total} знайдених (решта — ймовірно застарілі обʼєкти з минулих ігор).',
+    'ui.memory.no_players': "Жодного гравця не знайдено — гра, схоже, не запущена.",
+    'ui.memory.player_id': 'playerId',
 
     'ui.history.title': 'Історія боїв',
     'ui.history.intro': 'Це єдина вкладка, де числа не пораховані, а зіграні. Її наповнює вкладка «Гра», читаючи лог самої гри: що вдалося прочитати — записано, чого ні — лишилося порожнім.',
@@ -228,7 +237,7 @@ export const EXTRA = {
     'ui.nav.live': 'Live',
 
     'ui.live.title': 'Advice while you play',
-    'ui.live.intro': "Reads the game's own log — the file the client writes when log.config asks it to. Nothing reads the game's memory, intercepts its traffic or types into it. The deck comes from the Deck tab, the battletag from the log itself, and finished games land in History.",
+    'ui.live.intro': "This tracker only reads the game's own log — the file the client writes when log.config asks it to. It doesn't intercept traffic or type into the game. The deck comes from the Deck tab, the battletag from the log itself, and finished games land in History. There's a separate panel below, off by default, that reads the client's memory.",
     'ui.live.on': 'watching',
     'ui.live.off': 'off',
     'ui.live.start': 'Start',
@@ -238,6 +247,15 @@ export const EXTRA = {
     'ui.live.auto': 'Start watching together with the app',
     'ui.live.no_deck': 'No deck code yet: the mulligan and the turn plan have nothing to work from. Paste a deck on the Deck tab.',
     'ui.live.nothing_yet': 'Nothing to see yet — start a game.',
+
+    'ui.memory.title': 'Client memory (experimental)',
+    'ui.memory.intro': "Reads game state directly from the running Hearthstone.exe's memory — read-only, never a write. A separate, optional source: the tracker above never relies on it. Data is raw and may include stale objects from past games.",
+    'ui.memory.enable': 'Read memory',
+    'ui.memory.refresh': 'Refresh',
+    'ui.memory.loading': 'Reading memory…',
+    'ui.memory.entity_count': 'Entities with a known zone: {n} of {total} found (the rest are likely stale objects from past games).',
+    'ui.memory.no_players': 'No players found — the game is probably not running.',
+    'ui.memory.player_id': 'playerId',
 
     'ui.history.title': 'Match history',
     'ui.history.intro': 'The one tab where the numbers were played rather than computed. The Live tab fills it from the game\u2019s own log: what it could read is here, what it could not is blank.',
