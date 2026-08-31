@@ -165,11 +165,12 @@ fn main() {
         return;
     }
 
-    // --deep: MonoDomain's own layout is unverified (mono_layout.rs), so
-    // rather than trust one guessed offset this scans for it — see
-    // `scan_for_assembly_list`. `deep_walk_fixed_offset` is what runs once
-    // that scan has told us the real offsets.
-    scan_for_assembly_list(&remote, domain_addr);
+    // domain_assemblies and MonoAssembly.aname.name are confirmed (see
+    // mono_layout.rs); walk the real list, then chase Assembly-CSharp's
+    // image the same evidence-based way that offset was found.
+    if let Some(csharp) = walk_assembly_list(&remote, domain_addr) {
+        scan_for_image(&remote, csharp);
+    }
 }
 
 /// x86-64 Mono typically compiles `mono_get_root_domain` down to reading a
@@ -224,118 +225,104 @@ fn looks_like_name(bytes: &[u8]) -> Option<String> {
         .then(|| s.to_string())
 }
 
-/// `MonoDomain` layout is unverified (see `mono_layout.rs`), so instead of
-/// trusting one guessed offset this scans every 8-byte-aligned slot in the
-/// first 2 KiB of the domain struct, treats each as a candidate
-/// `GList*` (`{data, next}`), and treats *its* `data` as a candidate
-/// `MonoAssembly*` by trying a handful of small offsets for a name
-/// pointer. A hit that decodes to a real-looking name (`mscorlib`,
-/// `Assembly-CSharp`, ...) tells us three things it is otherwise very
-/// hard to separately guess right: the domain_assemblies offset, the
-/// GList node shape, and where the name pointer sits inside MonoAssembly
-/// — all from one piece of positive evidence instead of one blind offset.
-fn scan_for_assembly_list(remote: &Remote, domain_addr: u64) {
-    println!("\n--deep: MonoDomain layout невідомий, скануюсь замість здогадки");
-    let Some(region) = remote.read(domain_addr, 0x800) else {
-        eprintln!("не зміг прочитати 0x800 байтів з MonoDomain* — сама адреса, найімовірніше, хибна");
-        return;
-    };
-    let candidate_name_offsets: &[u64] = &[0, 8, 16, 24, 32, 40, 48];
-    let mut hits = 0;
-    for domain_off in (0..region.len() - 8).step_by(8) {
-        let head = u64::from_le_bytes(region[domain_off..domain_off + 8].try_into().unwrap());
-        if !plausible_ptr(head) {
-            continue;
-        }
-        let Some(node) = remote.read(head, 16) else { continue };
-        let data = u64::from_le_bytes(node[0..8].try_into().unwrap());
-        if !plausible_ptr(data) {
-            continue;
-        }
-        for &name_off in candidate_name_offsets {
-            let Some(ptr_bytes) = remote.read(data + name_off, 8) else { continue };
-            let name_ptr = u64::from_le_bytes(ptr_bytes.try_into().unwrap());
-            if !plausible_ptr(name_ptr) {
-                continue;
-            }
-            let Some(str_bytes) = remote.read(name_ptr, 64) else { continue };
-            if let Some(name) = looks_like_name(&str_bytes) {
-                hits += 1;
-                println!(
-                    "  кандидат: MonoDomain+0x{domain_off:x} -> GList.data=0x{data:x} \
-                     -> +0x{name_off:x} -> \"{name}\""
-                );
-                if hits > 40 {
-                    println!("  (зупиняюсь на 40 кандидатах, щоб не заспамити вивід)");
-                    return;
-                }
-            }
-        }
-    }
-    if hits == 0 {
-        eprintln!(
-            "жодного кандидата не знайдено в перших 0x800 байтах MonoDomain. \
-             Можливо GList-вузол лежить не одразу за вказівником-головою (є \
-             ще один рівень непрямості), або назва читається не з перших \
-             48 байтів MonoAssembly. Надішліть мені весь вивід — розширю \
-             діапазон сканування."
-        );
-        return;
-    }
-    println!(
-        "\nПодивіться на список вище: рядок \"mscorlib\" або \"Assembly-CSharp\" \
-         серед кандидатів — це знахідка. Скиньте мені весь блок \"кандидат: ...\", \
-         і я перетворю правильний рядок на постійні офсети в mono_layout.rs."
-    );
-}
-
-#[allow(dead_code)]
-fn deep_walk_fixed_offset(remote: &Remote, domain_addr: u64) {
-    use mono_layout::*;
-
-    println!("\n--deep: пробую пройти MonoDomain -> assemblies -> Assembly-CSharp");
-    let Some(head_bytes) = remote.read(domain_addr + MONO_DOMAIN_DOMAIN_ASSEMBLIES, 8) else {
-        eprintln!("не зміг прочитати domain_assemblies за офсетом 0x{MONO_DOMAIN_DOMAIN_ASSEMBLIES:x}");
-        return;
+/// Walk the confirmed `domain_assemblies` `GList` (see `mono_layout.rs`)
+/// and print every assembly name found. Where the scan that discovered the
+/// offset had one piece of evidence (`"mscorlib"`), this has dozens —
+/// every assembly Hearthstone loads — which is what makes this a
+/// confirmation pass rather than another guess.
+fn walk_assembly_list(remote: &Remote, domain_addr: u64) -> Option<u64> {
+    println!("\n--deep: MonoDomain -> domain_assemblies (офсет підтверджено скануванням)");
+    let head_addr = domain_addr + mono_layout::MONO_DOMAIN_DOMAIN_ASSEMBLIES;
+    let Some(head_bytes) = remote.read(head_addr, 8) else {
+        eprintln!("не зміг прочитати domain_assemblies за 0x{head_addr:x}");
+        return None;
     };
     let mut node = u64::from_le_bytes(head_bytes.try_into().unwrap());
     let mut hops = 0;
-    while node != 0 && hops < 64 {
+    let mut csharp_data = None;
+    while plausible_ptr(node) && hops < 128 {
         hops += 1;
-        // GList: { data: *MonoAssembly, next: *GList }
         let Some(pair) = remote.read(node, 16) else { break };
         let data = u64::from_le_bytes(pair[0..8].try_into().unwrap());
         let next = u64::from_le_bytes(pair[8..16].try_into().unwrap());
-        if data != 0 {
-            if let Some(name_ptr_bytes) = remote.read(data + MONO_ASSEMBLY_NAME, 8) {
+        if plausible_ptr(data) {
+            let name_ptr_addr = data + mono_layout::MONO_ASSEMBLY_NAME;
+            if let Some(name_ptr_bytes) = remote.read(name_ptr_addr, 8) {
                 let name_ptr = u64::from_le_bytes(name_ptr_bytes.try_into().unwrap());
                 if let Some(name) = read_cstring(remote, name_ptr, 64) {
                     println!("  assembly: {name}");
                     if name == "Assembly-CSharp" {
-                        if let Some(img_bytes) = remote.read(data + MONO_ASSEMBLY_IMAGE, 8) {
-                            let image = u64::from_le_bytes(img_bytes.try_into().unwrap());
-                            println!("  -> Assembly-CSharp MonoImage*: 0x{image:x}");
-                            println!(
-                                "  (наступний крок — пройти image->class_cache; офсет \
-                                 MONO_IMAGE_CLASS_CACHE у mono_layout.rs поки не \
-                                 перевірений на цьому білді)"
-                            );
-                        }
+                        csharp_data = Some(data);
                     }
                 }
             }
         }
         node = next;
     }
-    if hops == 0 {
+    println!("({hops} вузлів пройдено)");
+    if csharp_data.is_none() {
         eprintln!(
-            "жодного вузла у зв'язному списку asssemblies — офсет \
-             MONO_DOMAIN_DOMAIN_ASSEMBLIES (0x{MONO_DOMAIN_DOMAIN_ASSEMBLIES:x}) \
-             майже напевно неправильний для цього білда. Це очікувано на \
-             першому проході; надішліть мені вивід і адресу MonoDomain* \
-             вище, і я перевірю офсет іншим шляхом."
+            "серед {hops} вузлів немає \"Assembly-CSharp\" — або гра ще не \
+             завантажила ігрову збірку (спробуйте після заходу в бій чи \
+             драфт), або domain_assemblies веде не туди, куди здається \
+             (mscorlib збігся випадково). Скиньте мені весь список."
         );
     }
+    csharp_data
+}
+
+/// Once we have a confirmed `MonoAssembly*` for `Assembly-CSharp`, its
+/// `image` field is found the same evidence-based way `domain_assemblies`
+/// was: scan a range of offsets from the assembly for a pointer whose
+/// *own* memory, some small offset further in, holds a string that looks
+/// like the image's name or filename (`"Assembly-CSharp"`,
+/// `"Assembly-CSharp.dll"`).
+fn scan_for_image(remote: &Remote, assembly_data: u64) {
+    println!("\n--deep: MonoAssembly(Assembly-CSharp) -> image (сканую, офсет невідомий)");
+    let Some(region) = remote.read(assembly_data, 0x400) else {
+        eprintln!("не зміг прочитати 0x400 байтів з MonoAssembly*");
+        return;
+    };
+    let mut hits = 0;
+    for off1 in (0..region.len() - 8).step_by(8) {
+        let candidate = u64::from_le_bytes(region[off1..off1 + 8].try_into().unwrap());
+        if !plausible_ptr(candidate) {
+            continue;
+        }
+        let Some(inner) = remote.read(candidate, 0x200) else { continue };
+        for off2 in (0..inner.len() - 8).step_by(8) {
+            let name_ptr = u64::from_le_bytes(inner[off2..off2 + 8].try_into().unwrap());
+            if !plausible_ptr(name_ptr) {
+                continue;
+            }
+            let Some(str_bytes) = remote.read(name_ptr, 64) else { continue };
+            if let Some(name) = looks_like_name(&str_bytes) {
+                if name.contains("Assembly-CSharp") || name.ends_with(".dll") {
+                    hits += 1;
+                    println!(
+                        "  кандидат: MonoAssembly+0x{off1:x} (=0x{candidate:x}) \
+                         -> +0x{off2:x} -> \"{name}\""
+                    );
+                    if hits > 40 {
+                        println!("  (зупиняюсь на 40 кандидатах)");
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    if hits == 0 {
+        eprintln!(
+            "жодного кандидата для image не знайдено. Скиньте мені весь \
+             вивід цього прогону — розширю діапазон чи глибину сканування."
+        );
+        return;
+    }
+    println!(
+        "\nОдин з кандидатів вище — MonoImage* і офсет до його name/filename. \
+         Скиньте мені весь блок, і я зафіксую MONO_ASSEMBLY_IMAGE та \
+         відповідний офсет у mono_layout.rs."
+    );
 }
 
 fn read_cstring(remote: &Remote, addr: u64, max: usize) -> Option<String> {
