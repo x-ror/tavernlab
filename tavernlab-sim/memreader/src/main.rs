@@ -571,12 +571,32 @@ fn find_vtable(remote: &Remote, class_ptr: u64) -> Option<u64> {
 /// name. This is the same "known shape, unknown offset" trick as every
 /// other scan in this file, just one level further down.
 fn find_self_typed_static(remote: &Remote, class_ptr: u64, vtable: u64) -> Vec<u64> {
-    let Some(vs) = remote.read(class_ptr + mono_layout::MONO_CLASS_VTABLE_SIZE, 4) else {
-        return Vec::new();
-    };
-    let vtable_size = i32::from_le_bytes(vs.try_into().unwrap()).max(0) as u64;
-    let static_data = vtable + mono_layout::MONO_VTABLE_VTABLE_ARRAY + vtable_size * 8;
-    let Some(blob) = remote.read(static_data, 0x400) else {
+    let vtable_size = remote
+        .read(class_ptr + mono_layout::MONO_CLASS_VTABLE_SIZE, 4)
+        .map(|vs| i32::from_le_bytes(vs.try_into().unwrap()).max(0) as u64)
+        .unwrap_or(0);
+    println!(
+        "    vtable_size (MonoClass+0x{:x}) = {vtable_size}",
+        mono_layout::MONO_CLASS_VTABLE_SIZE
+    );
+
+    // Two hypotheses scanned at once, since vtable_size's correctness is
+    // itself unverified: (a) static data starts right after the method
+    // table, at vtable[] + vtable_size*8, the textbook Mono layout; (b) it
+    // sits somewhere in a wider window from the vtable array's own start,
+    // in case vtable_size or MONO_VTABLE_VTABLE_ARRAY is off and the real
+    // data is nearby anyway (Mono usually allocates the vtable and its
+    // trailing data as one block).
+    let computed = vtable + mono_layout::MONO_VTABLE_VTABLE_ARRAY + vtable_size * 8;
+    let wide_start = vtable + mono_layout::MONO_VTABLE_VTABLE_ARRAY;
+    const WIDE_LEN: usize = 0x3000;
+    println!(
+        "    обчислений старт статичних даних: 0x{computed:x}; ширший діапазон: \
+         0x{wide_start:x}..+0x{WIDE_LEN:x}"
+    );
+
+    let Some(blob) = remote.read(wide_start, WIDE_LEN) else {
+        println!("    не зміг прочитати навіть ширший діапазон з 0x{wide_start:x}");
         return Vec::new();
     };
     let mut hits = Vec::new();
@@ -592,10 +612,11 @@ fn find_self_typed_static(remote: &Remote, class_ptr: u64, vtable: u64) -> Vec<u
         }
         let Some(kb) = remote.read(obj_vtable + mono_layout::MONO_VTABLE_KLASS, 8) else { continue };
         if u64::from_le_bytes(kb.try_into().unwrap()) == class_ptr {
+            let off = i as u64 * 8;
             println!(
-                "    static-блок+0x{:x}: 0x{candidate:x} -> vtable 0x{obj_vtable:x} \
-                 -> klass збігається!",
-                i * 8
+                "    vtable+0x48+0x{off:x} (абс. 0x{:x}): 0x{candidate:x} -> \
+                 vtable 0x{obj_vtable:x} -> klass збігається!",
+                wide_start + off
             );
             hits.push(candidate);
         }

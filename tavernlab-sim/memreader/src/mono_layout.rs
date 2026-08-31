@@ -98,16 +98,22 @@ pub const MONO_CLASS_NAME: u64 = 0x48;
 /// is 16, computed from a *partial* fetch of that struct (its bitfield
 /// tail was cut off mid-response) rather than confirmed complete.
 
-/// `MonoClass.vtable_size` — field #44 in the fetched list.
+/// `MonoClass.vtable_size` — field #44 in the fetched list. Unverified:
+/// `find_vtable` (below) doesn't depend on it, so its correctness has no
+/// evidence yet either way.
 pub const MONO_CLASS_VTABLE_SIZE: u64 = 0x5c;
 
-/// `MonoClass.runtime_info` — field #59, immediately after the two
-/// embedded `MonoType` fields (`this_arg`, `_byval_arg`) and `gc_descr`.
+/// `MonoClass.runtime_info` — **confirmed live**: `find_vtable` in
+/// `main.rs` resolved a `MonoVTable*` through this offset for four
+/// different classes (`DraftManager`, `PowerProcessor`, `Entity`,
+/// `Player`) and every one had `MonoVTable.klass` pointing back at the
+/// class asked for. Four independent agreements is not the kind of thing
+/// a wrong offset produces by chance.
 pub const MONO_CLASS_RUNTIME_INFO: u64 = 0xd0;
 
-/// `MonoClassRuntimeInfo.domain_vtables[0]` — the struct is
-/// `{guint16 max_domain; MonoVTable *domain_vtables[];}`; the flexible
-/// array starts at the next 8-byte-aligned offset after the `guint16`.
+/// `MonoClassRuntimeInfo.domain_vtables[0]` — **confirmed live**, same
+/// evidence as `MONO_CLASS_RUNTIME_INFO` above (this offset is exercised
+/// by the very same successful `klass` check).
 pub const MONO_CLASS_RUNTIME_INFO_DOMAIN_VTABLES: u64 = 8;
 
 /// `MonoVTable.vtable[]` — field #17 of `struct MonoVTable`
