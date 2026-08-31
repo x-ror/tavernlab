@@ -174,7 +174,14 @@ fn main() {
                 scan_for_class_table(&remote, image);
             } else {
                 let classes = dump_class_names(&remote, image);
-                find_singletons(&remote, &classes);
+                let resolved = find_singletons(&remote, &classes);
+                for target in ["Entity", "Player"] {
+                    if let Some(&(_, _, vtable)) =
+                        resolved.iter().find(|(n, _, _)| n == target)
+                    {
+                        scan_heap_for_class(&remote, pid, target, vtable);
+                    }
+                }
             }
         }
     }
@@ -627,10 +634,14 @@ fn find_self_typed_static(remote: &Remote, class_ptr: u64, vtable: u64) -> Vec<u
 /// For every class this session's chat named as a live-tracking target,
 /// try to find a static field holding an instance of itself -- the
 /// pattern every C# singleton (`Foo.Get()`, `Foo.Instance`, ...) compiles
-/// down to.
-fn find_singletons(remote: &Remote, classes: &[(String, u64)]) {
+/// down to. Returns `(class_name, class_ptr, vtable_ptr)` for every class
+/// a `MonoVTable*` was found for, whether or not a singleton was, since
+/// the vtable pointer itself is exactly what a heap scan for live
+/// instances needs next (see `scan_heap_for_class`).
+fn find_singletons(remote: &Remote, classes: &[(String, u64)]) -> Vec<(String, u64, u64)> {
     const TARGETS: &[&str] = &["DraftManager", "PowerProcessor", "GameState", "Entity", "Player"];
     println!("\n--deep: пошук статичних синглтонів для {TARGETS:?}");
+    let mut resolved = Vec::new();
     for &target in TARGETS {
         let Some(&(_, class_ptr)) = classes.iter().find(|(n, _)| n == target) else {
             println!("  {target}: класу з такою точною назвою немає в дампі");
@@ -647,23 +658,110 @@ fn find_singletons(remote: &Remote, classes: &[(String, u64)]) {
             continue;
         };
         println!("    MonoVTable* = 0x{vtable:x}");
+        resolved.push((target.to_string(), class_ptr, vtable));
         let hits = find_self_typed_static(remote, class_ptr, vtable);
         if hits.is_empty() {
             println!(
-                "    жодного статичного поля з екземпляром цього ж типу в перших \
-                 0x400 байтах статичного блоку -- або синглтон зберігається інакше \
-                 (не власним типом, чи глибше), або MONO_CLASS_VTABLE_SIZE/\
-                 MONO_VTABLE_VTABLE_ARRAY невірні для цього білда."
+                "    жодного статичного поля з екземпляром цього ж типу в \
+                 ширшому діапазоні -- ймовірно, синглтон зберігається інакше \
+                 (ServiceLocator, а не static-поле)."
             );
         }
     }
+    resolved
+}
+
+/// Every live object of `class_name` has, as its first 8 bytes, a pointer
+/// to exactly the one `MonoVTable*` `find_vtable` resolved for that class
+/// -- so instead of the two-dereference "is this a pointer to a pointer
+/// to our class" check used everywhere else in this file (too slow across
+/// gigabytes of heap, at one `process_vm_readv` call per candidate), this
+/// searches for the literal 8-byte pattern of that one known address
+/// directly in each large chunk read from the heap. A match's *address*
+/// is the object itself -- no second read needed to confirm it.
+///
+/// Scans every anonymous (no backing file), writable region from
+/// `/proc/PID/maps` -- exactly where a GC'd (Boehm, per `mono-2.0-bdwgc`)
+/// heap lives, and also where the process's various other anonymous
+/// allocations (thread stacks, Wine's own bookkeeping) live, which this
+/// makes no attempt to distinguish from the real Mono heap. Capped so a
+/// very large or unusual process doesn't turn this into a minutes-long
+/// scan; the cap has room to spare against what a Unity client's Mono
+/// heap actually tends to look like.
+fn scan_heap_for_class(remote: &Remote, pid: u32, class_name: &str, vtable: u64) {
+    println!("\n--deep: сканую купчу пам'яті на живі об'єкти {class_name} (vtable=0x{vtable:x})");
+    let Ok(maps) = procfs::read_maps(pid) else {
+        eprintln!("не зміг прочитати /proc/{pid}/maps");
+        return;
+    };
+    let pattern = vtable.to_le_bytes();
+    const CHUNK: u64 = 4 * 1024 * 1024;
+    const MAX_SCAN_BYTES: u64 = 3_000_000_000;
+    const MAX_HITS: usize = 500;
+
+    let mut scanned: u64 = 0;
+    let mut hits: Vec<u64> = Vec::new();
+    let regions: Vec<&procfs::MapEntry> = maps
+        .iter()
+        .filter(|m| m.pathname.is_empty() && m.perms.starts_with("rw"))
+        .collect();
+    println!("  {} анонімних rw-регіонів у мапі процесу", regions.len());
+
+    'outer: for region in &regions {
+        let mut addr = region.start;
+        while addr < region.end {
+            if scanned >= MAX_SCAN_BYTES || hits.len() >= MAX_HITS {
+                break 'outer;
+            }
+            let len = ((region.end - addr).min(CHUNK)) as usize;
+            if let Some(buf) = remote.read(addr, len) {
+                scanned += len as u64;
+                let mut i = 0;
+                // Chunk boundaries can split an 8-byte match; accepted as
+                // a rare, harmless miss rather than adding overlap-read
+                // complexity for a diagnostic tool.
+                while i + 8 <= buf.len() {
+                    if buf[i..i + 8] == pattern {
+                        hits.push(addr + i as u64);
+                        if hits.len() >= MAX_HITS {
+                            break;
+                        }
+                    }
+                    i += 8;
+                }
+            }
+            addr += len as u64;
+        }
+    }
+
     println!(
-        "\nСкиньте мені весь вивід. Кожен рядок \"klass збігається\" — це \
-         реальний живий екземпляр; його адреса дійсна лише для поточного \
-         запуску процесу, але офсети полів усередині нього — постійні, і з \
-         них можна буде читати конкретні дані (хід, руку, дошку, трійку \
-         драфту)."
+        "  проскановано {:.0} МБ, {} збігів{}",
+        scanned as f64 / 1_048_576.0,
+        hits.len(),
+        if hits.len() >= MAX_HITS { " (досягнуто ліміту)" } else { "" }
     );
+    for &h in hits.iter().take(20) {
+        println!("    {class_name}* кандидат: 0x{h:x}");
+    }
+    if hits.is_empty() {
+        eprintln!(
+            "жодного об'єкта не знайдено. Можливо, зараз немає активної гри/\
+             екрана з такими об'єктами (спробуйте під час бою чи драфту), або \
+             ці анонімні rw-регіони — не той пул пам'яті, де Mono тримає купу \
+             (Boehm GC іноді резервує пам'ять нетиповим способом під Wine)."
+        );
+    } else {
+        println!(
+            "    ... ще {} (показано перші 20)",
+            hits.len().saturating_sub(20)
+        );
+        println!(
+            "\nСкиньте мені весь вивід. Кожна адреса-кандидат — це, ймовірно, \
+             реальний живий {class_name}. Наступний крок — прочитати поля \
+             одного з них (потрібні офсети CardId/DbfId, Zone, Controller, \
+             Tags — ще одна ітерація)."
+        );
+    }
 }
 
 fn read_cstring(remote: &Remote, addr: u64, max: usize) -> Option<String> {
