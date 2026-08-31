@@ -29,8 +29,12 @@ doc-comments are in English.
    rendered by the front end.
 4. **The log watcher never guesses.** `cli/src/watch/tracker.rs` records only
    what `Power.log` states outright; unknowns stay `None`. It reads official
-   log files only — no memory reads, no traffic interception, no input
-   emulation (docs/DESIGN.md, legal mode).
+   log files only — no memory reads. Since 2026-08-31 read-only memory
+   access to the user's own running client is allowed (`memreader/`,
+   docs/DESIGN.md "Правовий режим") but stays a **separate** source: never
+   merged into `tracker.rs`'s log-only reconstruction, never falls back
+   silently between the two. No traffic interception, no input emulation,
+   ever — that boundary hasn't moved.
 5. **Doctests are disabled workspace-wide** (`doctest = false`) — do not add
    runnable `///` examples.
 6. **Data separation.** The repo holds shipped data (corpora, gauntlets,
@@ -60,6 +64,11 @@ doc-comments are in English.
   - `watch/` — live `Power.log` reader: `log.rs` (scanner, no regex),
     `tracker.rs` (game reconstruction), `advice.rs`, `mod.rs`.
     Log dir: `HS_LOGS` env or `--logs` flag on Linux/Wine.
+- `tavernlab-sim/memreader/` — read-only Mono memory reader for the user's
+  own running Hearthstone client (`process_vm_readv`, no third-party crate).
+  `--snapshot` prints one JSON document to stdout (all diagnostics go to
+  stderr); confirmed-live offsets are in `src/mono_layout.rs`. See its
+  README before touching it — it explains what's confirmed vs. guessed.
 - `tavernlab-sim/json/`, `sqlite/` — dependency-free format readers/writers.
 - `tavernlab-sim/xtask/` — codegen: `cards`, `wild-gauntlet`, `backfill`, `runes`.
 - `web/` — React 18 + React Spectrum + Vite. Strings via `i18n.jsx`/locales.

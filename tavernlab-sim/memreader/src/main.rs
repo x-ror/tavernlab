@@ -44,7 +44,7 @@ fn main() {
             exit(1);
         }
     };
-    println!("PID Hearthstone.exe: {pid}");
+    eprintln!("PID Hearthstone.exe: {pid}");
 
     let maps = match procfs::read_maps(pid) {
         Ok(m) => m,
@@ -69,7 +69,7 @@ fn main() {
             exit(1);
         }
     };
-    println!(
+    eprintln!(
         "mono-2.0-bdwgc.dll: base=0x{:x} (файл: {})",
         dll.start, dll.pathname
     );
@@ -94,7 +94,7 @@ fn main() {
             exit(1);
         }
     };
-    println!("PE розпарсено, {} експортів знайдено", exports.len());
+    eprintln!("PE розпарсено, {} експортів знайдено", exports.len());
 
     let Some(&rva) = exports.get("mono_get_root_domain") else {
         eprintln!(
@@ -108,7 +108,7 @@ fn main() {
         exit(1);
     };
     let func_addr = dll.start + rva as u64;
-    println!("mono_get_root_domain: RVA=0x{rva:x} -> адреса в процесі 0x{func_addr:x}");
+    eprintln!("mono_get_root_domain: RVA=0x{rva:x} -> адреса в процесі 0x{func_addr:x}");
 
     let remote = Remote::new(pid);
     let prologue = match remote.read(func_addr, 16) {
@@ -124,7 +124,7 @@ fn main() {
             exit(1);
         }
     };
-    println!("перші 16 байтів функції: {}", hex(&prologue));
+    eprintln!("перші 16 байтів функції: {}", hex(&prologue));
 
     let Some(domain_ptr_addr) = decode_root_domain_thunk(func_addr, &prologue) else {
         eprintln!(
@@ -135,14 +135,14 @@ fn main() {
         );
         exit(1);
     };
-    println!("адреса глобальної змінної root domain: 0x{domain_ptr_addr:x}");
+    eprintln!("адреса глобальної змінної root domain: 0x{domain_ptr_addr:x}");
 
     let Some(domain_bytes) = remote.read(domain_ptr_addr, 8) else {
         eprintln!("не зміг прочитати 8 байтів з 0x{domain_ptr_addr:x}");
         exit(1);
     };
     let domain_addr = u64::from_le_bytes(domain_bytes.try_into().unwrap());
-    println!("MonoDomain*: 0x{domain_addr:x}");
+    eprintln!("MonoDomain*: 0x{domain_addr:x}");
 
     if domain_addr == 0 {
         eprintln!(
@@ -156,7 +156,7 @@ fn main() {
     }
 
     if mode == "--probe" {
-        println!(
+        eprintln!(
             "\n--probe завершено успішно: PID, модуль, root domain pointer — \
              усе знайдено. Це основа, яка не залежить від точних офсетів \
              Mono-структур. Надішліть мені весь вивід вище, і я підготую \
@@ -175,12 +175,18 @@ fn main() {
             } else {
                 let classes = dump_class_names(&remote, image);
                 let resolved = find_singletons(&remote, &classes);
+
+                if mode == "--snapshot" {
+                    print_snapshot(&remote, pid, &resolved);
+                    return;
+                }
+
                 for target in ["Entity", "Player"] {
                     if let Some(&(_, _, vtable)) =
                         resolved.iter().find(|(n, _, _)| n == target)
                     {
                         let hits = scan_heap_for_class(&remote, pid, target, vtable);
-                        println!(
+                        eprintln!(
                             "  ... і ще {} (показано перші 20 адрес вище)",
                             hits.len().saturating_sub(20)
                         );
@@ -194,7 +200,7 @@ fn main() {
                             dump_player_table(&remote, &hits);
                         }
                         if !hits.is_empty() {
-                            println!(
+                            eprintln!(
                                 "\nСкиньте мені весь вивід. \"рядки\" — якщо там \
                                  щось на кшталт CardID (\"CS2_182\") — це найкращий \
                                  доказ; \"малі числа\" — кандидати на entity id, \
@@ -206,6 +212,124 @@ fn main() {
             }
         }
     }
+}
+
+/// `--snapshot`: the machine-readable counterpart to `--deep`'s human
+/// diagnostics. Every diagnostic print in this file goes to stderr, so
+/// stdout carries *only* this one JSON document -- safe for a caller
+/// (`tavernsim watch`) to pipe and parse directly, unlike `--deep`'s prose
+/// output. All offsets used here (`ENTITY_CARD_ID`/`ENTITY_ID`/
+/// `ENTITY_TAG_LIST`/`PLAYER_NAME`/`PLAYER_PLAYER_ID`) are the ones
+/// `mono_layout.rs` marks confirmed live -- see `README.md` for the
+/// evidence behind each.
+fn print_snapshot(remote: &Remote, pid: u32, resolved: &[(String, u64, u64)]) {
+    use tavernlab_json::Out;
+
+    let mut entities: Vec<(u64, Option<String>, i32)> = Vec::new();
+    let mut players: Vec<(u64, Option<String>, i32)> = Vec::new();
+    if let Some(&(_, _, vtable)) = resolved.iter().find(|(n, _, _)| n == "Entity") {
+        let hits = scan_heap_for_class(remote, pid, "Entity", vtable);
+        entities = dump_entity_table(remote, &hits);
+    }
+    if let Some(&(_, _, vtable)) = resolved.iter().find(|(n, _, _)| n == "Player") {
+        let hits = scan_heap_for_class(remote, pid, "Player", vtable);
+        players = dump_player_table(remote, &hits);
+    }
+
+    let mut out = Out::new();
+    out.obj(|o| {
+        o.field("entities", |v| {
+            v.arr(|a| {
+                for (addr, card_id, id) in &entities {
+                    let tags = read_entity_tags(remote, *addr);
+                    a.item(|v| {
+                        v.obj(|o| {
+                            o.field("addr", |v| v.str(&format!("0x{addr:x}")));
+                            o.field("cardId", |v| v.opt(card_id.as_deref(), |o, s| o.str(s)));
+                            o.int_field("id", *id as i64);
+                            o.field("zone", |v| {
+                                v.opt(find_tag(&tags, 49), |o, n| o.int(n as i64))
+                            });
+                            o.field("controller", |v| {
+                                v.opt(find_tag(&tags, 50), |o, n| o.int(n as i64))
+                            });
+                            o.field("atk", |v| v.opt(find_tag(&tags, 47), |o, n| o.int(n as i64)));
+                            o.field("health", |v| {
+                                v.opt(find_tag(&tags, 45), |o, n| o.int(n as i64))
+                            });
+                            o.field("cost", |v| {
+                                v.opt(find_tag(&tags, 48), |o, n| o.int(n as i64))
+                            });
+                            o.field("zonePosition", |v| {
+                                v.opt(find_tag(&tags, 263), |o, n| o.int(n as i64))
+                            });
+                        })
+                    });
+                }
+            })
+        });
+        o.field("players", |v| {
+            v.arr(|a| {
+                for (addr, name, player_id) in &players {
+                    a.item(|v| {
+                        v.obj(|o| {
+                            o.field("addr", |v| v.str(&format!("0x{addr:x}")));
+                            o.field("name", |v| v.opt(name.as_deref(), |o, s| o.str(s)));
+                            o.int_field("playerId", *player_id as i64);
+                        })
+                    });
+                }
+            })
+        });
+    });
+    println!("{}", out.finish());
+}
+
+fn find_tag(tags: &[(i32, i32)], name: i32) -> Option<i32> {
+    tags.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
+}
+
+/// Silent counterpart to `dump_dotnet_list` for `ENTITY_TAG_LIST` only:
+/// same `List<Tag>` walk (`_items`/`_size` at `+0x10`/`+0x18`, `MonoArray`
+/// vector at `items+0x20`, `Tag.Name`/`Tag.Value` at `+0x10`/`+0x14`), but
+/// collects every `(name, value)` pair instead of printing a sample.
+fn read_entity_tags(remote: &Remote, entity_addr: u64) -> Vec<(i32, i32)> {
+    let mut out = Vec::new();
+    let Some(obj) = remote.read(entity_addr, mono_layout::ENTITY_INSTANCE_SIZE as usize) else {
+        return out;
+    };
+    let off = mono_layout::ENTITY_TAG_LIST as usize;
+    let list = u64::from_le_bytes(obj[off..off + 8].try_into().unwrap());
+    if !plausible_ptr(list) {
+        return out;
+    }
+    let Some(hdr) = remote.read(list, 0x20) else { return out };
+    let items = u64::from_le_bytes(hdr[0x10..0x18].try_into().unwrap());
+    let size = i32::from_le_bytes(hdr[0x18..0x1c].try_into().unwrap());
+    if !(1..=256).contains(&size) || !plausible_ptr(items) {
+        return out;
+    }
+    let n = size as usize;
+    let Some(vecb) = remote.read(items + 0x20, n * 8) else { return out };
+    for i in 0..n {
+        let elem = u64::from_le_bytes(vecb[i * 8..i * 8 + 8].try_into().unwrap());
+        if !plausible_ptr(elem) {
+            continue;
+        }
+        let Some(tb) = remote.read(elem, 0x18) else { continue };
+        let name = i32::from_le_bytes(
+            tb[mono_layout::TAG_NAME as usize..mono_layout::TAG_NAME as usize + 4]
+                .try_into()
+                .unwrap(),
+        );
+        let value = i32::from_le_bytes(
+            tb[mono_layout::TAG_VALUE as usize..mono_layout::TAG_VALUE as usize + 4]
+                .try_into()
+                .unwrap(),
+        );
+        out.push((name, value));
+    }
+    out
 }
 
 /// x86-64 Mono typically compiles `mono_get_root_domain` down to reading a
@@ -292,15 +416,51 @@ fn try_mono_string(remote: &Remote, ptr: u64) -> Option<String> {
     if !(1..=64).contains(&len) {
         return None;
     }
-    let char_bytes = remote.read(ptr + 0x14, len as usize * 2)?;
+    // length UTF-16 units plus the trailing 0 the layout promises.
+    let char_bytes = remote.read(ptr + 0x14, (len as usize + 1) * 2)?;
     let units: Vec<u16> = char_bytes
         .chunks_exact(2)
         .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
         .collect();
-    let s = String::from_utf16(&units).ok()?;
+    if units.get(len as usize).copied() != Some(0) {
+        return None;
+    }
+    if units[..len as usize].iter().any(|&u| u == 0) {
+        return None;
+    }
+    let s = String::from_utf16(&units[..len as usize]).ok()?;
     s.chars()
         .all(|c| c.is_ascii_graphic() || c == ' ')
         .then(|| s)
+}
+
+/// `obj -> vtable -> klass -> name` — the same klass check `find_vtable`
+/// already uses, just printed so a field pointer can be identified as
+/// `TagMap` / `Map` / `Zone` without knowing the offset in advance.
+fn class_name_of(remote: &Remote, obj: u64) -> Option<String> {
+    if !plausible_ptr(obj) {
+        return None;
+    }
+    let vt = u64::from_le_bytes(remote.read(obj, 8)?.try_into().unwrap());
+    if !plausible_ptr(vt) {
+        return None;
+    }
+    let klass = u64::from_le_bytes(
+        remote
+            .read(vt + mono_layout::MONO_VTABLE_KLASS, 8)?
+            .try_into()
+            .unwrap(),
+    );
+    if !plausible_ptr(klass) {
+        return None;
+    }
+    let name_ptr = u64::from_le_bytes(
+        remote
+            .read(klass + mono_layout::MONO_CLASS_NAME, 8)?
+            .try_into()
+            .unwrap(),
+    );
+    read_cstring(remote, name_ptr, 64)
 }
 
 /// Walk the confirmed `domain_assemblies` `GList` (see `mono_layout.rs`)
@@ -309,7 +469,7 @@ fn try_mono_string(remote: &Remote, ptr: u64) -> Option<String> {
 /// every assembly Hearthstone loads — which is what makes this a
 /// confirmation pass rather than another guess.
 fn walk_assembly_list(remote: &Remote, domain_addr: u64) -> Option<u64> {
-    println!("\n--deep: MonoDomain -> domain_assemblies (офсет підтверджено скануванням)");
+    eprintln!("\n--deep: MonoDomain -> domain_assemblies (офсет підтверджено скануванням)");
     let head_addr = domain_addr + mono_layout::MONO_DOMAIN_DOMAIN_ASSEMBLIES;
     let Some(head_bytes) = remote.read(head_addr, 8) else {
         eprintln!("не зміг прочитати domain_assemblies за 0x{head_addr:x}");
@@ -328,7 +488,7 @@ fn walk_assembly_list(remote: &Remote, domain_addr: u64) -> Option<u64> {
             if let Some(name_ptr_bytes) = remote.read(name_ptr_addr, 8) {
                 let name_ptr = u64::from_le_bytes(name_ptr_bytes.try_into().unwrap());
                 if let Some(name) = read_cstring(remote, name_ptr, 64) {
-                    println!("  assembly: {name}");
+                    eprintln!("  assembly: {name}");
                     if name == "Assembly-CSharp" {
                         csharp_data = Some(data);
                     }
@@ -337,7 +497,7 @@ fn walk_assembly_list(remote: &Remote, domain_addr: u64) -> Option<u64> {
         }
         node = next;
     }
-    println!("({hops} вузлів пройдено)");
+    eprintln!("({hops} вузлів пройдено)");
     if csharp_data.is_none() {
         eprintln!(
             "серед {hops} вузлів немає \"Assembly-CSharp\" — або гра ще не \
@@ -355,7 +515,7 @@ fn walk_assembly_list(remote: &Remote, domain_addr: u64) -> Option<u64> {
 /// costs nothing and catches "the offset was right last run but this
 /// build/session moved something" immediately rather than silently.
 fn read_image(remote: &Remote, assembly_data: u64) -> Option<u64> {
-    println!("\n--deep: MonoAssembly(Assembly-CSharp) -> image (офсет підтверджено)");
+    eprintln!("\n--deep: MonoAssembly(Assembly-CSharp) -> image (офсет підтверджено)");
     let addr = assembly_data + mono_layout::MONO_ASSEMBLY_IMAGE;
     let image = u64::from_le_bytes(remote.read(addr, 8)?.try_into().unwrap());
     if !plausible_ptr(image) {
@@ -370,7 +530,7 @@ fn read_image(remote: &Remote, assembly_data: u64) -> Option<u64> {
         let p = remote.read(image + mono_layout::MONO_IMAGE_FILENAME, 8)?;
         u64::from_le_bytes(p.try_into().unwrap())
     }, 64);
-    println!(
+    eprintln!(
         "MonoImage*: 0x{image:x}  name={:?}  filename={:?}",
         name, filename
     );
@@ -426,7 +586,7 @@ const INTERESTING_SUBSTRINGS: &[&str] = &[
 /// dominant-offset agreement before it calls something a match, which is
 /// what actually separates a real table from scan noise.
 fn scan_for_class_table(remote: &Remote, image: u64) {
-    println!("\n--deep: MonoImage.class_cache (сканую — найширший і найповільніший крок)");
+    eprintln!("\n--deep: MonoImage.class_cache (сканую — найширший і найповільніший крок)");
     const SEARCH_RANGE: u64 = 0x6000;
     const BUCKETS_TO_PROBE: usize = 256;
     const NAME_OFFSETS: &[u64] = &[0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80];
@@ -442,7 +602,7 @@ fn scan_for_class_table(remote: &Remote, image: u64) {
     let mut strong_matches = 0;
     for table_off in (0..SEARCH_RANGE).step_by(8) {
         if tables_probed >= MAX_TABLES_PROBED {
-            println!("  (зупиняюсь на {MAX_TABLES_PROBED} таблицях-кандидатах)");
+            eprintln!("  (зупиняюсь на {MAX_TABLES_PROBED} таблицях-кандидатах)");
             break;
         }
         let Some(ptr_bytes) = remote.read(image + table_off, 8) else { continue };
@@ -496,7 +656,7 @@ fn scan_for_class_table(remote: &Remote, image: u64) {
         }
 
         strong_matches += 1;
-        println!(
+        eprintln!(
             "  таблиця-кандидат: MonoImage+0x{table_off:x} -> 0x{table_ptr:x} \
              ({density}/{BUCKETS_TO_PROBE} заповнено, {}/{total_hits} узгоджено на +0x{dom_off:x})",
             dom_names.len()
@@ -506,14 +666,14 @@ fn scan_for_class_table(remote: &Remote, image: u64) {
             .filter(|n| INTERESTING_SUBSTRINGS.iter().any(|kw| n.contains(kw)))
             .collect();
         if !interesting.is_empty() {
-            println!("    !!! знайдено цікаві назви:");
+            eprintln!("    !!! знайдено цікаві назви:");
             for n in &interesting {
-                println!("      \"{n}\"");
+                eprintln!("      \"{n}\"");
             }
         }
-        println!("    приклади ({} узгоджених):", dom_names.len());
+        eprintln!("    приклади ({} узгоджених):", dom_names.len());
         for n in dom_names.iter().take(15) {
-            println!("      \"{n}\"");
+            eprintln!("      \"{n}\"");
         }
     }
     if strong_matches == 0 {
@@ -526,7 +686,7 @@ fn scan_for_class_table(remote: &Remote, image: u64) {
         );
         return;
     }
-    println!(
+    eprintln!(
         "\nЗнайдено {strong_matches} однорідних таблиць. Скиньте мені весь блок \
          вище. Якщо серед \"!!! знайдено цікаві назви\" є GameState/Entity/\
          Player — саме там і продовжимо: наступний крок — прочитати поля \
@@ -547,7 +707,7 @@ fn scan_for_class_table(remote: &Remote, image: u64) {
 /// just the name, because the next step (finding a live singleton
 /// instance) needs it.
 fn dump_class_names(remote: &Remote, image: u64) -> Vec<(String, u64)> {
-    println!("\n--deep: MonoImage.class_cache -> усі класи Assembly-CSharp (офсети підтверджено)");
+    eprintln!("\n--deep: MonoImage.class_cache -> усі класи Assembly-CSharp (офсети підтверджено)");
     let table_ptr_addr = image + mono_layout::MONO_IMAGE_CLASS_CACHE_TABLE;
     let Some(tp) = remote.read(table_ptr_addr, 8) else {
         eprintln!("не зміг прочитати вказівник таблиці за 0x{table_ptr_addr:x}");
@@ -567,7 +727,7 @@ fn dump_class_names(remote: &Remote, image: u64) -> Vec<(String, u64)> {
                 .chunks_exact(8)
                 .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
                 .collect();
-            println!("  прочитано таблицю з {n} бакетів");
+            eprintln!("  прочитано таблицю з {n} бакетів");
             break;
         }
     }
@@ -586,7 +746,7 @@ fn dump_class_names(remote: &Remote, image: u64) -> Vec<(String, u64)> {
         }
         classes.push((name, bucket));
     }
-    println!(
+    eprintln!(
         "  {} непорожніх бакетів, {} з них дали назву класу",
         buckets.iter().filter(|&&b| plausible_ptr(b)).count(),
         classes.len()
@@ -597,9 +757,9 @@ fn dump_class_names(remote: &Remote, image: u64) -> Vec<(String, u64)> {
         .filter(|n| INTERESTING_SUBSTRINGS.iter().any(|kw| n.contains(kw)))
         .collect();
     if !interesting.is_empty() {
-        println!("\n  !!! класи, що збігаються з ключовими словами:");
+        eprintln!("\n  !!! класи, що збігаються з ключовими словами:");
         for n in &interesting {
-            println!("    {n}");
+            eprintln!("    {n}");
         }
     }
     classes
@@ -644,7 +804,7 @@ fn find_self_typed_static(remote: &Remote, class_ptr: u64, vtable: u64) -> Vec<u
         .read(class_ptr + mono_layout::MONO_CLASS_VTABLE_SIZE, 4)
         .map(|vs| i32::from_le_bytes(vs.try_into().unwrap()).max(0) as u64)
         .unwrap_or(0);
-    println!(
+    eprintln!(
         "    vtable_size (MonoClass+0x{:x}) = {vtable_size}",
         mono_layout::MONO_CLASS_VTABLE_SIZE
     );
@@ -659,13 +819,13 @@ fn find_self_typed_static(remote: &Remote, class_ptr: u64, vtable: u64) -> Vec<u
     let computed = vtable + mono_layout::MONO_VTABLE_VTABLE_ARRAY + vtable_size * 8;
     let wide_start = vtable + mono_layout::MONO_VTABLE_VTABLE_ARRAY;
     const WIDE_LEN: usize = 0x3000;
-    println!(
+    eprintln!(
         "    обчислений старт статичних даних: 0x{computed:x}; ширший діапазон: \
          0x{wide_start:x}..+0x{WIDE_LEN:x}"
     );
 
     let Some(blob) = remote.read(wide_start, WIDE_LEN) else {
-        println!("    не зміг прочитати навіть ширший діапазон з 0x{wide_start:x}");
+        eprintln!("    не зміг прочитати навіть ширший діапазон з 0x{wide_start:x}");
         return Vec::new();
     };
     let mut hits = Vec::new();
@@ -682,7 +842,7 @@ fn find_self_typed_static(remote: &Remote, class_ptr: u64, vtable: u64) -> Vec<u
         let Some(kb) = remote.read(obj_vtable + mono_layout::MONO_VTABLE_KLASS, 8) else { continue };
         if u64::from_le_bytes(kb.try_into().unwrap()) == class_ptr {
             let off = i as u64 * 8;
-            println!(
+            eprintln!(
                 "    vtable+0x48+0x{off:x} (абс. 0x{:x}): 0x{candidate:x} -> \
                  vtable 0x{obj_vtable:x} -> klass збігається!",
                 wide_start + off
@@ -702,16 +862,16 @@ fn find_self_typed_static(remote: &Remote, class_ptr: u64, vtable: u64) -> Vec<u
 /// instances needs next (see `scan_heap_for_class`).
 fn find_singletons(remote: &Remote, classes: &[(String, u64)]) -> Vec<(String, u64, u64)> {
     const TARGETS: &[&str] = &["DraftManager", "PowerProcessor", "GameState", "Entity", "Player"];
-    println!("\n--deep: пошук статичних синглтонів для {TARGETS:?}");
+    eprintln!("\n--deep: пошук статичних синглтонів для {TARGETS:?}");
     let mut resolved = Vec::new();
     for &target in TARGETS {
         let Some(&(_, class_ptr)) = classes.iter().find(|(n, _)| n == target) else {
-            println!("  {target}: класу з такою точною назвою немає в дампі");
+            eprintln!("  {target}: класу з такою точною назвою немає в дампі");
             continue;
         };
-        println!("  {target}: MonoClass* = 0x{class_ptr:x}");
+        eprintln!("  {target}: MonoClass* = 0x{class_ptr:x}");
         let Some(vtable) = find_vtable(remote, class_ptr) else {
-            println!(
+            eprintln!(
                 "    немає vtable (runtime_info порожній або жоден із перших \
                  4 слотів домену не пройшов перевірку klass) -- або клас ще \
                  не використовувався рушієм, або MONO_CLASS_RUNTIME_INFO у \
@@ -719,11 +879,11 @@ fn find_singletons(remote: &Remote, classes: &[(String, u64)]) -> Vec<(String, u
             );
             continue;
         };
-        println!("    MonoVTable* = 0x{vtable:x}");
+        eprintln!("    MonoVTable* = 0x{vtable:x}");
         resolved.push((target.to_string(), class_ptr, vtable));
         let hits = find_self_typed_static(remote, class_ptr, vtable);
         if hits.is_empty() {
-            println!(
+            eprintln!(
                 "    жодного статичного поля з екземпляром цього ж типу в \
                  ширшому діапазоні -- ймовірно, синглтон зберігається інакше \
                  (ServiceLocator, а не static-поле)."
@@ -751,7 +911,7 @@ fn find_singletons(remote: &Remote, classes: &[(String, u64)]) -> Vec<(String, u
 /// scan; the cap has room to spare against what a Unity client's Mono
 /// heap actually tends to look like.
 fn scan_heap_for_class(remote: &Remote, pid: u32, class_name: &str, vtable: u64) -> Vec<u64> {
-    println!("\n--deep: сканую купчу пам'яті на живі об'єкти {class_name} (vtable=0x{vtable:x})");
+    eprintln!("\n--deep: сканую купчу пам'яті на живі об'єкти {class_name} (vtable=0x{vtable:x})");
     let Ok(maps) = procfs::read_maps(pid) else {
         eprintln!("не зміг прочитати /proc/{pid}/maps");
         return Vec::new();
@@ -767,7 +927,7 @@ fn scan_heap_for_class(remote: &Remote, pid: u32, class_name: &str, vtable: u64)
         .iter()
         .filter(|m| m.pathname.is_empty() && m.perms.starts_with("rw"))
         .collect();
-    println!("  {} анонімних rw-регіонів у мапі процесу", regions.len());
+    eprintln!("  {} анонімних rw-регіонів у мапі процесу", regions.len());
 
     'outer: for region in &regions {
         let mut addr = region.start;
@@ -796,14 +956,14 @@ fn scan_heap_for_class(remote: &Remote, pid: u32, class_name: &str, vtable: u64)
         }
     }
 
-    println!(
+    eprintln!(
         "  проскановано {:.0} МБ, {} збігів{}",
         scanned as f64 / 1_048_576.0,
         hits.len(),
         if hits.len() >= MAX_HITS { " (досягнуто ліміту)" } else { "" }
     );
     for &h in hits.iter().take(20) {
-        println!("    {class_name}* кандидат: 0x{h:x}");
+        eprintln!("    {class_name}* кандидат: 0x{h:x}");
     }
     if hits.is_empty() {
         eprintln!(
@@ -813,7 +973,7 @@ fn scan_heap_for_class(remote: &Remote, pid: u32, class_name: &str, vtable: u64)
              (Boehm GC іноді резервує пам'ять нетиповим способом під Wine)."
         );
     } else {
-        println!(
+        eprintln!(
             "    ... ще {} (показано перші 20)",
             hits.len().saturating_sub(20)
         );
@@ -833,19 +993,19 @@ fn scan_heap_for_class(remote: &Remote, pid: u32, class_name: &str, vtable: u64)
 /// `klass == class_ptr` was), so results are reported as candidates to
 /// look at, not as confirmed fields.
 fn dump_object_fields(remote: &Remote, addr: u64, class_name: &str) {
-    println!("\n--deep: сирий дамп полів {class_name}* = 0x{addr:x}");
+    eprintln!("\n--deep: сирий дамп полів {class_name}* = 0x{addr:x}");
     const DUMP_LEN: usize = 0x180;
     let Some(bytes) = remote.read(addr, DUMP_LEN) else {
         eprintln!("не зміг прочитати 0x{DUMP_LEN:x} байтів з 0x{addr:x}");
         return;
     };
 
-    println!("  сирі байти:");
+    eprintln!("  сирі байти:");
     for (row, chunk) in bytes.chunks(16).enumerate() {
-        println!("    +0x{:03x}: {}", row * 16, hex(chunk));
+        eprintln!("    +0x{:03x}: {}", row * 16, hex(chunk));
     }
 
-    println!("  рядки, знайдені через вказівники в полях (char* ascii):");
+    eprintln!("  рядки, знайдені через вказівники в полях (char* ascii):");
     let mut any_string = false;
     for off in (8..DUMP_LEN - 8).step_by(8) {
         let ptr = u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap());
@@ -854,38 +1014,38 @@ fn dump_object_fields(remote: &Remote, addr: u64, class_name: &str) {
         }
         let Some(str_bytes) = remote.read(ptr, 64) else { continue };
         if let Some(s) = looks_like_name(&str_bytes) {
-            println!("    +0x{off:x}: \"{s}\"");
+            eprintln!("    +0x{off:x}: \"{s}\"");
             any_string = true;
         }
     }
     if !any_string {
-        println!("    (жодної)");
+        eprintln!("    (жодної)");
     }
 
-    println!("  рядки, знайдені через вказівники в полях (System.String / MonoString, UTF-16):");
+    eprintln!("  рядки, знайдені через вказівники в полях (System.String / MonoString, UTF-16):");
     let mut any_mono_string = false;
     for off in (8..DUMP_LEN - 8).step_by(8) {
         let ptr = u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap());
         if let Some(s) = try_mono_string(remote, ptr) {
-            println!("    +0x{off:x}: \"{s}\"");
+            eprintln!("    +0x{off:x}: \"{s}\"");
             any_mono_string = true;
         }
     }
     if !any_mono_string {
-        println!("    (жодної)");
+        eprintln!("    (жодної)");
     }
 
-    println!("  малі 32-бітні числа (кандидати на id/тег, діапазон 1..=2000):");
+    eprintln!("  малі 32-бітні числа (кандидати на id/тег, діапазон 1..=2000):");
     let mut any_int = false;
     for off in (8..DUMP_LEN - 4).step_by(4) {
         let v = i32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
         if (1..=2000).contains(&v) {
-            println!("    +0x{off:x}: {v}");
+            eprintln!("    +0x{off:x}: {v}");
             any_int = true;
         }
     }
     if !any_int {
-        println!("    (жодного)");
+        eprintln!("    (жодного)");
     }
 }
 
@@ -899,8 +1059,8 @@ fn dump_object_fields(remote: &Remote, addr: u64, class_name: &str) {
 /// record: `+0x30` cardId, `+0x38` a candidate id field, instead of
 /// dumping 0x180 bytes (which was really 4-6 *different* objects at once
 /// and made the earlier "which offset means what" cross-check misleading).
-fn dump_entity_table(remote: &Remote, hits: &[u64]) {
-    println!(
+fn dump_entity_table(remote: &Remote, hits: &[u64]) -> Vec<(u64, Option<String>, i32)> {
+    eprintln!(
         "\n--deep: таблиця Entity (cardId @ +0x{:x}, id @ +0x{:x}, підтверджено live) для всіх {} знайдених об'єктів",
         mono_layout::ENTITY_CARD_ID, mono_layout::ENTITY_ID, hits.len()
     );
@@ -915,38 +1075,62 @@ fn dump_entity_table(remote: &Remote, hits: &[u64]) {
         rows.push((addr, card_id, id_field));
     }
     for (addr, card_id, id_field) in &rows {
-        println!(
-            "  0x{addr:x}: cardId={:<20} +0x38={id_field}",
-            card_id.as_deref().unwrap_or("?")
+        eprintln!(
+            "  0x{addr:x}: cardId={:<20} +0x{:x}={id_field}",
+            card_id.as_deref().unwrap_or("?"),
+            mono_layout::ENTITY_ID
         );
     }
-    if let Some((addr, card_id, id_field)) = rows
-        .iter()
-        .find(|(_, c, _)| c.as_deref().map(|s| s.starts_with("HERO_09dbp")).unwrap_or(false))
-    {
-        println!(
-            "\n  !!! знайдено Lesser Heal (HERO_09dbp) на 0x{addr:x}: cardId={:?}, +0x38={id_field} \
-             -- у Power.log цей ентіті має id=57, player=2. Якщо {id_field}==57, +0x38 це EntityID; \
-             якщо {id_field}==2, це Controller (власник).",
-            card_id
-        );
-        inspect_entity_tag_pointers(remote, *addr, "Lesser Heal (HERO_09dbp, id=57, controller=2)");
-    } else {
-        println!("\n  (Lesser Heal серед знайдених 500 не трапився цього разу -- це не проблема, спробуйте ще раз під час гри, або назвіть мені яку карту зіграно щойно і її id з Power.log, шукатимемо саме її)");
+    const INTERESTING: &[&str] = &[
+        "EDR_654",
+        "CORE_ULD_723",
+        "JAIL_912",
+        "HERO_09dbp",
+        "HERO_11bpt",
+    ];
+    let mut inspected = 0usize;
+    for prefix in INTERESTING {
+        if let Some((addr, card_id, id_field)) = rows
+            .iter()
+            .find(|(_, c, _)| c.as_deref().map(|s| s.starts_with(prefix)).unwrap_or(false))
+        {
+            let cid = card_id.as_deref().unwrap_or(prefix);
+            eprintln!(
+                "\n  !!! {cid} @ 0x{addr:x}  EntityID(+0x{:x})={id_field}",
+                mono_layout::ENTITY_ID
+            );
+            inspect_entity_tag_pointers(remote, *addr, cid);
+            inspected += 1;
+            if inspected >= 3 {
+                break;
+            }
+        }
     }
+    if inspected == 0 {
+        if let Some((addr, card_id, id_field)) = rows
+            .iter()
+            .find(|(_, c, id)| c.as_ref().is_some() && (20..400).contains(id))
+        {
+            let cid = card_id.as_deref().unwrap_or("?");
+            eprintln!(
+                "\n  (жодної з відомих карток — беру першу з правдоподібним id: {cid} id={id_field} @ 0x{addr:x})"
+            );
+            inspect_entity_tag_pointers(remote, *addr, cid);
+        }
+    }
+    rows
 }
 
 /// Same idea as `dump_entity_table`, for `Player` -- `PLAYER_NAME` and
-/// `PLAYER_PLAYER_ID` are both confirmed live (see `mono_layout.rs`), but
-/// on only 2 samples so far (one game's two players), unlike `ENTITY_ID`'s
-/// exact single-value match. Worth another game's worth of confirmation
-/// before this is trusted as hard as the Entity table above.
-fn dump_player_table(remote: &Remote, hits: &[u64]) {
-    println!(
-        "\n--deep: таблиця Player (ім'я @ +0x{:x}, playerId @ +0x{:x}, підтверджено лише на 2 зразках) для всіх {} знайдених об'єктів",
+/// `PLAYER_PLAYER_ID` are both confirmed live now on 20+ objects (see
+/// `mono_layout.rs`).
+fn dump_player_table(remote: &Remote, hits: &[u64]) -> Vec<(u64, Option<String>, i32)> {
+    eprintln!(
+        "\n--deep: таблиця Player (ім'я @ +0x{:x}, playerId @ +0x{:x}, підтверджено live) для всіх {} знайдених об'єктів",
         mono_layout::PLAYER_NAME, mono_layout::PLAYER_PLAYER_ID, hits.len()
     );
     const WINDOW: usize = 0x200;
+    let mut rows: Vec<(u64, Option<String>, i32)> = Vec::new();
     for &addr in hits {
         let Some(bytes) = remote.read(addr, WINDOW) else { continue };
         let name_off = mono_layout::PLAYER_NAME as usize;
@@ -954,11 +1138,13 @@ fn dump_player_table(remote: &Remote, hits: &[u64]) {
         let name_ptr = u64::from_le_bytes(bytes[name_off..name_off + 8].try_into().unwrap());
         let name = try_mono_string(remote, name_ptr);
         let player_id = i32::from_le_bytes(bytes[id_off..id_off + 4].try_into().unwrap());
-        println!(
+        eprintln!(
             "  0x{addr:x}: ім'я={:<20} playerId={player_id}",
             name.as_deref().unwrap_or("?")
         );
+        rows.push((addr, name, player_id));
     }
+    rows
 }
 
 /// For one specific Entity, follow each of the 4 still-unidentified pointer
@@ -970,7 +1156,7 @@ fn dump_player_table(remote: &Remote, hits: &[u64]) {
 /// dictionary's bucket table", which is what `Entity`'s per-tag
 /// (`ZONE`/`CONTROLLER`/...) storage is expected to be shaped like.
 fn inspect_entity_tag_pointers(remote: &Remote, addr: u64, label: &str) {
-    println!("\n--deep: досліджую 4 невідомі вказівники {label} (0x{addr:x}) -- шукаю щось схоже на Dictionary<GameTag,int>");
+    eprintln!("\n--deep: 4 невідомі вказівники {label} (0x{addr:x})");
     let Some(obj) = remote.read(addr, mono_layout::ENTITY_INSTANCE_SIZE as usize) else {
         eprintln!("  не зміг прочитати сам об'єкт");
         return;
@@ -978,28 +1164,81 @@ fn inspect_entity_tag_pointers(remote: &Remote, addr: u64, label: &str) {
     for &off in &mono_layout::ENTITY_UNKNOWN_PTRS {
         let off = off as usize;
         let ptr = u64::from_le_bytes(obj[off..off + 8].try_into().unwrap());
+        let cname = class_name_of(remote, ptr).unwrap_or_else(|| "?".into());
+        let mark = if off as u64 == mono_layout::ENTITY_TAG_LIST {
+            "  (live tags)"
+        } else {
+            ""
+        };
+        eprintln!("  +0x{off:x}: 0x{ptr:x}  class={cname}{mark}");
         if !plausible_ptr(ptr) {
-            println!("  +0x{off:x}: 0x{ptr:x} -- не схоже на вказівник, пропускаю");
             continue;
         }
-        let Some(target) = remote.read(ptr, 0x90) else {
-            println!("  +0x{off:x}: 0x{ptr:x} -- не зміг прочитати ціль");
-            continue;
-        };
-        let ints: Vec<i32> = target
-            .chunks_exact(4)
-            .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
-            .collect();
-        let neg_one_count = ints.iter().filter(|&&v| v == -1).count();
-        let small_positive_count = ints.iter().filter(|&&v| (0..64).contains(&v)).count();
-        let dict_like = neg_one_count >= 2 && small_positive_count >= 4;
-        println!(
-            "  +0x{off:x}: 0x{ptr:x}{}",
-            if dict_like { "  <-- схоже на Dictionary.buckets (кілька -1 + малі числа)" } else { "" }
-        );
-        println!("    {}", hex(&target[..0x40]));
-        println!("    {}", hex(&target[0x40..0x80]));
+        dump_dotnet_list(remote, ptr);
     }
+}
+
+/// `List<T>`: `T[] _items` at +0x10, `int _size` at +0x18. `T[]` is a
+/// `MonoArray` (`max_length` at +0x18, vector at +0x20). For class `T`
+/// the vector is pointers; `Tag` is a class with two ints after the
+/// 16-byte object header (`Name` at +0x10, `Value` at +0x14).
+fn dump_dotnet_list(remote: &Remote, list: u64) {
+    let Some(hdr) = remote.read(list, 0x20) else { return };
+    let items = u64::from_le_bytes(hdr[0x10..0x18].try_into().unwrap());
+    let size = i32::from_le_bytes(hdr[0x18..0x1c].try_into().unwrap());
+    let items_name = class_name_of(remote, items).unwrap_or_else(|| "?".into());
+    eprintln!("    List._size={size}  _items=0x{items:x} class={items_name}");
+    if !(1..=256).contains(&size) || !plausible_ptr(items) {
+        return;
+    }
+    let Some(arr) = remote.read(items, 0x20) else { return };
+    let max_len = i32::from_le_bytes(arr[0x18..0x1c].try_into().unwrap());
+    eprintln!("    array.max_length={max_len}");
+    let n = size as usize;
+    let Some(vecb) = remote.read(items + 0x20, n * 8) else { return };
+    let mut printed = 0usize;
+    for i in 0..n {
+        let elem = u64::from_le_bytes(vecb[i * 8..i * 8 + 8].try_into().unwrap());
+        if !plausible_ptr(elem) {
+            continue;
+        }
+        let Some(tb) = remote.read(elem, 0x18) else { continue };
+        let name = i32::from_le_bytes(
+            tb[mono_layout::TAG_NAME as usize..mono_layout::TAG_NAME as usize + 4]
+                .try_into()
+                .unwrap(),
+        );
+        let value = i32::from_le_bytes(
+            tb[mono_layout::TAG_VALUE as usize..mono_layout::TAG_VALUE as usize + 4]
+                .try_into()
+                .unwrap(),
+        );
+        let known = game_tag_name(name);
+        if known.is_some() || printed < 8 {
+            eprintln!(
+                "      [{}] Tag name={name}{} value={value}",
+                i,
+                known.map(|s| format!(" ({s})")).unwrap_or_default()
+            );
+            printed += 1;
+        }
+    }
+}
+
+fn game_tag_name(k: i32) -> Option<&'static str> {
+    Some(match k {
+        45 => "HEALTH",
+        47 => "ATK",
+        48 => "COST",
+        49 => "ZONE",
+        50 => "CONTROLLER",
+        53 => "ENTITY_ID",
+        199 => "CLASS",
+        202 => "CARDTYPE",
+        263 => "ZONE_POSITION",
+        313 => "PREMIUM",
+        _ => return None,
+    })
 }
 
 fn read_cstring(remote: &Remote, addr: u64, max: usize) -> Option<String> {

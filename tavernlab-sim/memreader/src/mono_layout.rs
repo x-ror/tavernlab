@@ -129,7 +129,7 @@ pub const MONO_VTABLE_VTABLE_ARRAY: u64 = 0x48;
 // structs) -- found 2026-08-31 against a real, active ranked game by
 // cross-checking heap-scan hits against ground truth read straight from
 // that game's own `Power.log` (a plain file read, no relation to memory
-// reading). See `dump_entity_table`/`cross_check_known_values` in
+// reading). See `dump_entity_table` in
 // `main.rs`.
 
 /// `Entity` instances are exactly 64 (`0x40`) bytes each on this build --
@@ -148,27 +148,24 @@ pub const ENTITY_CARD_ID: u64 = 0x30;
 /// exact hero power as `id=57`. Not a coincidence at that specificity.
 pub const ENTITY_ID: u64 = 0x38;
 
-/// `Player.playerId` (the 1-indexed `PlayerID` `Power.log`'s `CREATE_GAME`
-/// reports, distinct from `EntityID`). **Confirmed live, fully**: first
-/// seen matching on that one game's two Player objects (`"xror"` -> `1`,
-/// `"WildKid"` -> `2`, exactly `Player EntityID=2 PlayerID=1` / `Player
-/// EntityID=3 PlayerID=2` from that game's `Power.log`), then re-confirmed
-/// without exception across 20+ live Player objects spanning many
-/// different past games -- the local player (`xror`) always reads `1`,
-/// every opponent always reads `2`. Trusted the same way `ENTITY_ID` is.
+/// `Player.playerId` (`CREATE_GAME` `PlayerID`, not EntityID). Confirmed
+/// live on 20+ objects: local `"xror"` is always 1, every opponent 2.
 pub const PLAYER_PLAYER_ID: u64 = 0x164;
 
 /// `Player.battleTag` (the short name before `#`, e.g. `"xror"`) -- a
 /// `System.String*`. **Confirmed live** the same way as the two above.
 pub const PLAYER_NAME: u64 = 0x120;
 
-/// Entity's remaining unidentified fields, `+0x10/+0x18/+0x20/+0x28` --
-/// four pointer-shaped values, not small ints, so `Zone`/`Controller`
-/// (both need to hold small ints like `PLAYER_ID`) aren't directly one of
-/// these the way `ENTITY_ID` was. Hearthstone's own tag model (every
-/// `TAG_CHANGE` line in `Power.log` is `<GameTag> = <value>`) suggests
-/// these fields hold something dictionary-shaped instead -- most likely a
-/// `Dictionary<int,int>` of every `GameTag` (`ZONE`, `CONTROLLER`, `COST`,
-/// ...) for this entity, reachable through one of these four pointers.
-/// Nothing here confirms which one yet.
+/// `Entity` field holding the live `List<Tag>` (`List`1` whose `_items`
+/// is `Tag[]`). **Confirmed live**: for `HERO_09dbp` the list contained
+/// `ENTITY_ID=57`, `CONTROLLER=2`, `ZONE=1` (PLAY); for `JAIL_912`,
+/// `ENTITY_ID=52`, `CONTROLLER=2`, `ZONE=1` — matching that game's
+/// Power.log. `+0x18` is another `List<Tag>` (empty on those samples);
+/// `+0x20`/`+0x28` are `List<TagList>` (also empty then).
+pub const ENTITY_TAG_LIST: u64 = 0x10;
 pub const ENTITY_UNKNOWN_PTRS: [u64; 4] = [0x10, 0x18, 0x20, 0x28];
+
+/// `Tag` instance: `GAME_TAG Name` then `int Value`, immediately after
+/// the 16-byte `MonoObject` header. Confirmed by the same lists.
+pub const TAG_NAME: u64 = 0x10;
+pub const TAG_VALUE: u64 = 0x14;

@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "memreader"
 version = "0.1.0"
+dependencies = [
+ "tavernlab-json",
+]
 
 [[package]]
 name = "tavernlab-core"

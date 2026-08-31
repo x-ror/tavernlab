@@ -10,3 +10,8 @@ edition = "2024"
 [[bin]]
 name = "memreader"
 path = "src/main.rs"
+
+[dependencies]
+# In-workspace only -- a dependency-free JSON writer (see json/src/lib.rs),
+# not a third-party crate, so this doesn't touch the zero-dependency rule.
+tavernlab-json = { workspace = true }
