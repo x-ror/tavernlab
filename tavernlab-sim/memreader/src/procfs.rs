@@ -29,12 +29,21 @@ pub struct MapEntry {
     pub end: u64,
     /// Offset into the backing file this mapping starts at.
     pub file_offset: u64,
+    /// `rwxp`/`rwxs` etc. as the kernel wrote it -- kept so a caller can
+    /// tell a writable heap-like region from a read-only mapped file
+    /// without re-parsing the line.
+    pub perms: String,
+    /// Empty for anonymous mappings (no backing file) -- exactly the
+    /// regions a GC'd heap lives in, so *not* skipped here the way an
+    /// earlier version of this reader did (it only ever needed named
+    /// modules).
     pub pathname: String,
 }
 
 /// Every mapped region, in the order the kernel lists them (ascending by
 /// address). A file backing several regions (one per PE section, typically)
-/// appears as several entries with the same `pathname`.
+/// appears as several entries with the same `pathname`; an anonymous
+/// region (heap, stack, `mmap(MAP_ANONYMOUS)`) appears with an empty one.
 pub fn read_maps(pid: u32) -> std::io::Result<Vec<MapEntry>> {
     let text = fs::read_to_string(format!("/proc/{pid}/maps"))?;
     let mut out = Vec::new();
@@ -49,16 +58,13 @@ pub fn read_maps(pid: u32) -> std::io::Result<Vec<MapEntry>> {
         ) else {
             continue;
         };
-        let _perms = parts.next();
+        let perms = parts.next().unwrap_or("").to_string();
         let Some(offset_s) = parts.next() else { continue };
         let Ok(file_offset) = u64::from_str_radix(offset_s, 16) else { continue };
         let _dev = parts.next();
         let _inode = parts.next();
         let pathname = parts.next().unwrap_or("").trim().to_string();
-        if pathname.is_empty() {
-            continue;
-        }
-        out.push(MapEntry { start, end, file_offset, pathname });
+        out.push(MapEntry { start, end, file_offset, perms, pathname });
     }
     Ok(out)
 }
