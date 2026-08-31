@@ -320,10 +320,17 @@ impl App {
 }
 
 /// The formats that have a card pool and a gauntlet.
+///
+/// "arena" resolves only while the corpus actually carries a season pool —
+/// without `data/arena_season.json` at generation time the bit is on no
+/// card, and a format whose pool is empty must not pretend to exist.
 pub fn format_by_name(name: &str) -> Option<(&'static str, Formats)> {
     match name {
         "standard" => Some(("standard", Formats::STANDARD)),
         "wild" => Some(("wild", Formats::WILD)),
+        "arena" if tavernlab_core::cards::arena_pool_present() => {
+            Some(("arena", Formats::ARENA))
+        }
         _ => None,
     }
 }
@@ -331,6 +338,8 @@ pub fn format_by_name(name: &str) -> Option<(&'static str, Formats)> {
 pub fn format_name(f: Formats) -> &'static str {
     if f.has(Formats::STANDARD) {
         "standard"
+    } else if f.has(Formats::ARENA) && !f.has(Formats::WILD) {
+        "arena"
     } else {
         "wild"
     }

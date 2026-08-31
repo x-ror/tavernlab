@@ -23,6 +23,7 @@
 //! and `/api/metrics` is a set of counters that never leave the machine.
 
 mod api;
+mod draft;
 pub mod http;
 mod jobs;
 mod live;
@@ -127,6 +128,8 @@ fn route(app: &Arc<App>, req: &Request) -> Response {
         ("POST", "/api/predict") => return api::predict(app, req),
         ("POST", "/api/meta") => return api::meta(app, req),
         ("POST", "/api/cardnames") => return api::cardnames(req),
+        ("POST", "/api/arena/draft") => return draft::draft(app, req),
+        ("POST", "/api/arena/pick") => return draft::pick(app, req),
         ("GET", "/api/live") => return api::live_read(app),
         ("POST", "/api/live") => return api::live_write(app, req),
         _ => {}

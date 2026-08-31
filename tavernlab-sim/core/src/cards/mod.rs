@@ -156,6 +156,15 @@ pub struct Formats(pub u8);
 impl Formats {
     pub const STANDARD: Formats = Formats(1);
     pub const WILD: Formats = Formats(2);
+    /// The current Arena season's pool. Resolved at generation time from
+    /// `data/arena_season.json` — a hand-entered set list plus exclusions,
+    /// updated on each rotation. When that file was absent at generation, no
+    /// card carries this bit; see [`arena_pool_present`].
+    pub const ARENA: Formats = Formats(4);
+    /// Every bit at once: no format restriction. What a [`Game`](crate::state::Game)
+    /// plays in when its decks say nothing — tests that hand cards in by name,
+    /// a live game restored without a deck code.
+    pub const ANY: Formats = Formats(1 | 2 | 4);
 
     #[inline]
     pub const fn has(self, f: Formats) -> bool {
@@ -561,6 +570,17 @@ pub fn all() -> impl Iterator<Item = CardId> {
 #[inline]
 pub fn from_the_past(d: &CardDef) -> bool {
     d.formats.has(Formats::WILD) && !d.formats.has(Formats::STANDARD)
+}
+
+/// Whether the corpus was generated with an Arena season pool at all.
+///
+/// A caller about to filter by [`Formats::ARENA`] must check this first: a
+/// corpus built without `data/arena_season.json` has the bit on no card, and
+/// the filter would return an empty pool that reads as "no legal cards"
+/// rather than "no season data".
+pub fn arena_pool_present() -> bool {
+    static PRESENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PRESENT.get_or_init(|| all().any(|c| c.def().formats.has(Formats::ARENA)))
 }
 
 pub fn discover_pool(pred: impl Fn(&CardDef) -> bool) -> Vec<CardId> {

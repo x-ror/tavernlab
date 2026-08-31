@@ -103,6 +103,29 @@ impl Game {
     ) -> Result<Game, &'static str> {
         let p0 = Player::new(deck0.0, hero_power_for(deck0.0)?, deck0.1);
         let p1 = Player::new(deck1.0, hero_power_for(deck1.0)?, deck1.1);
+        // The narrowest format both decks fit in: Standard first, then the
+        // Arena season pool, else Wild. Standard wins the tie on purpose --
+        // most games are constructed, and a constructed deck that happens to
+        // fit the season's sets must not quietly get Arena's Discover pool.
+        // The decks are the only witness `new` has; a caller that knows
+        // better (a live game whose deck the log could not restore)
+        // overwrites the field.
+        use crate::cards::Formats;
+        let format = if deck0.1.is_empty() && deck1.1.is_empty() {
+            Formats::ANY
+        } else {
+            let mut in_all = u8::MAX;
+            for c in deck0.1.iter().chain(deck1.1.iter()) {
+                in_all &= c.def().formats.0;
+            }
+            if in_all & Formats::STANDARD.0 != 0 {
+                Formats::STANDARD
+            } else if in_all & Formats::ARENA.0 != 0 {
+                Formats::ARENA
+            } else {
+                Formats::WILD
+            }
+        };
         Ok(Game {
             players: [p0, p1],
             current: Side::Player0,
@@ -115,6 +138,7 @@ impl Game {
             countered: false,
             conditional: 0,
             rewinding: false,
+            format,
         })
     }
 

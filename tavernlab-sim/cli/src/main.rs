@@ -118,6 +118,7 @@ fn main() {
         "coverage" => coverage(),
         "implemented" => list_implemented(match args.get(1).map(String::as_str) {
             Some("wild") => Formats::WILD,
+            Some("arena") => Formats::ARENA,
             _ => Formats::STANDARD,
         }),
         "gauntlet" => gauntlet(args.get(1).map(String::as_str)),
@@ -1035,7 +1036,13 @@ fn coverage() {
         }
     }
 
-    for (label, fmt) in [("Standard", Formats::STANDARD), ("Wild", Formats::WILD)] {
+    let mut rows = vec![("Standard", Formats::STANDARD), ("Wild", Formats::WILD)];
+    // Only while the corpus was generated with a season pool; an Arena row
+    // of 0/0 would read as a covered format, not an absent one.
+    if tavernlab_core::cards::arena_pool_present() {
+        rows.push(("Arena season", Formats::ARENA));
+    }
+    for (label, fmt) in rows {
         let deckable: Vec<_> = all()
             .filter(|c| {
                 let d = c.def();

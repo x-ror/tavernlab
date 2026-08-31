@@ -136,6 +136,9 @@ pub fn start(app: &Arc<App>) -> Result<PathBuf, String> {
     let deck = app.settings().get("deckstring").cloned().unwrap_or_default();
     let me = app.settings().get("battletag").cloned().unwrap_or_default();
     let me = (!me.is_empty()).then_some(me);
+    if let Err(e) = watch::ensure_file_size_limit(&dir) {
+        eprintln!("live: {e}");
+    }
 
     // Claimed before the thread exists, so that two starts a millisecond
     // apart cannot both find the watcher stopped.
@@ -184,10 +187,11 @@ fn run(
     recorded += write(app, format, deck, runner.take_finished());
     if runner.watching().is_some() {
         let advice = watch::build_advice(app, format, runner.tracker(), deck);
+        let capped = runner.log_capped();
         app.live.publish(|s| {
             s.advice = Some(advice);
             s.watching = path_of(runner.watching());
-            s.note = None;
+            s.note = capped_note(capped);
             s.recorded = recorded;
         });
     } else {
@@ -202,6 +206,7 @@ fn run(
         }
         let tick = runner.poll();
         recorded += write(app, format, deck, runner.take_finished());
+        let lost = matches!(&tick, Tick::Lost(_));
         let rebuild = match tick {
             Tick::Quiet | Tick::Waiting => false,
             Tick::Lost(why) => {
@@ -216,11 +221,14 @@ fn run(
         };
         if rebuild {
             let advice = watch::build_advice(app, format, runner.tracker(), deck);
+            let capped = runner.log_capped();
             app.live.publish(|s| {
                 s.advice = Some(advice);
                 s.watching = path_of(runner.watching());
-                s.note = None;
+                s.note = capped_note(capped);
             });
+        } else if runner.log_capped() && !lost {
+            app.live.publish(|s| s.note = capped_note(true));
         }
         app.live.publish(|s| s.recorded = recorded);
     }
@@ -238,6 +246,10 @@ fn run(
 
 fn path_of(p: Option<&Path>) -> Option<String> {
     p.map(|p| p.display().to_string())
+}
+
+fn capped_note(capped: bool) -> Option<Line> {
+    capped.then(|| Line::new("live.note.log_capped"))
 }
 
 /// Append finished games and count what was new. A history that cannot be

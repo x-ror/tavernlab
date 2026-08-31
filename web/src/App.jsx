@@ -7,6 +7,7 @@ import DeckLab from './routes/DeckLab'
 import History from './routes/History'
 import Live from './routes/Live'
 import Meta from './routes/Meta'
+import Arena from './routes/Arena'
 import Settings from './routes/Settings'
 
 /* Five sections, in the order a game goes through them.
@@ -17,7 +18,7 @@ import Settings from './routes/Settings'
  * are playing right now, and History is the games you have finished.
  * Keeping those apart from the rest is the point, because a measured win
  * rate and a played one must never be mistaken for each other. */
-const SECTIONS = ['deck', 'meta', 'live', 'history', 'settings']
+const SECTIONS = ['deck', 'meta', 'arena', 'live', 'history', 'settings']
 
 export default function App() {
   return (
@@ -93,6 +94,7 @@ function Shell() {
             <TabList>
               <Item key="deck">{t('ui.nav.deck')}</Item>
               <Item key="meta">{t('ui.nav.tiers')}</Item>
+              <Item key="arena">{t('ui.nav.arena')}</Item>
               <Item key="live">{t('ui.nav.live')}</Item>
               <Item key="history">{t('ui.nav.history')}</Item>
               <Item key="settings">{t('ui.nav.settings')}</Item>
@@ -104,6 +106,7 @@ function Shell() {
       <View paddingX="size-350" paddingY="size-400" maxWidth="1240px" marginX="auto">
         {section === 'deck' && <DeckLab tab={parts[1] || 'rating'} sub={parts[2]} />}
         {section === 'meta' && <Meta />}
+        {section === 'arena' && <Arena />}
         {section === 'live' && <Live />}
         {section === 'history' && <History />}
         {section === 'settings' && <Settings />}

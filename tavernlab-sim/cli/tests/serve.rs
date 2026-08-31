@@ -366,6 +366,113 @@ fn unknown_routes_and_methods_are_refused_rather_than_guessed() {
 /// which is exactly where a format bug would hide: the writer agreeing with
 /// itself proves nothing about the reader on the other side of a restart.
 #[test]
+fn the_arena_draft_endpoint_counts_and_gates() {
+    let server = Server::start();
+
+    // Counters: instant, no simulation, and the engine's own limits named.
+    let (status, body) = server.request(
+        "POST",
+        "/api/arena/draft",
+        Some(
+            r#"{"class":"MAGE","picked":["Chillwind Yeti","Fireball","Water Elemental"],
+               "candidates":["Flamestrike","Arcane Intellect"]}"#,
+        ),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"picked\":3"), "{body}");
+    // Yeti is the one 4-cost minion; Fireball is a damage spell.
+    assert!(body.contains("\"damage_spells\":1"), "{body}");
+    // Water Elemental is not implemented, and that is said, not hidden.
+    assert!(body.contains("Water Elemental"), "{body}");
+    assert!(body.contains("\"season_pool\":true"), "{body}");
+
+    // First pick of a known Legendary Group names the package, not just
+    // the legendary. A later pick of the same card must not invent it.
+    let (status, body) = server.request(
+        "POST",
+        "/api/arena/draft",
+        Some(
+            r#"{"class":"MAGE","picked":[],
+               "candidates":["Ragnaros, the Great Fire"]}"#,
+        ),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body.contains("Searing Fissure") && body.contains("\"group\""),
+        "the first pick expands the hand-entered group: {body}"
+    );
+    let (status, body) = server.request(
+        "POST",
+        "/api/arena/draft",
+        Some(
+            r#"{"class":"MAGE","picked":["Chillwind Yeti"],
+               "candidates":["Ragnaros, the Great Fire"]}"#,
+        ),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        !body.contains("Searing Fissure"),
+        "later in the draft the legendary is a card, not a package: {body}"
+    );
+
+    // A full list gets five cut suggestions (curve, not a simulation).
+    let thirty: Vec<&str> = std::iter::repeat("Chillwind Yeti").take(25)
+        .chain(std::iter::repeat("Pyroblast").take(5))
+        .collect();
+    let payload = format!(
+        r#"{{"class":"MAGE","picked":[{}],"candidates":[]}}"#,
+        thirty.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(",")
+    );
+    let (status, body) = server.request("POST", "/api/arena/draft", Some(&payload));
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body.contains("\"cuts\"") && body.contains("Pyroblast"),
+        "the expensive cards are the ones the curve would rather cut: {body}"
+    );
+
+    // A name that means nothing stops the request rather than counting 0.
+    let (status, body) = server.request(
+        "POST",
+        "/api/arena/draft",
+        Some(r#"{"class":"MAGE","picked":["No Such Card At All"],"candidates":[]}"#),
+    );
+    assert_eq!(status, 400, "{body}");
+    assert!(body.contains("No Such Card At All"), "{body}");
+
+    // The measured comparison runs as a job and refuses an unimplemented
+    // candidate: no comparison rather than a wrong one.
+    let (status, body) = server.request(
+        "POST",
+        "/api/arena/pick",
+        Some(
+            r#"{"class":"MAGE","picked":["Chillwind Yeti"],
+               "candidates":["Fireball","Water Elemental"],"games":10}"#,
+        ),
+    );
+    assert_eq!(status, 200, "{body}");
+    let job = body
+        .split("\"job\":")
+        .nth(1)
+        .and_then(|s| s.split('"').nth(1))
+        .expect("a job id")
+        .to_string();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut last = String::new();
+    while Instant::now() < deadline {
+        let (_, j) = server.request("GET", &format!("/api/job/{job}"), None);
+        last = j;
+        if !last.contains("\"status\":\"running\"") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        last.contains("Water Elemental") && last.contains("\"status\":\"error\""),
+        "the job names the card it cannot compare: {last}"
+    );
+}
+
+#[test]
 fn the_history_written_by_watch_is_served_to_the_ui() {
     const LOG: &str = "\
 D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME

@@ -69,6 +69,93 @@ pub fn resolve_logs_dir(dir: PathBuf) -> PathBuf {
     }
 }
 
+/// Where `log.config` sits for this logs directory: the install root, not
+/// the session folder. `None` when this is just a path to a file, which is
+/// how `--log` and the tests point at a fixture.
+fn install_root(logs_dir: &Path) -> Option<&Path> {
+    if logs_dir.join("log.config").is_file() {
+        return Some(logs_dir);
+    }
+    let parent = logs_dir.parent()?;
+    parent.join("log.config").is_file().then_some(parent)
+}
+
+/// Raise the client's per-file log cap, which otherwise silently kills
+/// history after a handful of games.
+///
+/// `Power.log` writes `Truncating log, which has reached the size limit of
+/// 10000KB` and then stops. Games after that line are not in any file this
+/// can read. `FileSizeLimit.Int=-1` in `client.config` next to `log.config`
+/// is the same switch Firestone writes; `-1` means no cap. The client reads
+/// it at launch, so a session already running stays capped until restart.
+///
+/// `true` when the file was created or the key was changed. `false` when
+/// the limit was already off, or this directory has no `log.config` to sit
+/// beside. An I/O error is the only `Err`.
+pub fn ensure_file_size_limit(logs_dir: &Path) -> Result<bool, String> {
+    let Some(root) = install_root(logs_dir) else {
+        return Ok(false);
+    };
+    let path = root.join("client.config");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    if log_limit_is_unlimited(&existing) {
+        return Ok(false);
+    }
+    let next = upsert_log_limit(&existing);
+    std::fs::write(&path, next).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(true)
+}
+
+fn log_limit_is_unlimited(text: &str) -> bool {
+    text.lines().any(|line| {
+        let t = line.trim();
+        t.starts_with("FileSizeLimit.Int")
+            && t.rsplit('=')
+                .next()
+                .is_some_and(|v| v.trim() == "-1")
+    })
+}
+
+fn upsert_log_limit(text: &str) -> String {
+    if text.is_empty() {
+        return "[Log]\nFileSizeLimit.Int=-1\n".into();
+    }
+    let mut out = String::new();
+    let mut in_log = false;
+    let mut replaced = false;
+    let mut saw_log = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') && t.ends_with(']') {
+            if in_log && !replaced {
+                out.push_str("FileSizeLimit.Int=-1\n");
+                replaced = true;
+            }
+            in_log = t.eq_ignore_ascii_case("[Log]");
+            if in_log {
+                saw_log = true;
+            }
+        } else if in_log && t.starts_with("FileSizeLimit.Int") {
+            out.push_str("FileSizeLimit.Int=-1\n");
+            replaced = true;
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !replaced {
+        if in_log {
+            out.push_str("FileSizeLimit.Int=-1\n");
+        } else if !saw_log {
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str("\n[Log]\nFileSizeLimit.Int=-1\n");
+        }
+    }
+    out
+}
+
 /// Real verbose logging runs to hundreds of kilobytes per game. A tiny
 /// Power.log is the error line the client writes even with logging off, and
 /// picking it would leave the watcher silently waiting on a dead file.
@@ -137,6 +224,8 @@ pub struct Batch {
     /// the file from the start -- which is how a log the watcher has never
     /// seen becomes history rather than being skipped.
     pub finished: Vec<(i64, Tracker)>,
+    /// The client wrote the 10 MB cap banner in this batch and stopped.
+    pub capped: bool,
 }
 
 /// When a line was written, in Unix seconds.
@@ -205,15 +294,24 @@ fn replay(tr: &mut Tracker, files: &[PathBuf], offsets: &mut Vec<u64>) -> std::i
     let mtime = newest_mtime(files);
 
     let mut finished = Vec::new();
+    let mut capped = false;
     for ((stamp, _, _), line) in &batch {
         let Some(ev) = log::parse(line) else { continue };
+        if matches!(ev, log::Event::LogCapped) {
+            capped = true;
+            continue;
+        }
         let was_over = tr.over;
         tr.feed(ev);
         if tr.over && !was_over {
             finished.push((stamp_to_unix(*stamp, newest, mtime), tr.clone()));
         }
     }
-    Ok(Batch { lines, finished })
+    Ok(Batch {
+        lines,
+        finished,
+        capped,
+    })
 }
 
 // ------------------------------------------------------------------ advice
@@ -459,7 +557,7 @@ pub(crate) fn position(tr: &Tracker, deck: &str) -> Result<(Game, bool), Line> {
     Ok((g, deck_known))
 }
 
-fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
+fn plan(format: &str, tr: &Tracker, deck: &str) -> Vec<Line> {
     let mut caveats = Vec::new();
     if tr.whose_turn().is_none() {
         caveats.push(Line::new("live.plan.whose_turn_unknown"));
@@ -467,6 +565,23 @@ fn plan(tr: &Tracker, deck: &str) -> Vec<Line> {
     let (mut g, deck_known) = match position(tr, deck) {
         Ok(pair) => pair,
         Err(why) => return vec![why],
+    };
+    // A position rebuilt from the log has no full decks, so `Game::new`
+    // could not infer a format and the Discover pools would span every
+    // format at once. The session knows what it is playing; say so. An
+    // Arena game gets the season pool when the corpus carries one, else
+    // the whole corpus — too wide is honest, wrongly narrow is not.
+    g.format = if tr.is_arena() {
+        if tavernlab_core::cards::arena_pool_present() {
+            tavernlab_core::cards::Formats::ARENA
+        } else {
+            tavernlab_core::cards::Formats::ANY
+        }
+    } else {
+        match format {
+            "wild" => tavernlab_core::cards::Formats::WILD,
+            _ => tavernlab_core::cards::Formats::STANDARD,
+        }
     };
 
     // The search, not the greedy policy: live advice is one decision at a
@@ -614,6 +729,12 @@ fn target_name(g: &Game, t: tavernlab_core::state::Target) -> Line {
 
 /// Which gauntlet deck the opponent looks like, from what they have played.
 fn opponent_read(app: &App, format: &str, tr: &Tracker) -> Vec<Line> {
+    // An Arena opponent drafted their deck; matching their cards against the
+    // constructed gauntlet would print "Quest Mage 43%" about a deck that
+    // does not exist. Until an Arena field is built, the honest read is none.
+    if tr.is_arena() {
+        return vec![Line::new("live.opp.arena")];
+    }
     let Some(class) = tr.opponent_class() else {
         return vec![Line::new("live.opp.no_class")];
     };
@@ -677,6 +798,16 @@ fn opponent_read(app: &App, format: &str, tr: &Tracker) -> Vec<Line> {
 fn mulligan(app: &App, format: &str, tr: &Tracker, deck: &str) -> Vec<Line> {
     if tr.opening.is_empty() {
         return vec![Line::new("live.mull.not_dealt")];
+    }
+    // An Arena game is measured against the generated Arena field, never
+    // the constructed gauntlet. With no deck list, or no field at all (a
+    // corpus built without a season pool), the curve of the hand is what
+    // remains.
+    let format = if tr.is_arena() { "arena" } else { format };
+    if tr.is_arena() && (deck.is_empty() || app.gauntlet("arena").is_empty()) {
+        let mut out = vec![Line::new("live.mull.arena")];
+        out.extend(tr.opening.iter().map(|c| by_curve(*c)));
+        return out;
     }
     if deck.is_empty() {
         let mut out = vec![Line::new("live.mull.no_deck")];
@@ -805,7 +936,7 @@ pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice
         // rather than advice -- unlike mid-game, where not knowing whose
         // turn it is still leaves a plan worth showing.
         if mine == Some(true) && !tr.over {
-            sections.push(section("live.head.turn", plan(tr, deck)));
+            sections.push(section("live.head.turn", plan(format, tr, deck)));
         }
         return Advice { title, sections };
     }
@@ -818,7 +949,7 @@ pub fn build_advice(app: &App, format: &str, tr: &Tracker, deck: &str) -> Advice
     // still what you would do on your turn -- so it is shown, and says that
     // it could not tell.
     if mine != Some(false) && !tr.over {
-        sections.push(section("live.head.turn", plan(tr, deck)));
+        sections.push(section("live.head.turn", plan(format, tr, deck)));
     }
     sections.push(section("live.head.opponent", opponent_read(app, format, tr)));
 
@@ -1062,6 +1193,9 @@ fn follow(app: &App, format: &str, args: &Args, files: Vec<PathBuf>, once: bool)
     // the same work the watcher would do a game at a time; doing it once at
     // the start is what makes pointing this at an old session an import.
     record(app, format, args, first.finished);
+    if first.capped {
+        warn_capped(app);
+    }
     if !args.quiet {
         report(app, format, &tr, &args.deck);
     }
@@ -1082,6 +1216,9 @@ fn follow(app: &App, format: &str, args: &Args, files: Vec<PathBuf>, once: bool)
             }
         };
         record(app, format, args, batch.finished);
+        if batch.capped {
+            warn_capped(app);
+        }
         if args.quiet {
             continue;
         }
@@ -1124,6 +1261,8 @@ pub struct Runner {
     last: (u16, bool, usize, usize),
     /// Games that have ended since the caller last took them.
     finished: Vec<(i64, Tracker)>,
+    /// The file currently being followed wrote the client's size-cap banner.
+    capped: bool,
 }
 
 /// What one poll of the log directory produced.
@@ -1153,7 +1292,13 @@ impl Runner {
             me,
             last: (0, false, 0, 0),
             finished: Vec::new(),
+            capped: false,
         }
+    }
+
+    /// Whether the log being followed has hit the client's size cap.
+    pub fn log_capped(&self) -> bool {
+        self.capped
     }
 
     /// The position as far as the log states it.
@@ -1183,7 +1328,12 @@ impl Runner {
             self.tr = Tracker::new(self.me.clone());
             self.offsets.clear();
             match replay(&mut self.tr, &next, &mut self.offsets) {
-                Ok(batch) => self.finished.extend(batch.finished),
+                Ok(batch) => {
+                    self.finished.extend(batch.finished);
+                    // The newest session is last; its cap is the one that
+                    // matters for the file still being followed.
+                    self.capped = batch.capped;
+                }
                 Err(e) => {
                     errors.push(format!("{}: {e}", next[0].display()));
                     continue;
@@ -1202,6 +1352,7 @@ impl Runner {
                 return Tick::Waiting;
             }
             self.files.clear();
+            self.capped = false;
             return Tick::Lost(
                 Line::new("live.note.gone_dir").with("dir", self.dir.display().to_string()),
             );
@@ -1218,6 +1369,7 @@ impl Runner {
             Err(e) => return Tick::Lost(Line::new("live.note.gone").with("why", e.to_string())),
         };
         self.finished.extend(batch.finished);
+        self.capped |= batch.capped;
         let now = snapshot(&self.tr);
         let changed = now != self.last;
         self.last = now;
@@ -1233,12 +1385,17 @@ impl Runner {
             // next launch lands inside the same poll they are still unread,
             // which would drop the game that ended the old session.
             self.finished.extend(tail.finished);
+            self.capped |= tail.capped;
         }
         self.tr = Tracker::new(self.me.clone());
         self.offsets.clear();
         self.files = next;
+        self.capped = false;
         match replay(&mut self.tr, &self.files, &mut self.offsets) {
-            Ok(batch) => self.finished.extend(batch.finished),
+            Ok(batch) => {
+                self.finished.extend(batch.finished);
+                self.capped = batch.capped;
+            }
             Err(e) => {
                 let path = self.files[0].display().to_string();
                 self.files.clear();
@@ -1260,12 +1417,20 @@ pub const POLL: std::time::Duration = std::time::Duration::from_millis(700);
 /// The terminal front end of [`Runner`].
 fn live(app: &App, format: &str, args: &Args, dir: &Path) -> i32 {
     let words = Locale::load(&app.root, &app.language());
+    if let Err(e) = ensure_file_size_limit(dir) {
+        eprintln!("{e}");
+    }
     let mut runner = Runner::new(dir.to_path_buf(), args.me.clone());
     for e in runner.catch_up() {
         eprintln!("{e}");
     }
     let mut watching = false;
+    let mut saw_cap = false;
     record(app, format, args, runner.take_finished());
+    if runner.log_capped() {
+        warn_capped(app);
+        saw_cap = true;
+    }
     if runner.watching().is_none() {
         eprintln!(
             "чекаю на лог у {}. Увімкніть логування в log.config і запустіть клієнт.",
@@ -1283,6 +1448,13 @@ fn live(app: &App, format: &str, args: &Args, dir: &Path) -> i32 {
         std::thread::sleep(POLL);
         let tick = runner.poll();
         record(app, format, args, runner.take_finished());
+        if runner.log_capped() && !saw_cap {
+            warn_capped(app);
+            saw_cap = true;
+        }
+        if !runner.log_capped() {
+            saw_cap = false;
+        }
         match tick {
             Tick::Quiet => continue,
             Tick::Waiting => continue,
@@ -1327,12 +1499,18 @@ fn recorded(app: &App, format: &str, deck: &str, at: i64, tr: &Tracker) -> Optio
     // Empty when nothing matched: a deck name with no evidence is exactly
     // what the report refuses to print, and the history keeps the same rule.
     let seen: Vec<CardId> = tr.played[1].clone();
-    let best = tr.opponent_class().and_then(|class| {
-        let field = app.gauntlet(format);
-        tavernlab_core::gauntlet::read_opponent(&field, class, &seen)
-            .into_iter()
-            .find(|r| r.hits > 0)
-    });
+    // A drafted opponent matches no constructed gauntlet deck; a name with
+    // no deck behind it must not end up in the history either.
+    let best = if tr.is_arena() {
+        None
+    } else {
+        tr.opponent_class().and_then(|class| {
+            let field = app.gauntlet(format);
+            tavernlab_core::gauntlet::read_opponent(&field, class, &seen)
+                .into_iter()
+                .find(|r| r.hits > 0)
+        })
+    };
     Some(history::Game {
         played_at: at,
         my_class: mine.to_string(),
@@ -1346,6 +1524,8 @@ fn recorded(app: &App, format: &str, deck: &str, at: i64, tr: &Tracker) -> Optio
         opponent_seen: seen.len() as i64,
         opening: tr.opening.iter().map(|c| c.name().to_string()).collect(),
         opponent_cards: seen.iter().map(|c| c.name().to_string()).collect(),
+        game_type: tr.game_type.clone().unwrap_or_default(),
+        format_type: tr.format_type.clone().unwrap_or_default(),
     })
 }
 
@@ -1354,6 +1534,11 @@ fn recorded(app: &App, format: &str, deck: &str, at: i64, tr: &Tracker) -> Optio
 /// Failing to write is reported and not fatal. The watcher's job is the advice
 /// on screen; a read-only data directory should cost you the record, not the
 /// session.
+fn warn_capped(app: &App) {
+    let words = Locale::load(&app.root, &app.language());
+    eprintln!("{}", words.line(&Line::new("live.note.log_capped")));
+}
+
 fn record(app: &App, format: &str, args: &Args, finished: Vec<(i64, Tracker)>) {
     let path = match &args.history {
         // `--no-history` passes an empty path: play without keeping a record.
@@ -1617,5 +1802,76 @@ mod session_tests {
             newest_logs(&resolve_logs_dir(logs.clone())).expect("already the Logs dir");
         assert_eq!(power, again);
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_file_becomes_the_log_section() {
+        assert_eq!(upsert_log_limit(""), "[Log]\nFileSizeLimit.Int=-1\n");
+    }
+
+    #[test]
+    fn an_existing_section_keeps_its_other_keys() {
+        let src = "[Aurora]\nClientCheck=false\n\n[Log]\nFilePrinting=true\n";
+        let out = upsert_log_limit(src);
+        assert!(out.contains("ClientCheck=false"), "{out}");
+        assert!(out.contains("FilePrinting=true"), "{out}");
+        assert!(out.contains("FileSizeLimit.Int=-1"), "{out}");
+        assert!(log_limit_is_unlimited(&out));
+    }
+
+    #[test]
+    fn a_default_cap_is_replaced() {
+        let src = "[Log]\nFileSizeLimit.Int=10000\n";
+        assert!(!log_limit_is_unlimited(src));
+        assert_eq!(upsert_log_limit(src), "[Log]\nFileSizeLimit.Int=-1\n");
+    }
+
+    #[test]
+    fn already_unlimited_is_left_alone() {
+        assert!(log_limit_is_unlimited("[Log]\nFileSizeLimit.Int=-1\n"));
+    }
+
+    #[test]
+    fn writing_sits_beside_log_config() {
+        let dir = std::env::temp_dir().join(format!(
+            "tavernlab-limit-{}",
+            std::process::id()
+        ));
+        let logs = dir.join("Logs");
+        std::fs::create_dir_all(&logs).expect("install");
+        std::fs::write(dir.join("log.config"), "[Power]\nFilePrinting=true\n").expect("log.config");
+        let _ = std::fs::remove_file(dir.join("client.config"));
+        assert!(
+            ensure_file_size_limit(&logs).expect("write"),
+            "first call creates client.config"
+        );
+        let cfg = std::fs::read_to_string(dir.join("client.config")).expect("read");
+        assert!(cfg.contains("FileSizeLimit.Int=-1"), "{cfg}");
+        assert!(
+            !ensure_file_size_limit(&logs).expect("again"),
+            "second call is a no-op"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_without_log_config_is_not_an_install() {
+        let dir = std::env::temp_dir().join(format!(
+            "tavernlab-nolimit-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let _ = std::fs::remove_file(dir.join("client.config"));
+        assert!(!ensure_file_size_limit(&dir).expect("skip"));
+        assert!(
+            !dir.join("client.config").exists(),
+            "must not invent a client.config away from log.config"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

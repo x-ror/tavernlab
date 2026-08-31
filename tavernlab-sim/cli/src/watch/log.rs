@@ -20,6 +20,18 @@ pub enum Event {
     /// the later `CURRENT_PLAYER Entity=2` lines name, mapped onto the
     /// `player=N` the zone lines use.
     PlayerSlot { entity: u32, player: u8 },
+    /// `GameType=GT_RANKED` from the `DebugPrintGame()` dump that follows
+    /// CREATE_GAME: which queue this game came from. Carried verbatim -- the
+    /// Underground Arena's exact string has not been read off a real run yet,
+    /// and a value munged into an enum today would misfile it tomorrow.
+    GameType(String),
+    /// `FormatType=FT_STANDARD` from the same dump.
+    FormatType(String),
+    /// `PlayerID=2, PlayerName=xror#21652` from the same dump: the log's own
+    /// binding of a battletag onto a player number, written at game start.
+    /// The other player usually prints as `UNKNOWN HUMAN PLAYER` and is
+    /// dropped in `parse`.
+    PlayerName { name: String, player: u8 },
     /// A card entered or left a zone, from the point of view of the player
     /// whose client wrote the log.
     Zone(ZoneMove),
@@ -62,6 +74,10 @@ pub enum Event {
         player: Option<u8>,
         won: bool,
     },
+    /// The client stopped writing this file: `Truncating log, which has
+    /// reached the size limit of 10000KB`. Everything after that line was
+    /// never written, so it cannot become history.
+    LogCapped,
     /// Mulligan is over: `STEP=MAIN_READY`. Turn 1 is set at `CREATE_GAME`,
     /// so a turn counter is not this.
     Started,
@@ -217,6 +233,13 @@ fn tag_change(line: &str) -> Option<(&str, &str, &str)> {
 /// Read one line. `None` for the great majority of them, which say nothing
 /// this needs.
 pub fn parse(line: &str) -> Option<Event> {
+    // The client writes this banner and then stops. It is not a game event;
+    // it is why a session that is still being played has nothing new in the
+    // log. Recognised before anything else so a line that also happens to
+    // mention CREATE_GAME cannot hide it.
+    if line.contains("Truncating log, which has reached the size limit") {
+        return Some(Event::LogCapped);
+    }
     // PowerTaskList is GameState played back a moment later. Taking both
     // would CREATE_GAME twice (wiping the opening the first pass just
     // built) and PLAYSTATE twice (two history rows one second apart).
@@ -237,6 +260,36 @@ pub fn parse(line: &str) -> Option<Event> {
             .ok()?;
         let player: u8 = field(line, "PlayerID=")?.parse().ok()?;
         return Some(Event::PlayerSlot { entity, player });
+    }
+    // The `DebugPrintGame()` dump that follows the CREATE_GAME block:
+    // BuildNumber, GameType, FormatType, ScenarioID, and the log's own
+    // battletag-to-player binding. What it states outright is read here
+    // rather than reconstructed later from turn boundaries.
+    if line.contains("DebugPrintGame()") {
+        if let Some(rest) = line.split("GameType=").nth(1) {
+            return Some(Event::GameType(rest.trim().to_string()));
+        }
+        if let Some(rest) = line.split("FormatType=").nth(1) {
+            return Some(Event::FormatType(rest.trim().to_string()));
+        }
+        if let Some(rest) = line.split("PlayerID=").nth(1) {
+            let player: u8 = rest
+                .split(|c: char| !c.is_ascii_digit())
+                .next()?
+                .parse()
+                .ok()?;
+            let name = rest.split("PlayerName=").nth(1)?.trim();
+            // The other player's slot usually prints as `UNKNOWN HUMAN
+            // PLAYER`; a placeholder must not become someone's battletag.
+            if name.is_empty() || name == "UNKNOWN HUMAN PLAYER" {
+                return None;
+            }
+            return Some(Event::PlayerName {
+                name: name.to_string(),
+                player,
+            });
+        }
+        return None;
     }
 
     // A zone move, from Zone.log. The richest line in either file: it names
@@ -473,6 +526,58 @@ mod tests {
                 entity: Some(2),
                 current: true
             })
+        );
+    }
+
+    #[test]
+    fn the_debug_print_game_dump_is_read() {
+        assert_eq!(
+            parse("D 01:38:49.8 GameState.DebugPrintGame() - GameType=GT_ARENA"),
+            Some(Event::GameType("GT_ARENA".into()))
+        );
+        assert_eq!(
+            parse("D 01:38:49.8 GameState.DebugPrintGame() - FormatType=FT_WILD"),
+            Some(Event::FormatType("FT_WILD".into()))
+        );
+        assert_eq!(
+            parse("D 01:38:49.8 GameState.DebugPrintGame() - PlayerID=2, PlayerName=xror#21652"),
+            Some(Event::PlayerName {
+                name: "xror#21652".into(),
+                player: 2
+            })
+        );
+        // The other slot's placeholder is not a battletag.
+        assert_eq!(
+            parse(
+                "D 01:38:49.8 GameState.DebugPrintGame() - \
+                 PlayerID=1, PlayerName=UNKNOWN HUMAN PLAYER"
+            ),
+            None
+        );
+        // Lines of the dump this does not need say nothing.
+        assert_eq!(
+            parse("D 01:38:49.8 GameState.DebugPrintGame() - BuildNumber=250339"),
+            None
+        );
+        assert_eq!(
+            parse("D 01:38:49.8 GameState.DebugPrintGame() - ScenarioID=2"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_truncated_log_is_recognised() {
+        // The exact banner the client writes, from a real 10 MB Power.log.
+        assert_eq!(
+            parse("Truncating log, which has reached the size limit of 10000KB"),
+            Some(Event::LogCapped)
+        );
+        assert_eq!(
+            parse(
+                "==================================================================\n\
+                 Truncating log, which has reached the size limit of 10000KB"
+            ),
+            Some(Event::LogCapped)
         );
     }
 

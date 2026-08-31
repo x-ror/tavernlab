@@ -17,7 +17,7 @@
 //! would be two lists that must agree forever; generating both from one list
 //! means they cannot drift.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -265,6 +265,13 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Some("arena-gauntlet") => match wild::generate_arena(&repo_root()) {
+            Ok(msg) => println!("{msg}"),
+            Err(e) => {
+                eprintln!("xtask arena-gauntlet: {e}");
+                std::process::exit(1);
+            }
+        },
         Some("backfill") => {
             let Some(dump) = args.next() else {
                 eprintln!("usage: cargo run -p xtask -- backfill <dump.json>");
@@ -295,7 +302,7 @@ fn main() {
         }
         other => {
             eprintln!(
-                "usage: cargo run -p xtask -- [cards|wild-gauntlet|backfill <dump>|runes <dump>]"
+                "usage: cargo run -p xtask -- [cards|wild-gauntlet|arena-gauntlet|backfill <dump>|runes <dump>]"
             );
             if let Some(o) = other {
                 eprintln!("unknown command: {o}");
@@ -327,6 +334,46 @@ fn read_rune_costs(path: &Path) -> Result<BTreeMap<u32, u8>, String> {
         return Err(format!("{} names no rune costs", path.display()));
     }
     Ok(out)
+}
+
+/// The Arena season pool: set codes plus per-card exclusions, entered by
+/// hand on each rotation (`data/arena_season.json`; the posture is
+/// docs/ARENA_RESEARCH.md §8 — set lists yes, scraped winrates never).
+///
+/// An absent file is not an error: the corpus then carries no ARENA bit and
+/// everything downstream says "no season pool" instead of guessing one.
+/// A file that is present but names no sets, or names a set code the corpus
+/// has never heard of, is a typo and stops the generation.
+fn read_arena_season(path: &Path) -> Result<Option<(Vec<String>, BTreeSet<String>)>, String> {
+    let src = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let doc = Json::parse(&src).map_err(|e| format!("{}: {e}", path.display()))?;
+    let sets: Vec<String> = doc
+        .arr_or_empty("sets")
+        .iter()
+        .filter_map(|s| s.as_str().map(str::to_string))
+        .collect();
+    if sets.is_empty() {
+        return Err(format!("{} names no sets", path.display()));
+    }
+    for s in &sets {
+        if !sets::WILD.contains(&s.as_str()) && !sets::STANDARD.contains(&s.as_str()) {
+            return Err(format!(
+                "{}: set code {s} is in no format's list — a typo, or a set \
+                 xtask/src/sets.rs has not learned yet",
+                path.display()
+            ));
+        }
+    }
+    let excluded: BTreeSet<String> = doc
+        .arr_or_empty("excluded")
+        .iter()
+        .filter_map(|s| s.as_str().map(str::to_string))
+        .collect();
+    Ok(Some((sets, excluded)))
 }
 
 fn repo_root() -> PathBuf {
@@ -396,6 +443,10 @@ fn generate_cards() -> Result<String, String> {
     // rune data, which generates a table where every card asks for none: that
     // is wrong quietly, so it is an error rather than a default.
     let rune_costs = read_rune_costs(&root.join("data/runes.json"))?;
+
+    // The Arena season pool, resolved to a third format bit the same way
+    // Standard and Wild are: at generation time, never on a hot path.
+    let arena = read_arena_season(&root.join("data/arena_season.json"))?;
 
     let mut unknown_mech: BTreeMap<String, usize> = BTreeMap::new();
     let mut unknown_race: BTreeMap<String, usize> = BTreeMap::new();
@@ -473,6 +524,12 @@ fn generate_cards() -> Result<String, String> {
         }
         if sets::WILD.contains(&set.as_str()) {
             formats |= 2;
+        }
+        if let Some((arena_sets, excluded)) = &arena
+            && arena_sets.iter().any(|s| s == &set)
+            && !excluded.contains(id)
+        {
+            formats |= 4;
         }
 
         cards.push(Card {
@@ -590,6 +647,7 @@ fn generate_cards() -> Result<String, String> {
 
     let standard = cards.iter().filter(|c| c.formats & 1 != 0).count();
     let wild = cards.iter().filter(|c| c.formats & 2 != 0).count();
+    let arena_legal = cards.iter().filter(|c| c.formats & 4 != 0).count();
     let nodefs = raw.values().filter(|e| e.bool_or_false("nodefs")).count();
     let mut note = String::new();
     if nodefs > 0 {
@@ -606,12 +664,18 @@ fn generate_cards() -> Result<String, String> {
              (enchantments, and cards no format keeps) and were dropped"
         );
     }
+    if arena.is_none() {
+        note.push_str(
+            "\n  no data/arena_season.json: the corpus carries no Arena pool",
+        );
+    }
     Ok(format!(
-        "wrote {} ({} cards, {} Standard-legal, {} Wild-legal, {} KB of source){note}",
+        "wrote {} ({} cards, {} Standard-legal, {} Wild-legal, {} Arena season, {} KB of source){note}",
         dest.display(),
         cards.len(),
         standard,
         wild,
+        arena_legal,
         out.len() / 1024
     ))
 }

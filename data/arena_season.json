@@ -1,0 +1,16 @@
+{
+ "season": "unknown (48?)",
+ "since": "2026-08-31",
+ "source": "Set list inferred from a REAL draft offer on 2026-08-31 (Deathwing Worldbreaker/CATACLYSM, Ragnaros the Great Fire/CATACLYSM, The Egg of Khelos/THE_LOST_CITY — none of them in the wiki season-47 list, so the season has rotated). Working hypothesis: the current Standard sets. Refine as more offers are seen; never winrates (U24/U28).",
+ "sets": [
+  "CORE",
+  "EMERALD_DREAM",
+  "THE_LOST_CITY",
+  "TIME_TRAVEL",
+  "CATACLYSM",
+  "ESCAPEFROM_VIOLET_HOLD",
+  "EVENT",
+  "PATH_OF_ARTHAS"
+ ],
+ "excluded": []
+}

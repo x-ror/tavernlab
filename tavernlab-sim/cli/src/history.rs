@@ -36,7 +36,9 @@ opponent_deck TEXT, \
 opponent_hits INTEGER, \
 opponent_seen INTEGER, \
 opening TEXT, \
-opponent_cards TEXT)";
+opponent_cards TEXT, \
+game_type TEXT, \
+format_type TEXT)";
 
 /// One recorded game.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -65,6 +67,13 @@ pub struct Game {
     /// a schema to migrate for no query anyone makes.
     pub opening: Vec<String>,
     pub opponent_cards: Vec<String>,
+    /// `GameType=` as the log wrote it (`GT_RANKED`, `GT_ARENA`, ...). Kept
+    /// verbatim so an Arena run is separable from ranked, and so a game type
+    /// nobody has catalogued yet is stored rather than rounded to a known
+    /// one. Empty when a log predating this column said nothing.
+    pub game_type: String,
+    /// `FormatType=` as the log wrote it (`FT_STANDARD`, `FT_WILD`, ...).
+    pub format_type: String,
 }
 
 impl Game {
@@ -83,6 +92,8 @@ impl Game {
             Value::Int(self.opponent_seen),
             Value::Text(self.opening.join(";")),
             Value::Text(self.opponent_cards.join(";")),
+            Value::Text(self.game_type.clone()),
+            Value::Text(self.format_type.clone()),
         ]
     }
 
@@ -111,6 +122,8 @@ impl Game {
             opponent_seen: row.get(10).as_i64().unwrap_or(0),
             opening: list(11),
             opponent_cards: list(12),
+            game_type: text(13),
+            format_type: text(14),
         }
     }
 
@@ -159,6 +172,11 @@ impl Game {
         }
         if self.turns == 0 && other.turns > 0 {
             self.turns = other.turns;
+            changed = true;
+        }
+        if self.game_type.is_empty() && !other.game_type.is_empty() {
+            self.game_type = other.game_type.clone();
+            self.format_type = other.format_type.clone();
             changed = true;
         }
         changed
@@ -213,6 +231,13 @@ pub fn append(path: &Path, games: &[Game]) -> Result<usize, String> {
         .unwrap_or_default();
 
     let table = db.ensure("games", SCHEMA);
+    // A file created by an older build keeps its own CREATE TABLE, and the
+    // whole file is rewritten on save -- so the stored schema can move to the
+    // current one here. Columns are only ever appended; old rows stay short
+    // and read as NULL in the new columns.
+    if column_names(&table.sql).len() < column_names(SCHEMA).len() {
+        table.sql = SCHEMA.to_string();
+    }
     let mut added = 0;
     let mut changed = 0;
     let mut seen = existing;
@@ -350,6 +375,8 @@ mod tests {
             opponent_seen: 7,
             opening: vec!["Twilight Egg".into(), "The Coin".into()],
             opponent_cards: vec!["Rotheart Dryad".into()],
+            game_type: "GT_RANKED".into(),
+            format_type: "FT_STANDARD".into(),
         }
     }
 

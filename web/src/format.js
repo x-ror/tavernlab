@@ -17,6 +17,7 @@ export function signedPct(v) {
 export function formatName(fmt, t) {
   if (fmt === 'standard') return t('ui.deck.fmt_standard')
   if (fmt === 'wild') return t('ui.deck.fmt_wild')
+  if (fmt === 'arena') return t('ui.deck.fmt_arena')
   return t('ui.deck.fmt_unknown')
 }
 

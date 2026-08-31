@@ -37,6 +37,7 @@
 //! the kernel itself.
 
 pub mod agent;
+pub mod arena;
 pub mod batch;
 pub mod cards;
 pub mod deck;

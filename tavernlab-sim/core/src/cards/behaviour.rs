@@ -1993,7 +1993,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     battlecry("Soldier of Sinestra", T::None, |g, c| {
         let n = g.heralded_scale(c.side);
         let class = g.player(c.side).class;
-        let pool = crate::cards::discover_pool(|d| d.kind() == super::Kind::Spell);
+        let pool = g.discover_pool(|d| d.kind() == super::Kind::Spell);
         let off: Inline<crate::cards::CardId, 64> = pool
             .into_iter()
             .filter(|x| {
@@ -3307,7 +3307,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         // `add_random_to_hand` takes a plain `fn` pointer, which cannot
         // capture `atk`; inlined the same way it is implemented internally.
         let pool =
-            crate::cards::discover_pool(|d| d.kind() == super::Kind::Minion && d.cost == atk);
+            g.discover_pool(|d| d.kind() == super::Kind::Minion && d.cost == atk);
         for _ in 0..2 {
             if pool.is_empty() {
                 break;
@@ -3348,7 +3348,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
             && slot == c.slot
         {
             let class = g.player(c.side).class;
-            let pool = crate::cards::discover_pool(|d| {
+            let pool = g.discover_pool(|d| {
                 d.kind() == super::Kind::Spell
                     && d.class() != super::Class::Neutral
                     && d.class() != class
@@ -4325,7 +4325,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     // pick among them is equivalent.
     battlecry("Scrappy Scavenger", T::None, |g, c| {
         let mana = g.player(c.side).mana;
-        let pool = crate::cards::discover_pool(move |d| d.cost == mana);
+        let pool = g.discover_pool(move |d| d.cost == mana);
         if pool.is_empty() {
             return;
         }
@@ -5303,7 +5303,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         }
     }),
     battlecry("Envoy of the Glade", T::None, |g, c| {
-        let pool = super::discover_pool(|d| d.class() == super::Class::Druid);
+        let pool = g.discover_pool(|d| d.class() == super::Class::Druid);
         if pool.is_empty() {
             return;
         }
@@ -6390,7 +6390,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         g.player_mut(c.side).end_turn_burn += 3;
     }),
     spell("Story of Umbra", T::None, |g, c| {
-        let pool = super::discover_pool(|d| {
+        let pool = g.discover_pool(|d| {
             d.kind() == super::Kind::Minion
                 && d.cost >= 5
                 && d.keywords.has(Keywords::DEATHRATTLE)
@@ -6616,7 +6616,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         }
     }),
     spell("Hero's Welcome", T::None, |g, c| {
-        let pool = super::discover_pool(|d| {
+        let pool = g.discover_pool(|d| {
             d.kind() == super::Kind::Minion && d.rarity() == super::Rarity::Legendary
         });
         if pool.is_empty() {
@@ -6814,7 +6814,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
         None,
     ),
     battlecry("Merchant of Legend", T::None, |g, c| {
-        let pool = super::discover_pool(|d| {
+        let pool = g.discover_pool(|d| {
             d.kind() == super::Kind::Minion && d.rarity() == super::Rarity::Legendary
         });
         if pool.is_empty() {
@@ -7309,7 +7309,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     }),
     spell("Ritual of Life", T::None, |g, c| {
         // Discover, then a 2/3 of whatever was picked rather than the card.
-        let pool = super::discover_pool(|d| d.kind() == super::Kind::Minion && d.cost == 3);
+        let pool = g.discover_pool(|d| d.kind() == super::Kind::Minion && d.cost == 3);
         if pool.is_empty() {
             return;
         }
@@ -7780,7 +7780,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     ]),
     spell("Glaciate", T::None, |g, c| {
         // Discover, but the pick is summoned rather than drawn.
-        let pool = super::discover_pool(|d| d.kind() == super::Kind::Minion && d.cost == 8);
+        let pool = g.discover_pool(|d| d.kind() == super::Kind::Minion && d.cost == 8);
         if pool.is_empty() {
             return;
         }
@@ -9131,7 +9131,7 @@ pub static BEHAVIOURS: &[Behaviour] = &[
     // deck. `@-Cost` is the Imbue count, like every other Blessing number.
     spell("Emerald Portal", T::None, |g, c| {
         let n = g.player(c.side).imbue_count.max(1) as i16;
-        let pool = super::discover_pool(move |d| {
+        let pool = g.discover_pool(move |d| {
             d.kind() == super::Kind::Minion && d.cost == n && d.races.any(Races::DRAGON)
         });
         if !pool.is_empty() {
@@ -9754,10 +9754,11 @@ pub static BEHAVIOURS: &[Behaviour] = &[
 
     spell("Alter Time", T::None, |g, c| {
         for _ in 0..2 {
-            if g.discover(c.side, |d| {
-                d.kind() == super::Kind::Spell
-                    && d.school() == super::School::Arcane
-                    && super::from_the_past(d)
+            // `discover_from_the_past`, not `discover`: the game-format
+            // filter on the ordinary pool would empty a pool that is
+            // rotated cards by definition.
+            if g.discover_from_the_past(c.side, |d| {
+                d.kind() == super::Kind::Spell && d.school() == super::School::Arcane
             }) && let Some(hc) = g.player_mut(c.side).hand.last_mut()
             {
                 hc.cost_delta -= 2;

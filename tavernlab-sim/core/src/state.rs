@@ -1256,6 +1256,15 @@ pub struct Game {
     /// Set while a Rewind is being resolved, so the replay cannot rewind
     /// itself. See `Game::apply`.
     pub rewinding: bool,
+    /// The format this game is played in. [`Game::new`](crate::state::Game)
+    /// infers it from the decks — every card Standard-legal is a Standard
+    /// game, anything else is Wild, no cards at all is
+    /// [`Formats::ANY`](crate::cards::Formats::ANY). Read by the pools that
+    /// generate cards mid-game (Discover, "summon a random..."), so a
+    /// Standard game does not quietly offer a rotated card. A caller that
+    /// knows the format when the decks cannot say — a live game restored
+    /// from the log — writes the field directly.
+    pub format: crate::cards::Formats,
 }
 
 impl Game {

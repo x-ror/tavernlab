@@ -113,11 +113,21 @@ pub fn implemented_pool(class: Class, format: Formats) -> Vec<CardId> {
 pub fn curve_deck(class: Class, format: Formats) -> Option<Vec<CardId>> {
     // Roughly a midrange curve, indexed by cost.
     const WANT: [usize; 9] = [0, 4, 6, 6, 5, 4, 3, 1, 1];
+    // Arena is a tempo format: mass on 2–4 and a thin top end, per the
+    // drafting orthodoxy that holds across seasons (docs/ARENA_RESEARCH.md
+    // §2.4). The field the evaluation plays against should be shaped like
+    // an Arena deck, not like a constructed midrange one.
+    const WANT_ARENA: [usize; 9] = [0, 4, 7, 6, 5, 4, 2, 1, 1];
+    let want = if format == Formats::ARENA {
+        &WANT_ARENA
+    } else {
+        &WANT
+    };
     let mut p = implemented_pool(class, format);
     p.sort_by_key(|c| (c.def().cost, c.0));
 
     let mut deck = Vec::with_capacity(DECK_SIZE);
-    for (cost, want) in WANT.iter().enumerate() {
+    for (cost, want) in want.iter().enumerate() {
         let mut taken = 0;
         for c in p.iter().filter(|c| c.def().cost as usize == cost) {
             if taken >= *want || deck.len() >= DECK_SIZE {

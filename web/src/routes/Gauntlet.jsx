@@ -59,6 +59,7 @@ export default function Meta({ open }) {
           items={[
             { id: 'standard', name: formatName('standard', t) },
             { id: 'wild', name: formatName('wild', t) },
+            { id: 'arena', name: formatName('arena', t) },
           ]}
           selectedKey={fmt}
           onSelectionChange={(k) => setFmt(String(k))}

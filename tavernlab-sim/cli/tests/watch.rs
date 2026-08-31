@@ -1014,12 +1014,80 @@ fn the_corpses_the_log_banked_are_in_the_position() {
     // The log writes CORPSES on the player entity the same way it writes
     // mana, and the watcher used to drop the line. A Death Knight plan drawn
     // at zero spends none of what the deck is built on.
-    let with_corpses = format!(
-        "{BARE_TAGS}D 09:00:01.3 [Power] GameState.DebugPrintPower() - TAG_CHANGE \
-         Entity=xror#21652 tag=CORPSES value=3\n"
-    );
-    let out = run("corpses", &with_corpses, &[]);
+    //
+    // The fixture is the client's real shape: CREATE_GAME maps the player
+    // entities, the first CURRENT_PLAYER is numeric, and the battletag is
+    // bound at the turn boundary from who is stepping up. The old fixture
+    // leaned on the Coin-and-turn-counter binding instead, which named the
+    // opponent at exactly that boundary and was removed for it.
+    const CORPSES_LOG: &str = "\
+D 09:00:00.0 [Power] GameState.DebugPrintPower() - CREATE_GAME
+D 09:00:00.0 [Power] GameState.DebugPrintPower() -     Player EntityID=2 PlayerID=1 GameAccountId=[hi=1 lo=1]
+D 09:00:00.0 [Power] GameState.DebugPrintPower() -     Player EntityID=3 PlayerID=2 GameAccountId=[hi=1 lo=2]
+D 09:00:00.1 [Power] GameState.DebugPrintPower() -     TAG_CHANGE Entity=2 tag=CURRENT_PLAYER value=1
+D 09:00:00.1 [Power] GameState.DebugPrintPower() -     TAG_CHANGE Entity=GameEntity tag=TURN value=1
+D 09:00:00.2 [Zone] ZoneChangeList.ProcessChanges() - id=1 local=False [entityName=Gul'dan id=65 zone=PLAY zonePos=0 cardId=HERO_07 player=1] zone from  -> OPPOSING PLAY (Hero)
+D 09:00:00.3 [Zone] ZoneChangeList.ProcessChanges() - id=2 local=False [entityName=The Lich King id=64 zone=PLAY zonePos=0 cardId=HERO_11 player=2] zone from  -> FRIENDLY PLAY (Hero)
+D 09:00:00.4 [Zone] ZoneChangeList.ProcessChanges() - id=3 local=False [entityName=The Coin id=11 zone=DECK zonePos=0 cardId=GAME_005 player=2] zone from  -> FRIENDLY HAND
+D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=xror#21652 tag=CURRENT_PLAYER value=1
+D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=starkalpha#2221 tag=CURRENT_PLAYER value=0
+D 09:00:01.2 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=2
+D 09:00:01.3 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=xror#21652 tag=CORPSES value=3
+";
+    let out = run("corpses", CORPSES_LOG, &[]);
     assert!(out.contains("трупів: 3"), "{out}");
+}
+
+#[test]
+fn an_arena_game_is_not_read_as_a_constructed_one() {
+    // `GameType=GT_ARENA` in the DebugPrintGame dump: the opponent gets no
+    // gauntlet deck name and the mulligan is not measured against the
+    // constructed field -- both would be statements about decks this game
+    // is not playing against. The curve of the hand is still shown.
+    let arena = LOG.replace(
+        "CREATE_GAME\n",
+        "CREATE_GAME\nD 09:00:00.0 [Power] GameState.DebugPrintGame() - GameType=GT_ARENA\n",
+    );
+    // Before the first turn: the mulligan section, not measured.
+    let out = run("arena-mull", &arena, &["--me", "Me#1"]);
+    assert!(
+        out.contains("зі списком колоди й ареновим полем"),
+        "the mulligan says why it is not measured: {out}"
+    );
+    assert!(
+        out.contains("Chillwind Yeti"),
+        "the hand's curve is still printed: {out}"
+    );
+    // Mid-game: the opponent section, with no deck matched.
+    let out = run("arena-turn", &(arena + AFTER_MULLIGAN), &["--me", "Me#1"]);
+    assert!(
+        out.contains("суперник грає драфт"),
+        "the opponent read says Arena instead of matching a deck: {out}"
+    );
+    assert!(
+        !out.contains('%'),
+        "no gauntlet match percentage may appear in an Arena game: {out}"
+    );
+}
+
+/// The client stops writing at 10 MB. Games after that banner are not in
+/// the file, so they cannot become history — and saying so is the whole
+/// point, because a silent freeze looks like the recorder broke.
+#[test]
+fn a_truncated_log_is_said_out_loud() {
+    const CAP: &str = "\
+D 09:05:00.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1 tag=PLAYSTATE value=WON
+Truncating log, which has reached the size limit of 10000KB
+";
+    let out = run(
+        "truncated",
+        &format!("{LOG}{CAP}"),
+        &["--me", "Me#1", "--quiet"],
+    );
+    assert!(
+        out.contains("лог зупинився на ліміті клієнта"),
+        "the cap is why later games vanish from history: {out}"
+    );
 }
 
 #[test]

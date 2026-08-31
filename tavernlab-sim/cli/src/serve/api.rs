@@ -49,15 +49,15 @@ const MIN_DRAWS: u32 = 100;
 
 // ----------------------------------------------------------------- helpers
 
-fn body(req: &Request) -> Json {
+pub(crate) fn body(req: &Request) -> Json {
     Json::parse(req.body_str()).unwrap_or(Json::Null)
 }
 
-fn field_str<'a>(j: &'a Json, key: &str) -> &'a str {
+pub(crate) fn field_str<'a>(j: &'a Json, key: &str) -> &'a str {
     j.str_or_empty(key)
 }
 
-fn strings(j: &Json, key: &str) -> Vec<String> {
+pub(crate) fn strings(j: &Json, key: &str) -> Vec<String> {
     j.arr_or_empty(key)
         .iter()
         .filter_map(|v| v.as_str().map(str::to_string))
@@ -65,7 +65,7 @@ fn strings(j: &Json, key: &str) -> Vec<String> {
         .collect()
 }
 
-fn clamped(j: &Json, key: &str, default: usize, lo: usize, hi: usize) -> usize {
+pub(crate) fn clamped(j: &Json, key: &str, default: usize, lo: usize, hi: usize) -> usize {
     match j.get(key).and_then(Json::as_i64) {
         Some(n) if n > 0 => (n as usize).clamp(lo, hi),
         _ => default,
@@ -442,7 +442,7 @@ pub fn optimize_deck(app: &Arc<App>, req: &Request) -> Response {
     started(&id)
 }
 
-fn started(id: &str) -> Response {
+pub(crate) fn started(id: &str) -> Response {
     Response::json(200, to_string(|o| o.obj(|o| o.str_field("job", id))))
 }
 
@@ -610,7 +610,7 @@ fn reasons(o: &mut Out, card: CardId, opp: Style, delta: Option<f64>) {
 /// to a collectible card and to a token or an enchantment as well, and a
 /// lookup that returns whichever it walked into first would hand the engine a
 /// card that cannot be played.
-fn find_card(name: &str) -> Option<CardId> {
+pub(crate) fn find_card(name: &str) -> Option<CardId> {
     let name = name.trim();
     if let Some(c) = by_name(name) {
         return Some(c);

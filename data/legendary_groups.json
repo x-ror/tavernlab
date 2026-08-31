@@ -1,0 +1,11 @@
+{
+ "source": "Legendary Groups seen in our own drafts, entered by hand — never scraped (U24). A group is the legendary plus FOUR fixed support cards (the research doc said three; a real draft on 2026-08-31 showed four).",
+ "groups": {
+  "Ragnaros, the Great Fire": [
+   "Searing Fissure",
+   "Yesterloc",
+   "Cataclysmic War Axe",
+   "Scorching Ravager"
+  ]
+ }
+}

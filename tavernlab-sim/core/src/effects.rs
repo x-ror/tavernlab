@@ -345,7 +345,7 @@ impl Game {
     /// conservative reading: the minion stays as it is rather than becoming
     /// something the cost does not name.
     pub fn transform_into_random_of_cost(&mut self, t: Target, cost: i16) {
-        let pool = crate::cards::discover_pool(move |d| d.kind() == Kind::Minion && d.cost == cost);
+        let pool = self.discover_pool(move |d| d.kind() == Kind::Minion && d.cost == cost);
         if pool.is_empty() {
             return;
         }
@@ -833,6 +833,36 @@ impl Game {
         self.discover_where(side, pred)
     }
 
+    /// The pool a card generated mid-game may come from:
+    /// [`cards::discover_pool`](crate::cards::discover_pool) narrowed to this
+    /// game's format. Every Discover and every "a random ..." goes through
+    /// here; before the narrowing, a Standard game could quietly offer a
+    /// rotated card, because the base pool is the whole implemented corpus.
+    pub fn discover_pool(&self, pred: impl Fn(&crate::cards::CardDef) -> bool) -> Vec<CardId> {
+        let f = self.format;
+        crate::cards::discover_pool(move |d| d.formats.has(f) && pred(d))
+    }
+
+    /// [`discover_where`](Self::discover_where) over the rotated pool,
+    /// ignoring the game's own format. "From the past" names its pool
+    /// explicitly — cards that have left Standard — and that pool is the same
+    /// whatever format the game itself is played in, so the format filter
+    /// above would empty it rather than scope it.
+    pub fn discover_from_the_past(
+        &mut self,
+        side: Side,
+        pred: impl Fn(&crate::cards::CardDef) -> bool,
+    ) -> bool {
+        let pool =
+            crate::cards::discover_pool(move |d| crate::cards::from_the_past(d) && pred(d));
+        let Some((card, others)) = self.offer(side, &pool) else {
+            return false;
+        };
+        let took = self.give_card(side, card);
+        self.took_discover(side, others);
+        took
+    }
+
     /// What every Discover does once it has picked: record it, and tell the
     /// cards that count Discovers or want what was left behind.
     ///
@@ -892,7 +922,7 @@ impl Game {
         atk: i16,
         hp: i16,
     ) -> bool {
-        let pool = crate::cards::discover_pool(pred);
+        let pool = self.discover_pool(pred);
         let Some((card, others)) = self.offer(side, &pool) else {
             return false;
         };
@@ -1007,7 +1037,7 @@ impl Game {
         pred: fn(&crate::cards::CardDef) -> bool,
         enchant: fn(&mut DeckCard),
     ) -> usize {
-        let pool = crate::cards::discover_pool(pred);
+        let pool = self.discover_pool(pred);
         if pool.is_empty() {
             return 0;
         }
@@ -1100,7 +1130,7 @@ impl Game {
     /// second copy.
     pub fn cast_random_secrets(&mut self, side: Side, n: usize) -> usize {
         let class = self.player(side).class;
-        let pool = crate::cards::discover_pool(move |d| {
+        let pool = self.discover_pool(move |d| {
             d.keywords.has(crate::cards::Keywords::SECRET) && d.class() == class
         });
         if pool.is_empty() {
@@ -1272,7 +1302,7 @@ impl Game {
     /// for the cards whose pool depends on the position — "from another
     /// class" has to know which class you are.
     pub fn discover_where(&mut self, side: Side, pred: impl Fn(&crate::cards::CardDef) -> bool) -> bool {
-        let pool = crate::cards::discover_pool(pred);
+        let pool = self.discover_pool(pred);
         let Some((card, others)) = self.offer(side, &pool) else {
             return false;
         };
@@ -1426,7 +1456,7 @@ impl Game {
         side: Side,
         pred: fn(&crate::cards::CardDef) -> bool,
     ) -> bool {
-        let pool = crate::cards::discover_pool(pred);
+        let pool = self.discover_pool(pred);
         if pool.is_empty() {
             return false;
         }
@@ -1441,7 +1471,7 @@ impl Game {
         side: Side,
         pred: impl Fn(&crate::cards::CardDef) -> bool,
     ) -> bool {
-        let pool = crate::cards::discover_pool(pred);
+        let pool = self.discover_pool(pred);
         if pool.is_empty() {
             return false;
         }
@@ -1547,7 +1577,7 @@ impl Game {
 
     /// Summon `n` random implemented minions costing exactly `cost`.
     pub fn summon_random_of_cost(&mut self, side: Side, cost: i16, n: usize) -> usize {
-        let pool = crate::cards::discover_pool(|d| {
+        let pool = self.discover_pool(|d| {
             d.kind() == crate::cards::Kind::Minion && d.cost == cost
         });
         if pool.is_empty() {
@@ -1573,7 +1603,7 @@ impl Game {
         side: Side,
         pred: impl Fn(&crate::cards::CardDef) -> bool,
     ) -> bool {
-        let pool = crate::cards::discover_pool(pred);
+        let pool = self.discover_pool(pred);
         if pool.is_empty() {
             return false;
         }
@@ -1583,7 +1613,7 @@ impl Game {
 
     /// Equip a random implemented weapon matching `pred`.
     pub fn equip_random(&mut self, side: Side, pred: fn(&crate::cards::CardDef) -> bool) -> bool {
-        let pool = crate::cards::discover_pool(pred);
+        let pool = self.discover_pool(pred);
         if pool.is_empty() {
             return false;
         }
@@ -1787,7 +1817,7 @@ impl Game {
         side: Side,
         pred: fn(&crate::cards::CardDef) -> bool,
     ) -> bool {
-        let pool = crate::cards::discover_pool(pred);
+        let pool = self.discover_pool(pred);
         if pool.is_empty() {
             return false;
         }

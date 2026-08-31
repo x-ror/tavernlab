@@ -12811,6 +12811,87 @@ fn from_the_past_is_the_rotated_out_pool() {
 }
 
 #[test]
+fn a_game_plays_in_the_narrowest_format_its_decks_fit() {
+    // The decks are the only witness `Game::new` has. Every card
+    // Standard-legal is a Standard game; all in the Arena season but not
+    // all in Standard is an Arena game; one card outside both makes it
+    // Wild; no cards at all says nothing, and the game restricts nothing.
+    let standard = tavernlab_core::cards::discover_pool(|d| d.formats.has(Formats::STANDARD));
+    let arena_only = tavernlab_core::cards::discover_pool(|d| {
+        d.formats.has(Formats::ARENA) && !d.formats.has(Formats::STANDARD)
+    });
+    let wild_only = tavernlab_core::cards::discover_pool(|d| {
+        d.formats.has(Formats::WILD)
+            && !d.formats.has(Formats::STANDARD)
+            && !d.formats.has(Formats::ARENA)
+    });
+    let (s, a, w) = (standard[0], arena_only[0], wild_only[0]);
+
+    let g = Game::new((Class::Mage, &[s]), (Class::Mage, &[s]), 1).unwrap();
+    assert_eq!(g.format, Formats::STANDARD);
+    let g = Game::new((Class::Mage, &[s]), (Class::Mage, &[a]), 1).unwrap();
+    assert_eq!(g.format, Formats::ARENA);
+    let g = Game::new((Class::Mage, &[s]), (Class::Mage, &[w]), 1).unwrap();
+    assert_eq!(g.format, Formats::WILD);
+    let g = Game::new((Class::Mage, &[]), (Class::Mage, &[]), 1).unwrap();
+    assert_eq!(g.format, Formats::ANY);
+}
+
+#[test]
+fn the_arena_season_pool_sits_inside_wild() {
+    // The season list is a subset of sets that all exist in Wild; a card
+    // carrying the ARENA bit without the WILD bit would be a corpus bug.
+    // The presence check is what every ARENA filter must consult first: a
+    // corpus generated without data/arena_season.json has an empty pool.
+    assert!(tavernlab_core::cards::arena_pool_present());
+    let season = tavernlab_core::cards::discover_pool(|d| d.formats.has(Formats::ARENA));
+    assert!(!season.is_empty());
+    for c in &season {
+        assert!(c.def().formats.has(Formats::WILD), "{}", c.name());
+    }
+}
+
+#[test]
+fn every_class_fields_an_arena_baseline_deck() {
+    // What `xtask arena-gauntlet` relies on: the implemented season pool is
+    // deep enough for a 30-card tempo deck in every playable class.
+    for class in tavernlab_core::cards::PLAYABLE_CLASSES {
+        assert!(
+            tavernlab_core::deck::curve_deck(class, Formats::ARENA).is_some(),
+            "{class:?} cannot fill an Arena deck from the implemented pool"
+        );
+    }
+}
+
+#[test]
+fn a_standard_game_does_not_discover_rotated_cards() {
+    // The base pool is the whole implemented corpus, so before the game's
+    // format reached it, a Standard game could quietly offer a Wild card.
+    let standard = tavernlab_core::cards::discover_pool(|d| d.formats.has(Formats::STANDARD));
+    let s = standard[0];
+    let g = Game::new((Class::Mage, &[s]), (Class::Mage, &[s]), 1).unwrap();
+    let pool = g.discover_pool(|_| true);
+    assert!(!pool.is_empty());
+    for c in &pool {
+        assert!(
+            c.def().formats.has(Formats::STANDARD),
+            "{} is not Standard-legal and was offered anyway",
+            c.name()
+        );
+    }
+    // A game whose decks said nothing restricts nothing a format allows.
+    // The only cards it drops from the raw corpus are the format-less
+    // HERO_SKINS duplicates of real cards, which no game should ever have
+    // offered -- the raw pool did.
+    let g = Game::new((Class::Mage, &[]), (Class::Mage, &[]), 1).unwrap();
+    let any = g.discover_pool(|_| true);
+    assert_eq!(
+        any.len(),
+        tavernlab_core::cards::discover_pool(|d| d.formats.0 != 0).len()
+    );
+}
+
+#[test]
 fn alter_time_discovers_two_cheaper_arcane_spells_from_the_past() {
     let mut f = Fix::new();
     f.play("Alter Time", None);

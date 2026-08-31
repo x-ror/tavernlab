@@ -286,6 +286,16 @@ pub struct Tracker {
     /// Whether a `CURRENT_PLAYER` line was ever attributed to a player.
     /// While this is false, `my_turn` is not an answer but a default.
     pub turn_read: bool,
+    /// `GameType=` as the log wrote it (`GT_RANKED`, `GT_ARENA`, ...), from
+    /// the `DebugPrintGame()` dump. Verbatim: the Underground Arena's string
+    /// has not been read off a real run yet, and it must arrive unmunged.
+    pub game_type: Option<String>,
+    /// `FormatType=` as the log wrote it (`FT_STANDARD`, `FT_WILD`, ...).
+    pub format_type: Option<String>,
+    /// Battletag per `player=N`, when the `DebugPrintGame()` dump named one.
+    /// The dump arrives before the zone lines say which number is FRIENDLY,
+    /// so the binding is kept and `me_name` resolved once `me` is known.
+    player_names: [Option<String>; 2],
     /// Player entity id for `player=1` and `player=2`, from CREATE_GAME.
     /// `CURRENT_PLAYER Entity=2` names the first of these, not a battletag.
     player_entities: [Option<u32>; 2],
@@ -312,6 +322,16 @@ impl Tracker {
             me_name,
             ..Tracker::default()
         }
+    }
+
+    /// Whether this game came from an Arena queue. `GT_ARENA` is The Arena;
+    /// the Underground's exact string has not been read off a real run yet
+    /// (`docs/ARENA_RESEARCH.md` §11), so any game type naming ARENA counts
+    /// rather than quietly reading as constructed.
+    pub fn is_arena(&self) -> bool {
+        self.game_type
+            .as_deref()
+            .is_some_and(|t| t.contains("ARENA"))
     }
 
     fn index(&self, player: u8) -> Option<usize> {
@@ -449,6 +469,17 @@ impl Tracker {
     pub fn feed(&mut self, ev: Event) {
         match ev {
             Event::NewGame => *self = Tracker::new(self.me_name.clone()),
+            Event::GameType(t) => self.game_type = Some(t),
+            Event::FormatType(t) => self.format_type = Some(t),
+            Event::PlayerName { name, player } => {
+                self.note_name(&name);
+                if player == 1 || player == 2 {
+                    self.player_names[(player - 1) as usize] = Some(name.clone());
+                }
+                // The dump usually precedes the zone line that says which
+                // number is FRIENDLY; when it does not, resolve right here.
+                self.learn_me_as(&name, player);
+            }
             Event::PlayerSlot { entity, player } => {
                 if player == 1 || player == 2 {
                     self.player_entities[(player - 1) as usize] = Some(entity);
@@ -628,6 +659,9 @@ impl Tracker {
                 }
             }
             Event::Zone(m) => self.zone(m),
+            // Not a game event. The runner records the cap; the position is
+            // whatever the log held at the moment the client stopped writing.
+            Event::LogCapped => {}
         }
     }
 
@@ -645,6 +679,13 @@ impl Tracker {
             if let Some(c) = self.current_pid {
                 self.my_turn = c == player;
                 self.turn_read = true;
+            }
+            // The `DebugPrintGame()` dump may have named this number's
+            // battletag before anything said the number was FRIENDLY.
+            if matches!(player, 1 | 2)
+                && let Some(name) = self.player_names[(player - 1) as usize].clone()
+            {
+                self.learn_me_as(&name, player);
             }
         }
         let Some(i) = self.index(player) else { return };
@@ -854,6 +895,34 @@ mod tests {
         ]);
         assert_eq!(t.crystals, Some(7));
         assert_eq!(t.mana_left(), Some(4));
+    }
+
+    #[test]
+    fn the_dump_states_the_game_type_and_names_me() {
+        // The DebugPrintGame dump follows CREATE_GAME and states outright
+        // what the tracker otherwise reconstructs: which queue the game came
+        // from, and whose battletag sits on which player number. The zone
+        // line then says which number is FRIENDLY, and together they name me.
+        let mut t = Tracker::new(None);
+        feed(&mut t, &[
+            "D 01:38:49.8 GameState.DebugPrintPower() - CREATE_GAME",
+            "D 01:38:49.8 GameState.DebugPrintGame() - GameType=GT_ARENA",
+            "D 01:38:49.8 GameState.DebugPrintGame() - FormatType=FT_WILD",
+            "D 01:38:49.8 GameState.DebugPrintGame() - PlayerID=1, PlayerName=UNKNOWN HUMAN PLAYER",
+            "D 01:38:49.8 GameState.DebugPrintGame() - PlayerID=2, PlayerName=xror#21652",
+            "D 01:38:52.0 ZoneChangeList.ProcessChanges() - id=1 local=False [entityName=The Lich King id=66 zone=PLAY zonePos=0 cardId=HERO_11 player=2] zone from  -> FRIENDLY PLAY (Hero)",
+        ]);
+        assert_eq!(t.game_type.as_deref(), Some("GT_ARENA"));
+        assert_eq!(t.format_type.as_deref(), Some("FT_WILD"));
+        assert!(t.is_arena());
+        assert_eq!(t.me_name.as_deref(), Some("xror#21652"));
+        // A ranked dump is not Arena.
+        let mut r = Tracker::new(None);
+        feed(&mut r, &[
+            "D 01:38:49.8 GameState.DebugPrintPower() - CREATE_GAME",
+            "D 01:38:49.8 GameState.DebugPrintGame() - GameType=GT_RANKED",
+        ]);
+        assert!(!r.is_arena());
     }
 
     #[test]

@@ -116,7 +116,16 @@ export default function Live() {
           </Text>
         )}
         {live?.note && (
-          <Text UNSAFE_style={{ display: 'block', marginTop: 12, color: 'var(--tl-muted)' }}>
+          <Text
+            UNSAFE_style={{
+              display: 'block',
+              marginTop: 12,
+              color:
+                live.note.k === 'live.note.log_capped'
+                  ? 'var(--tl-warn)'
+                  : 'var(--tl-muted)',
+            }}
+          >
             {renderLine(t, live.note)}
           </Text>
         )}
