@@ -45,19 +45,28 @@ pub const MONO_ASSEMBLY_ANAME: u64 = 16;
 /// through.
 pub const MONO_ASSEMBLY_NAME: u64 = MONO_ASSEMBLY_ANAME + 0;
 
-/// `MonoAssembly.image` — **unverified**. Sits right after `aname`, which
-/// needs `sizeof(MonoAssemblyName)`; that struct's own field list was
-/// never fetched. `scan_for_image` in `main.rs` finds the real value the
-/// same way `MONO_DOMAIN_DOMAIN_ASSEMBLIES` was found, rather than
-/// trusting this number — kept only as the starting guess a manual check
-/// would begin from.
-#[allow(dead_code)] // superseded by scan_for_image, kept as documentation of the starting guess
-pub const MONO_ASSEMBLY_IMAGE_GUESS: u64 = MONO_ASSEMBLY_ANAME + 96;
+/// `MonoAssembly.image` — **confirmed live**, by the same scan technique
+/// as `domain_assemblies`: at this offset from `Assembly-CSharp`'s
+/// `MonoAssembly*` sits a pointer whose own memory holds `"Assembly-CSharp"`
+/// at `+0x30` and `"Assembly-CSharp.dll"` at `+0x38` — a name/filename
+/// pair, `MONO_IMAGE_NAME`/`MONO_IMAGE_FILENAME` below. This lands well
+/// past the naive 96-byte guess this constant used to carry, confirming
+/// in passing that `MonoAssemblyName` is bigger on this build than the
+/// figure once quoted for it elsewhere — exactly why that number was
+/// never trusted here.
+pub const MONO_ASSEMBLY_IMAGE: u64 = 0x60;
 
-/// `MonoImage.class_cache` — **not yet approached**. Comes after
-/// `scan_for_image` finds a confirmed `MonoImage*`; `struct _MonoImage` is
-/// long, and getting to this field needs either the same evidence-based
-/// scan technique run one level deeper, or the struct's real field sizes
-/// (never fetched this session).
-#[allow(dead_code)] // next milestone, once MonoImage* itself is confirmed
+/// `MonoImage.name` — **confirmed live** (see `MONO_ASSEMBLY_IMAGE` above).
+pub const MONO_IMAGE_NAME: u64 = 0x30;
+/// `MonoImage.filename` — **confirmed live**.
+pub const MONO_IMAGE_FILENAME: u64 = 0x38;
+
+/// `MonoImage.class_cache` — **not yet approached**. `struct _MonoImage`
+/// is long; getting to this field needs the same evidence-based scan
+/// technique run one level deeper from the now-confirmed `MonoImage*` —
+/// this time looking for something that behaves like a hash table (an
+/// array of pointers, several leading to class-name-shaped strings)
+/// rather than a single string, since `MonoInternalHashTable` isn't a
+/// simple pointer-to-string field.
+#[allow(dead_code)] // next milestone
 pub const MONO_IMAGE_CLASS_CACHE: u64 = 0;

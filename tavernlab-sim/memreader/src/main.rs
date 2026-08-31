@@ -169,7 +169,17 @@ fn main() {
     // mono_layout.rs); walk the real list, then chase Assembly-CSharp's
     // image the same evidence-based way that offset was found.
     if let Some(csharp) = walk_assembly_list(&remote, domain_addr) {
-        scan_for_image(&remote, csharp);
+        if let Some(image) = read_image(&remote, csharp) {
+            println!(
+                "\nНаступний крок — MonoImage.class_cache: ще не з'ясовано \
+                 (MONO_IMAGE_CLASS_CACHE у mono_layout.rs — заглушка). Це \
+                 хеш-таблиця Mono, не проста строка, тож теперішня техніка \
+                 сканування («знайти рядок поруч») сюди напряму не \
+                 переноситься — знадобиться окремий крок. MonoImage* цього \
+                 запуску: 0x{image:x} (адреса дійсна лише для поточного \
+                 процесу, не постійна між перезапусками гри)."
+            );
+        }
     }
 }
 
@@ -212,8 +222,14 @@ fn plausible_ptr(v: u64) -> bool {
 }
 
 /// Whether `bytes` looks like a short, printable identifier -- an assembly
-/// or class name, not binary data. Deliberately strict: this is what
-/// keeps the brute-force scan below from reporting noise.
+/// or class name, not binary data. Deliberately strict: this is what kept
+/// the domain_assemblies and MonoAssembly.image scans (both now resolved,
+/// see mono_layout.rs) from reporting noise. Not called anywhere yet in
+/// this file — the next milestone, MonoImage.class_cache, is a hash table
+/// rather than a single string, so scanning it needs a shape-aware variant
+/// of this rather than a straight reuse; kept here as the building block
+/// for that.
+#[allow(dead_code)]
 fn looks_like_name(bytes: &[u8]) -> Option<String> {
     let end = bytes.iter().position(|&b| b == 0)?;
     if !(2..48).contains(&end) {
@@ -271,58 +287,39 @@ fn walk_assembly_list(remote: &Remote, domain_addr: u64) -> Option<u64> {
     csharp_data
 }
 
-/// Once we have a confirmed `MonoAssembly*` for `Assembly-CSharp`, its
-/// `image` field is found the same evidence-based way `domain_assemblies`
-/// was: scan a range of offsets from the assembly for a pointer whose
-/// *own* memory, some small offset further in, holds a string that looks
-/// like the image's name or filename (`"Assembly-CSharp"`,
-/// `"Assembly-CSharp.dll"`).
-fn scan_for_image(remote: &Remote, assembly_data: u64) {
-    println!("\n--deep: MonoAssembly(Assembly-CSharp) -> image (сканую, офсет невідомий)");
-    let Some(region) = remote.read(assembly_data, 0x400) else {
-        eprintln!("не зміг прочитати 0x400 байтів з MonoAssembly*");
-        return;
-    };
-    let mut hits = 0;
-    for off1 in (0..region.len() - 8).step_by(8) {
-        let candidate = u64::from_le_bytes(region[off1..off1 + 8].try_into().unwrap());
-        if !plausible_ptr(candidate) {
-            continue;
-        }
-        let Some(inner) = remote.read(candidate, 0x200) else { continue };
-        for off2 in (0..inner.len() - 8).step_by(8) {
-            let name_ptr = u64::from_le_bytes(inner[off2..off2 + 8].try_into().unwrap());
-            if !plausible_ptr(name_ptr) {
-                continue;
-            }
-            let Some(str_bytes) = remote.read(name_ptr, 64) else { continue };
-            if let Some(name) = looks_like_name(&str_bytes) {
-                if name.contains("Assembly-CSharp") || name.ends_with(".dll") {
-                    hits += 1;
-                    println!(
-                        "  кандидат: MonoAssembly+0x{off1:x} (=0x{candidate:x}) \
-                         -> +0x{off2:x} -> \"{name}\""
-                    );
-                    if hits > 40 {
-                        println!("  (зупиняюсь на 40 кандидатах)");
-                        return;
-                    }
-                }
-            }
-        }
+/// `MonoAssembly.image` is confirmed (`mono_layout.rs`), so this reads it
+/// directly and validates the read against the name/filename pair the
+/// scan that found the offset also confirmed — a cheap sanity check that
+/// costs nothing and catches "the offset was right last run but this
+/// build/session moved something" immediately rather than silently.
+fn read_image(remote: &Remote, assembly_data: u64) -> Option<u64> {
+    println!("\n--deep: MonoAssembly(Assembly-CSharp) -> image (офсет підтверджено)");
+    let addr = assembly_data + mono_layout::MONO_ASSEMBLY_IMAGE;
+    let image = u64::from_le_bytes(remote.read(addr, 8)?.try_into().unwrap());
+    if !plausible_ptr(image) {
+        eprintln!("MonoImage* за 0x{addr:x} не схожий на вказівник (0x{image:x})");
+        return None;
     }
-    if hits == 0 {
-        eprintln!(
-            "жодного кандидата для image не знайдено. Скиньте мені весь \
-             вивід цього прогону — розширю діапазон чи глибину сканування."
-        );
-        return;
-    }
+    let name = read_cstring(remote, {
+        let p = remote.read(image + mono_layout::MONO_IMAGE_NAME, 8)?;
+        u64::from_le_bytes(p.try_into().unwrap())
+    }, 64);
+    let filename = read_cstring(remote, {
+        let p = remote.read(image + mono_layout::MONO_IMAGE_FILENAME, 8)?;
+        u64::from_le_bytes(p.try_into().unwrap())
+    }, 64);
     println!(
-        "\nОдин з кандидатів вище — MonoImage* і офсет до його name/filename. \
-         Скиньте мені весь блок, і я зафіксую MONO_ASSEMBLY_IMAGE та \
-         відповідний офсет у mono_layout.rs."
+        "MonoImage*: 0x{image:x}  name={:?}  filename={:?}",
+        name, filename
     );
+    if name.as_deref() != Some("Assembly-CSharp") {
+        eprintln!(
+            "name не дорівнює \"Assembly-CSharp\" — офсет MONO_ASSEMBLY_IMAGE \
+             у mono_layout.rs, можливо, застарів для цього процесу; надішліть \
+             мені цей вивід."
+        );
+    }
+    Some(image)
 }
 
 fn read_cstring(remote: &Remote, addr: u64, max: usize) -> Option<String> {
