@@ -179,7 +179,22 @@ fn main() {
                     if let Some(&(_, _, vtable)) =
                         resolved.iter().find(|(n, _, _)| n == target)
                     {
-                        scan_heap_for_class(&remote, pid, target, vtable);
+                        let hits = scan_heap_for_class(&remote, pid, target, vtable);
+                        println!(
+                            "  ... і ще {} (показано перші 20 адрес вище)",
+                            hits.len().saturating_sub(20)
+                        );
+                        for &addr in hits.iter().take(3) {
+                            dump_object_fields(&remote, addr, target);
+                        }
+                        if !hits.is_empty() {
+                            println!(
+                                "\nСкиньте мені весь вивід. \"рядки\" — якщо там \
+                                 щось на кшталт CardID (\"CS2_182\") — це найкращий \
+                                 доказ; \"малі числа\" — кандидати на entity id, \
+                                 менш надійні, дивимось разом."
+                            );
+                        }
                     }
                 }
             }
@@ -688,11 +703,11 @@ fn find_singletons(remote: &Remote, classes: &[(String, u64)]) -> Vec<(String, u
 /// very large or unusual process doesn't turn this into a minutes-long
 /// scan; the cap has room to spare against what a Unity client's Mono
 /// heap actually tends to look like.
-fn scan_heap_for_class(remote: &Remote, pid: u32, class_name: &str, vtable: u64) {
+fn scan_heap_for_class(remote: &Remote, pid: u32, class_name: &str, vtable: u64) -> Vec<u64> {
     println!("\n--deep: сканую купчу пам'яті на живі об'єкти {class_name} (vtable=0x{vtable:x})");
     let Ok(maps) = procfs::read_maps(pid) else {
         eprintln!("не зміг прочитати /proc/{pid}/maps");
-        return;
+        return Vec::new();
     };
     let pattern = vtable.to_le_bytes();
     const CHUNK: u64 = 4 * 1024 * 1024;
@@ -755,12 +770,62 @@ fn scan_heap_for_class(remote: &Remote, pid: u32, class_name: &str, vtable: u64)
             "    ... ще {} (показано перші 20)",
             hits.len().saturating_sub(20)
         );
-        println!(
-            "\nСкиньте мені весь вивід. Кожна адреса-кандидат — це, ймовірно, \
-             реальний живий {class_name}. Наступний крок — прочитати поля \
-             одного з них (потрібні офсети CardId/DbfId, Zone, Controller, \
-             Tags — ще одна ітерація)."
-        );
+    }
+    hits
+}
+
+/// Dump one live object's own field bytes, with no `MonoClassField`
+/// knowledge at all -- the same reasoning as everywhere else in this
+/// file, just applied to instance data instead of class metadata: a
+/// pointer field that happens to hold a card ID string (`"CS2_182"`,
+/// `"UNG_999t2"`, ...) will decode through `looks_like_name` exactly the
+/// way an assembly or class name did, and a small positive 32-bit
+/// integer in a plausible range is worth a human's eye even without
+/// knowing which field it is. This is a much weaker signal than the
+/// earlier scans (nothing here is structurally validated the way
+/// `klass == class_ptr` was), so results are reported as candidates to
+/// look at, not as confirmed fields.
+fn dump_object_fields(remote: &Remote, addr: u64, class_name: &str) {
+    println!("\n--deep: сирий дамп полів {class_name}* = 0x{addr:x}");
+    const DUMP_LEN: usize = 0x180;
+    let Some(bytes) = remote.read(addr, DUMP_LEN) else {
+        eprintln!("не зміг прочитати 0x{DUMP_LEN:x} байтів з 0x{addr:x}");
+        return;
+    };
+
+    println!("  сирі байти:");
+    for (row, chunk) in bytes.chunks(16).enumerate() {
+        println!("    +0x{:03x}: {}", row * 16, hex(chunk));
+    }
+
+    println!("  рядки, знайдені через вказівники в полях:");
+    let mut any_string = false;
+    for off in (8..DUMP_LEN - 8).step_by(8) {
+        let ptr = u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap());
+        if !plausible_ptr(ptr) {
+            continue;
+        }
+        let Some(str_bytes) = remote.read(ptr, 64) else { continue };
+        if let Some(s) = looks_like_name(&str_bytes) {
+            println!("    +0x{off:x}: \"{s}\"");
+            any_string = true;
+        }
+    }
+    if !any_string {
+        println!("    (жодної)");
+    }
+
+    println!("  малі 32-бітні числа (кандидати на id/тег, діапазон 1..=2000):");
+    let mut any_int = false;
+    for off in (8..DUMP_LEN - 4).step_by(4) {
+        let v = i32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
+        if (1..=2000).contains(&v) {
+            println!("    +0x{off:x}: {v}");
+            any_int = true;
+        }
+    }
+    if !any_int {
+        println!("    (жодного)");
     }
 }
 
