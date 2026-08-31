@@ -194,9 +194,6 @@ fn main() {
                             dump_player_table(&remote, &hits);
                         }
                         if !hits.is_empty() {
-                            cross_check_known_values(&remote, target, &hits);
-                        }
-                        if !hits.is_empty() {
                             println!(
                                 "\nСкиньте мені весь вивід. \"рядки\" — якщо там \
                                  щось на кшталт CardID (\"CS2_182\") — це найкращий \
@@ -281,9 +278,11 @@ fn looks_like_name(bytes: &[u8]) -> Option<String> {
 /// trailing null. On x86-64 that puts `length` at `+0x10` and the char data
 /// at `+0x14` -- no padding gap, since `gint32` and `gunichar2[]` are both
 /// already aligned there. This is a stronger, more specific check than
-/// `looks_like_name`: it requires the length field's own value to agree
-/// with how far the string data actually runs before hitting embedded
-/// nulls/garbage.
+/// `looks_like_name`: it trusts the length field's own value (not a null
+/// terminator search) to know how many UTF-16 units to read, then requires
+/// every decoded character to be printable ASCII -- garbage data at `+0x10`
+/// almost never happens to look like both a plausible small length *and*
+/// an all-printable string that follows it.
 fn try_mono_string(remote: &Remote, ptr: u64) -> Option<String> {
     if !plausible_ptr(ptr) {
         return None;
@@ -887,74 +886,6 @@ fn dump_object_fields(remote: &Remote, addr: u64, class_name: &str) {
     }
     if !any_int {
         println!("    (жодного)");
-    }
-}
-
-/// Ground-truth values read straight out of the currently active game's
-/// `Power.log` by plain file read (not memory) -- a real `PlayerID`/
-/// `EntityID`/hero-power `id=` seen in this exact session. Searching for
-/// these literal numbers across *every* live Entity/Player hit (not just
-/// the 3 we dump in full) is a much stronger signal than eyeballing "small
-/// numbers" in a handful of hex dumps: if the same offset produces one of
-/// these known values across independent objects, that's not a coincidence.
-const KNOWN_ENTITY_IDS: &[i32] = &[57]; // Lesser Heal hero power, player=2
-const KNOWN_PLAYER_IDS: &[i32] = &[2, 3]; // PlayerID from CREATE_GAME
-/// GameAccountId `lo` halves -- `hi` is identical for both (same region/
-/// shard prefix) so only `lo` is worth searching for as a plain 32-bit int.
-const KNOWN_ACCOUNT_ID_LO: &[(&str, u32)] =
-    &[("xror#21652", 84165946), ("WildKid#21665", 110765726)];
-
-/// Scan every hit (not just the handful fully dumped) for `KNOWN_ENTITY_IDS`
-/// / `KNOWN_PLAYER_IDS` at any 4-byte-aligned offset in the first `WINDOW`
-/// bytes, and for `KNOWN_ACCOUNT_ID_LO` the same way. Prints an offset
-/// histogram: an offset that keeps producing a *correct* known value across
-/// many different objects is real evidence for what that offset means; an
-/// offset that only ever matches by luck on one object is noise.
-fn cross_check_known_values(remote: &Remote, class_name: &str, hits: &[u64]) {
-    const WINDOW: usize = 0x200;
-    println!(
-        "\n--deep: звіряю {class_name} з реальними значеннями з поточної гри \
-         (Power.log): entity_id∈{KNOWN_ENTITY_IDS:?}, player_id∈{KNOWN_PLAYER_IDS:?}, \
-         account_lo∈{:?}",
-        KNOWN_ACCOUNT_ID_LO.iter().map(|(n, _)| n).collect::<Vec<_>>()
-    );
-    let mut int_offset_hits: std::collections::HashMap<u64, Vec<i32>> = Default::default();
-    let mut account_hits: Vec<(u64, u64, &str)> = Vec::new();
-
-    for &addr in hits {
-        let Some(bytes) = remote.read(addr, WINDOW) else { continue };
-        for off in (0..WINDOW - 4).step_by(4) {
-            let raw = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
-            let v = raw as i32;
-            if KNOWN_ENTITY_IDS.contains(&v) || KNOWN_PLAYER_IDS.contains(&v) {
-                int_offset_hits.entry(off as u64).or_default().push(v);
-            }
-            for &(name, lo) in KNOWN_ACCOUNT_ID_LO {
-                if raw == lo {
-                    account_hits.push((addr, off as u64, name));
-                }
-            }
-        }
-    }
-
-    if int_offset_hits.is_empty() {
-        println!("  жодного збігу з entity_id/player_id серед перших 0x{WINDOW:x} байтів жодного об'єкта");
-    } else {
-        let mut offs: Vec<_> = int_offset_hits.into_iter().collect();
-        offs.sort_by_key(|(_, v)| std::cmp::Reverse(v.len()));
-        println!("  офсети, де траплялись відомі id (offset: [значення, ...], скільки об'єктів):");
-        for (off, vals) in offs.iter().take(15) {
-            println!("    +0x{off:x}: {vals:?} ({} об'єктів)", vals.len());
-        }
-    }
-
-    if account_hits.is_empty() {
-        println!("  жодного збігу з account_id.lo — ці значення, схоже, не лежать прямим 32-бітним полем у цьому об'єкті");
-    } else {
-        println!("  !!! знайдено account_id.lo напряму в об'єкті (сильний доказ):");
-        for (addr, off, name) in &account_hits {
-            println!("    0x{addr:x} +0x{off:x} -> {name}");
-        }
     }
 }
 

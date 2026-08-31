@@ -149,23 +149,18 @@ pub const ENTITY_CARD_ID: u64 = 0x30;
 pub const ENTITY_ID: u64 = 0x38;
 
 /// `Player.playerId` (the 1-indexed `PlayerID` `Power.log`'s `CREATE_GAME`
-/// reports, distinct from `EntityID`). **Confirmed live**: the Player
-/// object whose name field decoded to `"xror"` had `1` here, and the one
-/// decoding to `"WildKid"` had `2` -- matching `Player EntityID=2
-/// PlayerID=1` / `Player EntityID=3 PlayerID=2` from that game's
-/// `Power.log` exactly. Only 2 live samples so far (both players of one
-/// game) -- worth another confirmation next session before fully trusting
-/// it the way `ENTITY_ID` is trusted.
+/// reports, distinct from `EntityID`). **Confirmed live, fully**: first
+/// seen matching on that one game's two Player objects (`"xror"` -> `1`,
+/// `"WildKid"` -> `2`, exactly `Player EntityID=2 PlayerID=1` / `Player
+/// EntityID=3 PlayerID=2` from that game's `Power.log`), then re-confirmed
+/// without exception across 20+ live Player objects spanning many
+/// different past games -- the local player (`xror`) always reads `1`,
+/// every opponent always reads `2`. Trusted the same way `ENTITY_ID` is.
 pub const PLAYER_PLAYER_ID: u64 = 0x164;
 
 /// `Player.battleTag` (the short name before `#`, e.g. `"xror"`) -- a
 /// `System.String*`. **Confirmed live** the same way as the two above.
 pub const PLAYER_NAME: u64 = 0x120;
-
-/// `Player.playerId` -- promoted from "2 samples" to fully confirmed: 20
-/// live Player objects across many different past games all agree without
-/// exception (`xror` -> 1 every time, every opponent -> 2 every time). No
-/// longer a "needs more evidence" note.
 
 /// Entity's remaining unidentified fields, `+0x10/+0x18/+0x20/+0x28` --
 /// four pointer-shaped values, not small ints, so `Zone`/`Controller`
