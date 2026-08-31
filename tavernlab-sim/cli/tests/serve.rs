@@ -685,3 +685,27 @@ fn asking_for_help_does_not_start_work() {
     assert!(stderr.contains("невідома команда"), "{stderr}");
     assert!(stderr.contains("tavernsim <команда>"), "{stderr}");
 }
+
+/// `/api/memory` shells out to a sibling `memreader` binary. CI has no
+/// Hearthstone.exe running, so this can't assert on real snapshot data --
+/// what it can and must assert is that a missing target process is a fast,
+/// well-formed error (a JSON `{"error": ...}` body) rather than a hang or a
+/// raw crash bubbling through the HTTP layer. `memreader` itself is built by
+/// the same `cargo test` run (it's a workspace member), so it is present
+/// next to `tavernsim` in the target directory the same way the server's
+/// own `sibling_binary()` expects.
+#[test]
+fn the_memory_endpoint_answers_even_with_no_game_running() {
+    let server = Server::start();
+    let (status, body) = server.get("/api/memory");
+    assert!(
+        status == 200 || status == 502,
+        "expected either a real snapshot or a well-formed error, got {status}: {body}"
+    );
+    if status == 502 {
+        assert!(json(&body).get("error").is_some(), "{body}");
+    } else {
+        assert!(json(&body).get("entities").is_some(), "{body}");
+        assert!(json(&body).get("players").is_some(), "{body}");
+    }
+}
