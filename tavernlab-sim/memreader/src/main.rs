@@ -335,19 +335,37 @@ const INTERESTING_SUBSTRINGS: &[&str] = &[
 /// guessed offset for both the table's location in `MonoImage` and a
 /// class's name field within `MonoClass`.
 ///
-/// This is the widest, slowest scan in the tool by a wide margin (up to a
-/// few hundred outer offsets times a 128-entry bucket probe times several
-/// candidate name offsets per bucket) -- expect it to take a few seconds,
-/// not the near-instant reply of the scans before it.
+/// This is the widest, slowest scan in the tool by a wide margin -- expect
+/// it to take real seconds, not the near-instant reply of the scans
+/// before it.
+///
+/// The first version of this scan (kept a record of in the commit
+/// history) took the *first* name-shaped hit per bucket at whichever
+/// offset produced one, and got fooled: `MonoImage+0x48`/`+0x58` turned
+/// out to be the `references` array (each entry a `MonoAssembly*`, hit at
+/// `+0x10` -- the very offset `MONO_ASSEMBLY_NAME` already confirms), and
+/// `MonoImage+0x8` mixed real class names with method names from entirely
+/// different structs that happened to have *some* plausible pointer at
+/// *some* tried offset. A real class table is structurally homogeneous:
+/// almost every bucket is a `MonoClass*`, so the name should sit at the
+/// *same* offset across nearly all of them. This version requires that
+/// dominant-offset agreement before it calls something a match, which is
+/// what actually separates a real table from scan noise.
 fn scan_for_class_table(remote: &Remote, image: u64) {
     println!("\n--deep: MonoImage.class_cache (сканую — найширший і найповільніший крок)");
-    const SEARCH_RANGE: u64 = 0x600;
-    const BUCKETS_TO_PROBE: usize = 128;
-    const NAME_OFFSETS: &[u64] = &[0, 8, 16, 24, 32, 40, 48, 0x30, 0x34, 0x38];
+    const SEARCH_RANGE: u64 = 0x1000;
+    const BUCKETS_TO_PROBE: usize = 256;
+    const NAME_OFFSETS: &[u64] = &[0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80];
     const MIN_DENSITY: usize = 6;
-    const MAX_TABLES_PROBED: usize = 6;
+    const MAX_TABLES_PROBED: usize = 24;
+    /// A dominant offset needs at least this many agreeing hits, and to
+    /// account for at least this fraction of everything found, before the
+    /// table counts as structurally consistent rather than noise.
+    const MIN_AGREEING_HITS: usize = 8;
+    const MIN_AGREEMENT_FRACTION: f64 = 0.6;
 
     let mut tables_probed = 0;
+    let mut strong_matches = 0;
     for table_off in (0..SEARCH_RANGE).step_by(8) {
         if tables_probed >= MAX_TABLES_PROBED {
             println!("  (зупиняюсь на {MAX_TABLES_PROBED} таблицях-кандидатах)");
@@ -368,12 +386,17 @@ fn scan_for_class_table(remote: &Remote, image: u64) {
             continue;
         }
         tables_probed += 1;
-        println!(
-            "  таблиця-кандидат: MonoImage+0x{table_off:x} -> 0x{table_ptr:x} \
-             ({density}/{BUCKETS_TO_PROBE} заповнено)"
-        );
-        let mut names_found: Vec<(u64, String)> = Vec::new();
+
+        // Every name found, per bucket, at every offset that produced one
+        // -- not just the first -- so the offset that dominates can be
+        // picked out afterwards instead of committed to per-bucket early.
+        let mut by_offset: std::collections::HashMap<u64, Vec<String>> = Default::default();
+        let mut checked = 0;
         for &bucket in buckets.iter().filter(|&&b| plausible_ptr(b)) {
+            checked += 1;
+            if checked > 200 {
+                break;
+            }
             for &name_off in NAME_OFFSETS {
                 let Some(np) = remote.read(bucket + name_off, 8) else { continue };
                 let name_ptr = u64::from_le_bytes(np.try_into().unwrap());
@@ -382,46 +405,59 @@ fn scan_for_class_table(remote: &Remote, image: u64) {
                 }
                 let Some(str_bytes) = remote.read(name_ptr, 64) else { continue };
                 if let Some(name) = looks_like_name(&str_bytes) {
-                    names_found.push((name_off, name));
-                    break; // one plausible name per bucket is enough signal
+                    by_offset.entry(name_off).or_default().push(name);
                 }
             }
-            if names_found.len() >= 60 {
-                break;
-            }
         }
-        if names_found.is_empty() {
-            println!("    (жодного схожого на назву класу — це не та таблиця)");
+        let total_hits: usize = by_offset.values().map(Vec::len).sum();
+        if total_hits == 0 {
             continue;
         }
-        let interesting: Vec<&(u64, String)> = names_found
+        let Some((&dom_off, dom_names)) = by_offset.iter().max_by_key(|(_, v)| v.len()) else {
+            continue;
+        };
+        let agreement = dom_names.len() as f64 / total_hits as f64;
+        if dom_names.len() < MIN_AGREEING_HITS || agreement < MIN_AGREEMENT_FRACTION {
+            continue; // structurally inconsistent -- almost certainly noise
+        }
+
+        strong_matches += 1;
+        println!(
+            "  таблиця-кандидат: MonoImage+0x{table_off:x} -> 0x{table_ptr:x} \
+             ({density}/{BUCKETS_TO_PROBE} заповнено, {}/{total_hits} узгоджено на +0x{dom_off:x})",
+            dom_names.len()
+        );
+        let interesting: Vec<&String> = dom_names
             .iter()
-            .filter(|(_, n)| INTERESTING_SUBSTRINGS.iter().any(|kw| n.contains(kw)))
+            .filter(|n| INTERESTING_SUBSTRINGS.iter().any(|kw| n.contains(kw)))
             .collect();
         if !interesting.is_empty() {
             println!("    !!! знайдено цікаві назви:");
-            for (off, n) in &interesting {
-                println!("      +0x{off:x} -> \"{n}\"");
+            for n in &interesting {
+                println!("      \"{n}\"");
             }
         }
-        println!("    приклади ({} усього):", names_found.len());
-        for (off, n) in names_found.iter().take(15) {
-            println!("      +0x{off:x} -> \"{n}\"");
+        println!("    приклади ({} узгоджених):", dom_names.len());
+        for n in dom_names.iter().take(15) {
+            println!("      \"{n}\"");
         }
     }
-    if tables_probed == 0 {
+    if strong_matches == 0 {
         eprintln!(
-            "жодного кандидата на таблицю класів не знайдено в перших 0x{SEARCH_RANGE:x} \
-             байтах MonoImage. Можливо, class_cache лежить далі — розширю \
-             SEARCH_RANGE, якщо цей вивід це підтвердить."
+            "{tables_probed} таблиць з достатньою щільністю переглянуто, жодна не \
+             показала однорідного офсету назви — тобто жодна не схожа на \
+             MonoInternalHashTable класів. Скиньте мені весь вивід; наступний \
+             крок — розширити SEARCH_RANGE або спробувати менш строгий поріг \
+             узгодження."
         );
         return;
     }
     println!(
-        "\nСкиньте мені весь блок вище. Якщо серед \"!!! знайдено цікаві назви\" \
-         є GameState/Entity/Player — саме там і продовжимо: наступний крок — \
-         прочитати поля цього MonoClass (перевірити vtable/статичні поля, \
-         пошук екземпляра гри, що зараз йде)."
+        "\nЗнайдено {strong_matches} однорідних таблиць. Скиньте мені весь блок \
+         вище. Якщо серед \"!!! знайдено цікаві назви\" є GameState/Entity/\
+         Player — саме там і продовжимо: наступний крок — прочитати поля \
+         цього MonoClass (vtable/статичні поля, пошук екземпляра гри, що \
+         зараз йде)."
     );
 }
 
