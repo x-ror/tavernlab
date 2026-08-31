@@ -1,0 +1,12 @@
+[package]
+name = "memreader"
+version = "0.1.0"
+edition = "2024"
+
+# Zero third-party dependencies, same rule as the rest of the workspace
+# (CLAUDE.md). process_vm_readv is called by declaring the glibc symbol
+# directly -- it has been part of glibc since 2.15 (2012) -- rather than
+# pulling in the `libc` crate.
+[[bin]]
+name = "memreader"
+path = "src/main.rs"
