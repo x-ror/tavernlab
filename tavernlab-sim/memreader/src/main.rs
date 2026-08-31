@@ -170,15 +170,7 @@ fn main() {
     // image the same evidence-based way that offset was found.
     if let Some(csharp) = walk_assembly_list(&remote, domain_addr) {
         if let Some(image) = read_image(&remote, csharp) {
-            println!(
-                "\nНаступний крок — MonoImage.class_cache: ще не з'ясовано \
-                 (MONO_IMAGE_CLASS_CACHE у mono_layout.rs — заглушка). Це \
-                 хеш-таблиця Mono, не проста строка, тож теперішня техніка \
-                 сканування («знайти рядок поруч») сюди напряму не \
-                 переноситься — знадобиться окремий крок. MonoImage* цього \
-                 запуску: 0x{image:x} (адреса дійсна лише для поточного \
-                 процесу, не постійна між перезапусками гри)."
-            );
+            scan_for_class_table(&remote, image);
         }
     }
 }
@@ -224,12 +216,8 @@ fn plausible_ptr(v: u64) -> bool {
 /// Whether `bytes` looks like a short, printable identifier -- an assembly
 /// or class name, not binary data. Deliberately strict: this is what kept
 /// the domain_assemblies and MonoAssembly.image scans (both now resolved,
-/// see mono_layout.rs) from reporting noise. Not called anywhere yet in
-/// this file — the next milestone, MonoImage.class_cache, is a hash table
-/// rather than a single string, so scanning it needs a shape-aware variant
-/// of this rather than a straight reuse; kept here as the building block
-/// for that.
-#[allow(dead_code)]
+/// see mono_layout.rs) from reporting noise, and does the same job for
+/// `scan_for_class_table` below.
 fn looks_like_name(bytes: &[u8]) -> Option<String> {
     let end = bytes.iter().position(|&b| b == 0)?;
     if !(2..48).contains(&end) {
@@ -320,6 +308,121 @@ fn read_image(remote: &Remote, assembly_data: u64) -> Option<u64> {
         );
     }
     Some(image)
+}
+
+/// Names likely to belong to Hearthstone's own game-state classes rather
+/// than Unity/BCL plumbing -- printed with a marker so a long class list
+/// doesn't bury the entries worth following up on. Not an exhaustive or
+/// authoritative list, just the ones this session's chat named as the
+/// live-tracking target (turn, hand, board, plays) plus the Arena draft
+/// class named earlier -- adjust freely once real names are seen.
+const INTERESTING_SUBSTRINGS: &[&str] = &[
+    "GameState",
+    "DraftManager",
+    "Entity",
+    "Player",
+    "Board",
+    "Network.Game",
+    "PowerProcessor",
+    "ZoneMgr",
+];
+
+/// `MonoImage.class_cache` is a `MonoInternalHashTable`, not a single
+/// pointer to a string -- so this is a different shape of evidence-based
+/// scan than `walk_assembly_list`/`read_image` above, but the same idea:
+/// look for a bucket array (many consecutive plausible pointers) whose
+/// entries lead to short, name-shaped strings, rather than trust a single
+/// guessed offset for both the table's location in `MonoImage` and a
+/// class's name field within `MonoClass`.
+///
+/// This is the widest, slowest scan in the tool by a wide margin (up to a
+/// few hundred outer offsets times a 128-entry bucket probe times several
+/// candidate name offsets per bucket) -- expect it to take a few seconds,
+/// not the near-instant reply of the scans before it.
+fn scan_for_class_table(remote: &Remote, image: u64) {
+    println!("\n--deep: MonoImage.class_cache (сканую — найширший і найповільніший крок)");
+    const SEARCH_RANGE: u64 = 0x600;
+    const BUCKETS_TO_PROBE: usize = 128;
+    const NAME_OFFSETS: &[u64] = &[0, 8, 16, 24, 32, 40, 48, 0x30, 0x34, 0x38];
+    const MIN_DENSITY: usize = 6;
+    const MAX_TABLES_PROBED: usize = 6;
+
+    let mut tables_probed = 0;
+    for table_off in (0..SEARCH_RANGE).step_by(8) {
+        if tables_probed >= MAX_TABLES_PROBED {
+            println!("  (зупиняюсь на {MAX_TABLES_PROBED} таблицях-кандидатах)");
+            break;
+        }
+        let Some(ptr_bytes) = remote.read(image + table_off, 8) else { continue };
+        let table_ptr = u64::from_le_bytes(ptr_bytes.try_into().unwrap());
+        if !plausible_ptr(table_ptr) {
+            continue;
+        }
+        let Some(bucket_bytes) = remote.read(table_ptr, BUCKETS_TO_PROBE * 8) else { continue };
+        let buckets: Vec<u64> = bucket_bytes
+            .chunks_exact(8)
+            .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        let density = buckets.iter().filter(|&&b| plausible_ptr(b)).count();
+        if density < MIN_DENSITY {
+            continue;
+        }
+        tables_probed += 1;
+        println!(
+            "  таблиця-кандидат: MonoImage+0x{table_off:x} -> 0x{table_ptr:x} \
+             ({density}/{BUCKETS_TO_PROBE} заповнено)"
+        );
+        let mut names_found: Vec<(u64, String)> = Vec::new();
+        for &bucket in buckets.iter().filter(|&&b| plausible_ptr(b)) {
+            for &name_off in NAME_OFFSETS {
+                let Some(np) = remote.read(bucket + name_off, 8) else { continue };
+                let name_ptr = u64::from_le_bytes(np.try_into().unwrap());
+                if !plausible_ptr(name_ptr) {
+                    continue;
+                }
+                let Some(str_bytes) = remote.read(name_ptr, 64) else { continue };
+                if let Some(name) = looks_like_name(&str_bytes) {
+                    names_found.push((name_off, name));
+                    break; // one plausible name per bucket is enough signal
+                }
+            }
+            if names_found.len() >= 60 {
+                break;
+            }
+        }
+        if names_found.is_empty() {
+            println!("    (жодного схожого на назву класу — це не та таблиця)");
+            continue;
+        }
+        let interesting: Vec<&(u64, String)> = names_found
+            .iter()
+            .filter(|(_, n)| INTERESTING_SUBSTRINGS.iter().any(|kw| n.contains(kw)))
+            .collect();
+        if !interesting.is_empty() {
+            println!("    !!! знайдено цікаві назви:");
+            for (off, n) in &interesting {
+                println!("      +0x{off:x} -> \"{n}\"");
+            }
+        }
+        println!("    приклади ({} усього):", names_found.len());
+        for (off, n) in names_found.iter().take(15) {
+            println!("      +0x{off:x} -> \"{n}\"");
+        }
+    }
+    if tables_probed == 0 {
+        eprintln!(
+            "жодного кандидата на таблицю класів не знайдено в перших 0x{SEARCH_RANGE:x} \
+             байтах MonoImage. Можливо, class_cache лежить далі — розширю \
+             SEARCH_RANGE, якщо цей вивід це підтвердить."
+        );
+        return;
+    }
+    println!(
+        "\nСкиньте мені весь блок вище. Якщо серед \"!!! знайдено цікаві назви\" \
+         є GameState/Entity/Player — саме там і продовжимо: наступний крок — \
+         прочитати поля цього MonoClass (перевірити vtable/статичні поля, \
+         пошук екземпляра гри, що зараз йде)."
+    );
 }
 
 fn read_cstring(remote: &Remote, addr: u64, max: usize) -> Option<String> {
