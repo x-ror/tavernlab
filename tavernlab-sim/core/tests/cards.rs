@@ -1302,6 +1302,31 @@ fn a_dormant_minion_is_untouchable_until_it_wakes() {
     assert!(!f.g.players[1].board[0].flags.has(Flags::DORMANT), "two turns later");
 }
 
+/// A Dormant minion waking up is "newly in play" the same way a freshly
+/// played one is: unless the effect that wakes it grants Charge or Rush, it
+/// has summoning sickness on the turn it wakes and can swing starting the
+/// turn after — this is the real ruling for every Dormant card (Ancient of
+/// War, Onyxia, ...), not something Warden Maiev does differently. Written
+/// because a report described the one-turn wait as a bug; it is not.
+#[test]
+fn a_minion_warden_maiev_wakes_still_needs_a_turn_before_it_can_swing() {
+    let mut f = Fix::new().board(ME, &["Warden Maiev"]);
+    f.play("Chillwind Yeti", None); // 4/5, no Charge or Rush
+    assert!(f.mine(1).flags.has(Flags::DORMANT), "asleep the turn it lands");
+    assert!(!f.mine(1).can_attack());
+
+    f.g.begin_turn(); // the dormant counter (1 turn) reaches zero: it wakes
+    assert!(!f.mine(1).flags.has(Flags::DORMANT), "awake now");
+    assert_eq!((f.mine(1).atk, f.mine(1).max_hp), (7, 8), "+3/+3 from Warden Maiev");
+    assert!(
+        !f.mine(1).can_attack(),
+        "waking is being newly summoned -- no Charge/Rush means no attack this turn"
+    );
+
+    f.g.begin_turn(); // one more of the owner's turns
+    assert!(f.mine(1).can_attack(), "summoning sickness is gone the turn after");
+}
+
 #[test]
 fn a_dynamic_cost_tracks_the_hand() {
     let mut f = Fix::new();
