@@ -707,5 +707,7 @@ fn the_memory_endpoint_answers_even_with_no_game_running() {
     } else {
         assert!(json(&body).get("entities").is_some(), "{body}");
         assert!(json(&body).get("players").is_some(), "{body}");
+        assert!(json(&body).get("sides").is_some(), "{body}");
+        assert!(json(&body).get("game").is_some(), "{body}");
     }
 }

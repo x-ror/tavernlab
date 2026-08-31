@@ -67,11 +67,18 @@ cargo run -p memreader -- --snapshot
 stderr**, а в stdout — рівно один JSON-документ:
 
 ```json
-{"entities":[{"addr":"0x74a91480","cardId":"HERO_09dbp","id":57,
-              "zone":1,"controller":2,"atk":null,"health":null,
-              "cost":null,"zonePosition":null}, ...],
- "players":[{"addr":"0x1e526d8c0","name":"xror","playerId":1}, ...]}
+{"game":{"turn":4,"step":6,"currentPlayer":1,"idCap":81},
+ "entities":[{"addr":"0x74a91480","cardId":"HERO_11","id":64,...}],
+ "players":[{"addr":"...","name":"xror","playerId":1,"entityId":2}, ...],
+ "sides":[{"playerId":1,"name":"xror","current":true,"mana":3,"manaMax":4,
+           "armor":0,"hero":{...},"play":[...],"hand":[...],"deck":20,"graveyard":2},
+          {"playerId":2,...}]}
 ```
+
+`entities` — лише поточна гра: GameEntity разом із Player id=2/3 в одному
+острові купи, дедуп по `EntityID` (спочатку повніший об'єкт, потім ближчий
+до GameEntity). Герой — тег `HERO_ENTITY` (27) на Player. `--board` друкує
+той самий зріз у stderr.
 
 Це те, що `tavernsim watch` (чи будь-який інший споживач) може безпечно
 запустити як підпроцес і розпарсити `tavernlab_json::Json::parse` —

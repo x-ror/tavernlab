@@ -176,8 +176,8 @@ fn main() {
                 let classes = dump_class_names(&remote, image);
                 let resolved = find_singletons(&remote, &classes);
 
-                if mode == "--snapshot" {
-                    print_snapshot(&remote, pid, &resolved);
+                if mode == "--snapshot" || mode == "--board" {
+                    print_snapshot(&remote, pid, &resolved, mode == "--board");
                     return;
                 }
 
@@ -185,7 +185,7 @@ fn main() {
                     if let Some(&(_, _, vtable)) =
                         resolved.iter().find(|(n, _, _)| n == target)
                     {
-                        let hits = scan_heap_for_class(&remote, pid, target, vtable);
+                        let hits = scan_heap_for_class(&remote, pid, target, vtable, 500);
                         eprintln!(
                             "  ... і ще {} (показано перші 20 адрес вище)",
                             hits.len().saturating_sub(20)
@@ -222,67 +222,493 @@ fn main() {
 /// `ENTITY_TAG_LIST`/`PLAYER_NAME`/`PLAYER_PLAYER_ID`) are the ones
 /// `mono_layout.rs` marks confirmed live -- see `README.md` for the
 /// evidence behind each.
-fn print_snapshot(remote: &Remote, pid: u32, resolved: &[(String, u64, u64)]) {
+fn print_snapshot(remote: &Remote, pid: u32, resolved: &[(String, u64, u64)], board: bool) {
     use tavernlab_json::Out;
 
-    let mut entities: Vec<(u64, Option<String>, i32)> = Vec::new();
-    let mut players: Vec<(u64, Option<String>, i32)> = Vec::new();
+    let mut entities: Vec<EntityHit> = Vec::new();
+    let mut players: Vec<PlayerHit> = Vec::new();
     if let Some(&(_, _, vtable)) = resolved.iter().find(|(n, _, _)| n == "Entity") {
-        let hits = scan_heap_for_class(remote, pid, "Entity", vtable);
-        entities = dump_entity_table(remote, &hits);
+        let hits = scan_heap_for_class(remote, pid, "Entity", vtable, 12_000);
+        entities = collect_entity_hits(remote, &hits);
     }
     if let Some(&(_, _, vtable)) = resolved.iter().find(|(n, _, _)| n == "Player") {
-        let hits = scan_heap_for_class(remote, pid, "Player", vtable);
-        players = dump_player_table(remote, &hits);
+        let hits = scan_heap_for_class(remote, pid, "Player", vtable, 200);
+        players = collect_player_hits(remote, &hits);
+    }
+
+    let live = current_game_entities(&entities);
+    let game = read_game_state(&live);
+    let sides = build_sides(&live, &players, game.current_player);
+
+    if board {
+        print_board(&game, &sides, &live);
+        return;
     }
 
     let mut out = Out::new();
     out.obj(|o| {
+        o.field("game", |v| {
+            v.obj(|o| {
+                o.field("turn", |v| v.opt(game.turn, |o, n| o.int(n as i64)));
+                o.field("step", |v| v.opt(game.step, |o, n| o.int(n as i64)));
+                o.field("currentPlayer", |v| {
+                    v.opt(game.current_player, |o, n| o.int(n as i64))
+                });
+                o.int_field("idCap", game.id_cap as i64);
+            })
+        });
         o.field("entities", |v| {
             v.arr(|a| {
-                for (addr, card_id, id) in &entities {
-                    let tags = read_entity_tags(remote, *addr);
-                    a.item(|v| {
-                        v.obj(|o| {
-                            o.field("addr", |v| v.str(&format!("0x{addr:x}")));
-                            o.field("cardId", |v| v.opt(card_id.as_deref(), |o, s| o.str(s)));
-                            o.int_field("id", *id as i64);
-                            o.field("zone", |v| {
-                                v.opt(find_tag(&tags, 49), |o, n| o.int(n as i64))
-                            });
-                            o.field("controller", |v| {
-                                v.opt(find_tag(&tags, 50), |o, n| o.int(n as i64))
-                            });
-                            o.field("atk", |v| v.opt(find_tag(&tags, 47), |o, n| o.int(n as i64)));
-                            o.field("health", |v| {
-                                v.opt(find_tag(&tags, 45), |o, n| o.int(n as i64))
-                            });
-                            o.field("cost", |v| {
-                                v.opt(find_tag(&tags, 48), |o, n| o.int(n as i64))
-                            });
-                            o.field("zonePosition", |v| {
-                                v.opt(find_tag(&tags, 263), |o, n| o.int(n as i64))
-                            });
-                        })
-                    });
+                for e in &live {
+                    a.item(|v| emit_entity(v, e));
                 }
             })
         });
         o.field("players", |v| {
             v.arr(|a| {
-                for (addr, name, player_id) in &players {
+                for p in &players {
                     a.item(|v| {
                         v.obj(|o| {
-                            o.field("addr", |v| v.str(&format!("0x{addr:x}")));
-                            o.field("name", |v| v.opt(name.as_deref(), |o, s| o.str(s)));
-                            o.int_field("playerId", *player_id as i64);
+                            o.field("addr", |v| v.str(&format!("0x{:x}", p.addr)));
+                            o.field("name", |v| v.opt(p.name.as_deref(), |o, s| o.str(s)));
+                            o.int_field("playerId", p.player_id as i64);
+                            o.int_field("entityId", p.entity_id as i64);
                         })
                     });
                 }
             })
         });
+        o.field("sides", |v| {
+            v.arr(|a| {
+                for s in &sides {
+                    a.item(|v| emit_side(v, s));
+                }
+            })
+        });
     });
     println!("{}", out.finish());
+}
+
+fn print_board(game: &GameState, sides: &[Side], live: &[EntityHit]) {
+    eprintln!(
+        "хід {}  крок {}  ходить гравець {}  idCap {}",
+        game.turn.map(|n| n.to_string()).unwrap_or("?".into()),
+        game.step.map(|n| n.to_string()).unwrap_or("?".into()),
+        game.current_player.map(|n| n.to_string()).unwrap_or("?".into()),
+        game.id_cap
+    );
+    for id in [1, 2, 3] {
+        if let Some(e) = live.iter().find(|e| e.id == id) {
+            eprintln!(
+                "  id={id} @{:x} {} tags: {}",
+                e.addr,
+                e.card_id.as_deref().unwrap_or("-"),
+                format_tags(&e.tags)
+            );
+        }
+    }
+    for s in sides {
+        let star = if game.current_player == Some(s.player_id) {
+            "*"
+        } else {
+            " "
+        };
+        eprintln!(
+            "\n{star} P{} {}  mana {}/{}  armor {}",
+            s.player_id,
+            s.name.as_deref().unwrap_or("?"),
+            s.mana.map(|n| n.to_string()).unwrap_or("?".into()),
+            s.mana_max,
+            s.armor
+        );
+        if let Some(h) = &s.hero {
+            eprintln!(
+                "  hero {} {}/{}",
+                h.card_id.as_deref().unwrap_or("?"),
+                h.tag(TAG_ATK).unwrap_or(0),
+                h.tag(TAG_HEALTH).unwrap_or(0)
+            );
+        }
+        if let Some(hp) = &s.hero_power {
+            eprintln!("  power {}", hp.card_id.as_deref().unwrap_or("?"));
+        }
+        if let Some(w) = &s.weapon {
+            eprintln!(
+                "  wep {} {}/{}",
+                w.card_id.as_deref().unwrap_or("?"),
+                w.tag(TAG_ATK).unwrap_or(0),
+                w.tag(TAG_HEALTH).unwrap_or(0)
+            );
+        }
+        eprint!("  play:");
+        if s.play.is_empty() {
+            eprintln!(" (empty)");
+        } else {
+            eprintln!();
+            for e in &s.play {
+                eprintln!(
+                    "    [{}] {} {}/{}",
+                    e.tag(TAG_ZONE_POSITION).unwrap_or(0),
+                    e.card_id.as_deref().unwrap_or("?"),
+                    e.tag(TAG_ATK).unwrap_or(0),
+                    e.tag(TAG_HEALTH).unwrap_or(0)
+                );
+            }
+        }
+        eprint!("  hand:");
+        if s.hand.is_empty() {
+            eprintln!(" (empty)");
+        } else {
+            eprintln!(
+                " {}",
+                s.hand
+                    .iter()
+                    .map(|e| format!(
+                        "{}({})",
+                        e.card_id.as_deref().unwrap_or("?"),
+                        e.tag(TAG_COST).unwrap_or(0)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        if !s.secret.is_empty() {
+            eprintln!(
+                "  secret: {}",
+                s.secret
+                    .iter()
+                    .map(|e| e.card_id.as_deref().unwrap_or("?"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        eprintln!("  deck {}  gy {}", s.deck, s.graveyard);
+    }
+}
+
+#[derive(Clone)]
+struct EntityHit {
+    addr: u64,
+    card_id: Option<String>,
+    id: i32,
+    tags: Vec<(i32, i32)>,
+}
+
+struct PlayerHit {
+    addr: u64,
+    name: Option<String>,
+    player_id: i32,
+    entity_id: i32,
+    tags: Vec<(i32, i32)>,
+}
+
+struct GameState {
+    turn: Option<i32>,
+    step: Option<i32>,
+    current_player: Option<i32>,
+    id_cap: i32,
+}
+
+impl EntityHit {
+    fn tag(&self, name: i32) -> Option<i32> {
+        find_tag(&self.tags, name)
+    }
+}
+
+/// GameTag values used in the snapshot. Numbers are the enum the client
+/// writes to Power.log (`tag=ZONE value=PLAY` etc.).
+const TAG_STEP: i32 = 19;
+const TAG_TURN: i32 = 20;
+const TAG_CURRENT_PLAYER: i32 = 23;
+const TAG_RESOURCES_USED: i32 = 25;
+const TAG_RESOURCES: i32 = 26;
+const TAG_HERO_ENTITY: i32 = 27;
+const _TAG_MAXHANDSIZE: i32 = 28;
+const TAG_PLAYER_ID: i32 = 30;
+const TAG_HEALTH: i32 = 45;
+const TAG_ATK: i32 = 47;
+const TAG_COST: i32 = 48;
+const TAG_ZONE: i32 = 49;
+const TAG_CONTROLLER: i32 = 50;
+const TAG_ARMOR: i32 = 292;
+const TAG_CARDTYPE: i32 = 202;
+const TAG_ZONE_POSITION: i32 = 263;
+const TAG_TEMP_RESOURCES: i32 = 295;
+
+const ZONE_PLAY: i32 = 1;
+const ZONE_DECK: i32 = 2;
+const ZONE_HAND: i32 = 3;
+const ZONE_GRAVEYARD: i32 = 4;
+const ZONE_SECRET: i32 = 7;
+
+const CARDTYPE_HERO: i32 = 3;
+const CARDTYPE_MINION: i32 = 4;
+const CARDTYPE_WEAPON: i32 = 7;
+const CARDTYPE_HERO_POWER: i32 = 10;
+
+fn emit_entity(v: &mut tavernlab_json::Out, e: &EntityHit) {
+    v.obj(|o| {
+        o.field("addr", |v| v.str(&format!("0x{:x}", e.addr)));
+        o.field("cardId", |v| v.opt(e.card_id.as_deref(), |o, s| o.str(s)));
+        o.int_field("id", e.id as i64);
+        o.field("zone", |v| v.opt(e.tag(TAG_ZONE), |o, n| o.int(n as i64)));
+        o.field("controller", |v| {
+            v.opt(e.tag(TAG_CONTROLLER), |o, n| o.int(n as i64))
+        });
+        o.field("cardType", |v| {
+            v.opt(e.tag(TAG_CARDTYPE), |o, n| o.int(n as i64))
+        });
+        o.field("atk", |v| v.opt(e.tag(TAG_ATK), |o, n| o.int(n as i64)));
+        o.field("health", |v| v.opt(e.tag(TAG_HEALTH), |o, n| o.int(n as i64)));
+        o.field("cost", |v| v.opt(e.tag(TAG_COST), |o, n| o.int(n as i64)));
+        o.field("zonePosition", |v| {
+            v.opt(e.tag(TAG_ZONE_POSITION), |o, n| o.int(n as i64))
+        });
+    });
+}
+
+struct Side {
+    player_id: i32,
+    name: Option<String>,
+    current: bool,
+    mana: Option<i32>,
+    mana_max: i32,
+    armor: i32,
+    hero: Option<EntityHit>,
+    hero_power: Option<EntityHit>,
+    weapon: Option<EntityHit>,
+    play: Vec<EntityHit>,
+    hand: Vec<EntityHit>,
+    secret: Vec<EntityHit>,
+    deck: usize,
+    graveyard: usize,
+}
+
+fn emit_side(v: &mut tavernlab_json::Out, s: &Side) {
+    v.obj(|o| {
+        o.int_field("playerId", s.player_id as i64);
+        o.field("name", |v| v.opt(s.name.as_deref(), |o, n| o.str(n)));
+        o.bool_field("current", s.current);
+        o.field("mana", |v| v.opt(s.mana, |o, n| o.int(n as i64)));
+        o.int_field("manaMax", s.mana_max as i64);
+        o.int_field("armor", s.armor as i64);
+        o.field("hero", |v| match &s.hero {
+            Some(e) => emit_entity(v, e),
+            None => v.null(),
+        });
+        o.field("heroPower", |v| match &s.hero_power {
+            Some(e) => emit_entity(v, e),
+            None => v.null(),
+        });
+        o.field("weapon", |v| match &s.weapon {
+            Some(e) => emit_entity(v, e),
+            None => v.null(),
+        });
+        o.field("play", |v| {
+            v.arr(|a| {
+                for e in &s.play {
+                    a.item(|v| emit_entity(v, e));
+                }
+            })
+        });
+        o.field("hand", |v| {
+            v.arr(|a| {
+                for e in &s.hand {
+                    a.item(|v| emit_entity(v, e));
+                }
+            })
+        });
+        o.field("secret", |v| {
+            v.arr(|a| {
+                for e in &s.secret {
+                    a.item(|v| emit_entity(v, e));
+                }
+            })
+        });
+        o.int_field("deck", s.deck as i64);
+        o.int_field("graveyard", s.graveyard as i64);
+    });
+}
+
+/// One copy per EntityID. Prefer the object closest to `anchor` (the live
+/// GameEntity): leftovers from earlier matches keep the same ids but sit
+/// in older heap islands.
+fn dedup_by_id(hits: &[EntityHit], anchor: u64) -> Vec<EntityHit> {
+    let mut best: Vec<EntityHit> = Vec::new();
+    for e in hits {
+        if e.id <= 0 {
+            continue;
+        }
+        if let Some(existing) = best.iter_mut().find(|x| x.id == e.id) {
+            let rank = |x: &EntityHit| {
+                let filled = x.card_id.is_some() as i32 + x.tag(TAG_ZONE).is_some() as i32;
+                (filled, std::cmp::Reverse(x.addr.abs_diff(anchor)))
+            };
+            if rank(e) > rank(existing) {
+                *existing = e.clone();
+            }
+        } else {
+            best.push(e.clone());
+        }
+    }
+    best
+}
+
+/// The live GameEntity (`id=1`, `CARDTYPE=GAME`) sits in the same heap
+/// island as that match's other entities. Leftovers from earlier games
+/// keep high ids but live far away. Cap is the highest id in a 32 MiB
+/// window around GameEntity.
+fn current_game_entities(hits: &[EntityHit]) -> Vec<EntityHit> {
+    let Some(game) = game_entity(hits) else {
+        return dedup_by_id(hits, 0);
+    };
+    let deduped = dedup_by_id(hits, game.addr);
+    const WINDOW: u64 = 32 * 1024 * 1024;
+    let mut cap = deduped
+        .iter()
+        .filter(|e| e.addr.abs_diff(game.addr) < WINDOW)
+        .map(|e| e.id)
+        .max()
+        .unwrap_or(game.id);
+    for e in deduped.iter().filter(|e| e.id == 2 || e.id == 3) {
+        if let Some(hid) = e.tag(TAG_HERO_ENTITY) {
+            cap = cap.max(hid + 2); // hero power sits on the next id
+        }
+    }
+    deduped.into_iter().filter(|e| e.id <= cap).collect()
+}
+
+fn game_entity(hits: &[EntityHit]) -> Option<&EntityHit> {
+    // The live GameEntity has Player entities 2 and 3 within a megabyte.
+    hits.iter()
+        .filter(|e| e.id == 1)
+        .max_by_key(|g| {
+            hits.iter()
+                .filter(|e| (e.id == 2 || e.id == 3) && e.addr.abs_diff(g.addr) < 0x10_0000)
+                .count()
+        })
+}
+
+fn read_game_state(live: &[EntityHit]) -> GameState {
+    let cap = live.iter().map(|e| e.id).max().unwrap_or(0);
+    let game = game_entity(live);
+    let current_player = game
+        .and_then(|e| e.tag(TAG_CURRENT_PLAYER))
+        .or_else(|| {
+            live.iter().find_map(|e| {
+                (e.tag(TAG_CURRENT_PLAYER) == Some(1))
+                    .then(|| e.tag(TAG_PLAYER_ID).or_else(|| e.tag(TAG_CONTROLLER)))
+                    .flatten()
+            })
+        });
+    GameState {
+        turn: game.and_then(|e| e.tag(TAG_TURN)).or_else(|| {
+            live.iter().find_map(|e| e.tag(TAG_TURN))
+        }),
+        step: game.and_then(|e| e.tag(TAG_STEP)).or_else(|| {
+            live.iter().find_map(|e| e.tag(TAG_STEP))
+        }),
+        current_player,
+        id_cap: cap,
+    }
+}
+
+fn build_sides(live: &[EntityHit], players: &[PlayerHit], current_player: Option<i32>) -> Vec<Side> {
+    let mut sides = Vec::new();
+    for pid in [1, 2] {
+        // Current match's Player entities are EntityID 2 (P1) and 3 (P2).
+        let want_eid = pid + 1;
+        let player_ent = live.iter().find(|e| e.id == want_eid);
+        let anchor = game_entity(live).map(|g| g.addr).unwrap_or(0);
+        let player = players
+            .iter()
+            .filter(|p| p.player_id == pid && p.name.is_some())
+            .min_by_key(|p| p.addr.abs_diff(anchor));
+        let name = player.and_then(|p| p.name.clone());
+        let of: Vec<&EntityHit> = live
+            .iter()
+            .filter(|e| e.tag(TAG_CONTROLLER) == Some(pid))
+            .collect();
+        if of.is_empty() && name.is_none() {
+            continue;
+        }
+        let take = |zone: i32, ty: Option<i32>, cap: usize| -> Vec<EntityHit> {
+            let mut v: Vec<EntityHit> = of
+                .iter()
+                .filter(|e| {
+                    e.tag(TAG_ZONE) == Some(zone)
+                        && ty.map(|t| e.tag(TAG_CARDTYPE) == Some(t)).unwrap_or(true)
+                        && (zone == ZONE_DECK
+                            || zone == ZONE_GRAVEYARD
+                            || ty == Some(CARDTYPE_HERO)
+                            || ty == Some(CARDTYPE_HERO_POWER)
+                            || e.card_id.is_some())
+                })
+                .map(|e| (*e).clone())
+                .collect();
+            v.sort_by_key(|e| e.tag(TAG_ZONE_POSITION).unwrap_or(0));
+            v.truncate(cap);
+            v
+        };
+        let hero = player_ent
+            .and_then(|p| p.tag(TAG_HERO_ENTITY))
+            .and_then(|hid| live.iter().find(|e| e.id == hid).cloned())
+            ;
+        let hero_power = hero.as_ref().and_then(|h| {
+            live.iter()
+                .find(|e| e.id == h.id + 1 && e.tag(TAG_CARDTYPE) == Some(CARDTYPE_HERO_POWER))
+                .or_else(|| {
+                    live.iter().find(|e| {
+                        e.tag(TAG_CARDTYPE) == Some(CARDTYPE_HERO_POWER)
+                            && e.tag(TAG_CONTROLLER) == Some(pid)
+                            && e.tag(TAG_ZONE) == Some(ZONE_PLAY)
+                            && e.card_id.as_deref().is_some_and(|s| s.contains("bp") || s.starts_with("HERO_"))
+                    })
+                })
+                .cloned()
+        });
+        let armor = hero
+            .as_ref()
+            .and_then(|h| h.tag(TAG_ARMOR))
+            .or_else(|| player.and_then(|p| find_tag(&p.tags, TAG_ARMOR)))
+            .unwrap_or(0);
+        let mana_src: Vec<(i32, i32)> = {
+            let mut t = player_ent.map(|e| e.tags.clone()).unwrap_or_default();
+            if let Some(p) = player {
+                for pair in &p.tags {
+                    if !t.iter().any(|(n, _)| *n == pair.0) {
+                        t.push(*pair);
+                    }
+                }
+            }
+            t
+        };
+        let mana_max = find_tag(&mana_src, TAG_RESOURCES)
+            .or_else(|| find_tag(&mana_src, 176))
+            .unwrap_or(0);
+        let mana = find_tag(&mana_src, TAG_RESOURCES).map(|r| {
+            let used = find_tag(&mana_src, TAG_RESOURCES_USED).unwrap_or(0);
+            let temp = find_tag(&mana_src, TAG_TEMP_RESOURCES).unwrap_or(0);
+            (r - used + temp).max(0)
+        });
+        sides.push(Side {
+            player_id: pid,
+            name,
+            current: current_player == Some(pid),
+            mana,
+            mana_max,
+            armor,
+            hero,
+            hero_power,
+            weapon: take(ZONE_PLAY, Some(CARDTYPE_WEAPON), 1).into_iter().next(),
+            play: take(ZONE_PLAY, Some(CARDTYPE_MINION), 7),
+            hand: take(ZONE_HAND, None, 10),
+            secret: take(ZONE_SECRET, None, 5),
+            deck: take(ZONE_DECK, None, 60).len(),
+            graveyard: take(ZONE_GRAVEYARD, None, 60).len(),
+        });
+    }
+    sides
 }
 
 fn find_tag(tags: &[(i32, i32)], name: i32) -> Option<i32> {
@@ -298,19 +724,37 @@ fn read_entity_tags(remote: &Remote, entity_addr: u64) -> Vec<(i32, i32)> {
     let Some(obj) = remote.read(entity_addr, mono_layout::ENTITY_INSTANCE_SIZE as usize) else {
         return out;
     };
-    let off = mono_layout::ENTITY_TAG_LIST as usize;
-    let list = u64::from_le_bytes(obj[off..off + 8].try_into().unwrap());
-    if !plausible_ptr(list) {
-        return out;
+    // Minion samples only filled +0x10, but GameEntity/Player keep TURN /
+    // RESOURCES on one of the other three `List<Tag>` slots.
+    for &off in &mono_layout::ENTITY_UNKNOWN_PTRS {
+        let off = off as usize;
+        let list = u64::from_le_bytes(obj[off..off + 8].try_into().unwrap());
+        if !plausible_ptr(list) {
+            continue;
+        }
+        for pair in read_tag_list(remote, list) {
+            if !out.iter().any(|(n, _)| *n == pair.0) {
+                out.push(pair);
+            }
+        }
     }
-    let Some(hdr) = remote.read(list, 0x20) else { return out };
+    out
+}
+
+fn read_tag_list(remote: &Remote, list: u64) -> Vec<(i32, i32)> {
+    let mut out = Vec::new();
+    let Some(hdr) = remote.read(list, 0x20) else {
+        return out;
+    };
     let items = u64::from_le_bytes(hdr[0x10..0x18].try_into().unwrap());
     let size = i32::from_le_bytes(hdr[0x18..0x1c].try_into().unwrap());
-    if !(1..=256).contains(&size) || !plausible_ptr(items) {
+    if !(1..=512).contains(&size) || !plausible_ptr(items) {
         return out;
     }
     let n = size as usize;
-    let Some(vecb) = remote.read(items + 0x20, n * 8) else { return out };
+    let Some(vecb) = remote.read(items + 0x20, n * 8) else {
+        return out;
+    };
     for i in 0..n {
         let elem = u64::from_le_bytes(vecb[i * 8..i * 8 + 8].try_into().unwrap());
         if !plausible_ptr(elem) {
@@ -330,6 +774,16 @@ fn read_entity_tags(remote: &Remote, entity_addr: u64) -> Vec<(i32, i32)> {
         out.push((name, value));
     }
     out
+}
+
+fn format_tags(tags: &[(i32, i32)]) -> String {
+    tags.iter()
+        .map(|(k, v)| match game_tag_name(*k) {
+            Some(n) => format!("{n}={v}"),
+            None => format!("{k}={v}"),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// x86-64 Mono typically compiles `mono_get_root_domain` down to reading a
@@ -432,6 +886,21 @@ fn try_mono_string(remote: &Remote, ptr: u64) -> Option<String> {
     s.chars()
         .all(|c| c.is_ascii_graphic() || c == ' ')
         .then(|| s)
+}
+
+/// Real card ids routinely carry a lowercase suffix -- `HERO_09dbp` (the
+/// Priest hero power this file's own `dump_entity_table` uses as a known-
+/// good landmark), `EDR_463b`/`EDR_463a`, `JAIL_430e1`, `CATA_476t` all
+/// appeared, and were confirmed against a real `Power.log`, earlier in this
+/// project. An uppercase-only filter here silently drops exactly that
+/// shape -- hero powers and tokens in particular, which is why they were
+/// showing up with `cardId: null` in `--snapshot`/`--board` despite being
+/// found and tagged correctly otherwise.
+fn looks_like_card_id(s: &str) -> bool {
+    (4..=32).contains(&s.len())
+        && s.contains('_')
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// `obj -> vtable -> klass -> name` — the same klass check `find_vtable`
@@ -910,7 +1379,13 @@ fn find_singletons(remote: &Remote, classes: &[(String, u64)]) -> Vec<(String, u
 /// very large or unusual process doesn't turn this into a minutes-long
 /// scan; the cap has room to spare against what a Unity client's Mono
 /// heap actually tends to look like.
-fn scan_heap_for_class(remote: &Remote, pid: u32, class_name: &str, vtable: u64) -> Vec<u64> {
+fn scan_heap_for_class(
+    remote: &Remote,
+    pid: u32,
+    class_name: &str,
+    vtable: u64,
+    max_hits: usize,
+) -> Vec<u64> {
     eprintln!("\n--deep: сканую купчу пам'яті на живі об'єкти {class_name} (vtable=0x{vtable:x})");
     let Ok(maps) = procfs::read_maps(pid) else {
         eprintln!("не зміг прочитати /proc/{pid}/maps");
@@ -919,7 +1394,7 @@ fn scan_heap_for_class(remote: &Remote, pid: u32, class_name: &str, vtable: u64)
     let pattern = vtable.to_le_bytes();
     const CHUNK: u64 = 4 * 1024 * 1024;
     const MAX_SCAN_BYTES: u64 = 3_000_000_000;
-    const MAX_HITS: usize = 500;
+    let max_hits = max_hits.max(1);
 
     let mut scanned: u64 = 0;
     let mut hits: Vec<u64> = Vec::new();
@@ -932,7 +1407,7 @@ fn scan_heap_for_class(remote: &Remote, pid: u32, class_name: &str, vtable: u64)
     'outer: for region in &regions {
         let mut addr = region.start;
         while addr < region.end {
-            if scanned >= MAX_SCAN_BYTES || hits.len() >= MAX_HITS {
+            if scanned >= MAX_SCAN_BYTES || hits.len() >= max_hits {
                 break 'outer;
             }
             let len = ((region.end - addr).min(CHUNK)) as usize;
@@ -945,7 +1420,7 @@ fn scan_heap_for_class(remote: &Remote, pid: u32, class_name: &str, vtable: u64)
                 while i + 8 <= buf.len() {
                     if buf[i..i + 8] == pattern {
                         hits.push(addr + i as u64);
-                        if hits.len() >= MAX_HITS {
+                        if hits.len() >= max_hits {
                             break;
                         }
                     }
@@ -960,7 +1435,7 @@ fn scan_heap_for_class(remote: &Remote, pid: u32, class_name: &str, vtable: u64)
         "  проскановано {:.0} МБ, {} збігів{}",
         scanned as f64 / 1_048_576.0,
         hits.len(),
-        if hits.len() >= MAX_HITS { " (досягнуто ліміту)" } else { "" }
+        if hits.len() >= max_hits { " (досягнуто ліміту)" } else { "" }
     );
     for &h in hits.iter().take(20) {
         eprintln!("    {class_name}* кандидат: 0x{h:x}");
@@ -1059,26 +1534,44 @@ fn dump_object_fields(remote: &Remote, addr: u64, class_name: &str) {
 /// record: `+0x30` cardId, `+0x38` a candidate id field, instead of
 /// dumping 0x180 bytes (which was really 4-6 *different* objects at once
 /// and made the earlier "which offset means what" cross-check misleading).
-fn dump_entity_table(remote: &Remote, hits: &[u64]) -> Vec<(u64, Option<String>, i32)> {
-    eprintln!(
-        "\n--deep: таблиця Entity (cardId @ +0x{:x}, id @ +0x{:x}, підтверджено live) для всіх {} знайдених об'єктів",
-        mono_layout::ENTITY_CARD_ID, mono_layout::ENTITY_ID, hits.len()
-    );
-    let mut rows: Vec<(u64, Option<String>, i32)> = Vec::new();
+fn collect_entity_hits(remote: &Remote, hits: &[u64]) -> Vec<EntityHit> {
+    let mut rows = Vec::new();
     for &addr in hits {
         let Some(bytes) = remote.read(addr, mono_layout::ENTITY_INSTANCE_SIZE as usize) else { continue };
         let card_off = mono_layout::ENTITY_CARD_ID as usize;
         let id_off = mono_layout::ENTITY_ID as usize;
         let card_ptr = u64::from_le_bytes(bytes[card_off..card_off + 8].try_into().unwrap());
-        let card_id = try_mono_string(remote, card_ptr);
+        let card_id = try_mono_string(remote, card_ptr).filter(|s| looks_like_card_id(s));
         let id_field = i32::from_le_bytes(bytes[id_off..id_off + 4].try_into().unwrap());
-        rows.push((addr, card_id, id_field));
+        let tags = read_entity_tags(remote, addr);
+        rows.push(EntityHit {
+            addr,
+            card_id,
+            id: id_field,
+            tags,
+        });
     }
-    for (addr, card_id, id_field) in &rows {
+    rows
+}
+
+fn dump_entity_table(remote: &Remote, hits: &[u64]) -> Vec<(u64, Option<String>, i32)> {
+    eprintln!(
+        "\n--deep: таблиця Entity (cardId @ +0x{:x}, id @ +0x{:x}, підтверджено live) для всіх {} знайдених об'єктів",
+        mono_layout::ENTITY_CARD_ID, mono_layout::ENTITY_ID, hits.len()
+    );
+    let collected = collect_entity_hits(remote, hits);
+    let rows: Vec<(u64, Option<String>, i32)> = collected
+        .iter()
+        .map(|e| (e.addr, e.card_id.clone(), e.id))
+        .collect();
+    for e in &collected {
         eprintln!(
-            "  0x{addr:x}: cardId={:<20} +0x{:x}={id_field}",
-            card_id.as_deref().unwrap_or("?"),
-            mono_layout::ENTITY_ID
+            "  0x{:x}: cardId={:<20} id={} zone={:?} controller={:?}",
+            e.addr,
+            e.card_id.as_deref().unwrap_or("?"),
+            e.id,
+            e.tag(TAG_ZONE),
+            e.tag(TAG_CONTROLLER)
         );
     }
     const INTERESTING: &[&str] = &[
@@ -1124,25 +1617,44 @@ fn dump_entity_table(remote: &Remote, hits: &[u64]) -> Vec<(u64, Option<String>,
 /// Same idea as `dump_entity_table`, for `Player` -- `PLAYER_NAME` and
 /// `PLAYER_PLAYER_ID` are both confirmed live now on 20+ objects (see
 /// `mono_layout.rs`).
-fn dump_player_table(remote: &Remote, hits: &[u64]) -> Vec<(u64, Option<String>, i32)> {
-    eprintln!(
-        "\n--deep: таблиця Player (ім'я @ +0x{:x}, playerId @ +0x{:x}, підтверджено live) для всіх {} знайдених об'єктів",
-        mono_layout::PLAYER_NAME, mono_layout::PLAYER_PLAYER_ID, hits.len()
-    );
+fn collect_player_hits(remote: &Remote, hits: &[u64]) -> Vec<PlayerHit> {
     const WINDOW: usize = 0x200;
-    let mut rows: Vec<(u64, Option<String>, i32)> = Vec::new();
+    let mut rows = Vec::new();
     for &addr in hits {
         let Some(bytes) = remote.read(addr, WINDOW) else { continue };
         let name_off = mono_layout::PLAYER_NAME as usize;
         let id_off = mono_layout::PLAYER_PLAYER_ID as usize;
+        let eid_off = mono_layout::ENTITY_ID as usize;
         let name_ptr = u64::from_le_bytes(bytes[name_off..name_off + 8].try_into().unwrap());
         let name = try_mono_string(remote, name_ptr);
         let player_id = i32::from_le_bytes(bytes[id_off..id_off + 4].try_into().unwrap());
+        let entity_id = i32::from_le_bytes(bytes[eid_off..eid_off + 4].try_into().unwrap());
+        let tags = read_entity_tags(remote, addr);
+        rows.push(PlayerHit {
+            addr,
+            name,
+            player_id,
+            entity_id,
+            tags,
+        });
+    }
+    rows
+}
+
+fn dump_player_table(remote: &Remote, hits: &[u64]) -> Vec<PlayerHit> {
+    eprintln!(
+        "\n--deep: таблиця Player (ім'я @ +0x{:x}, playerId @ +0x{:x}, підтверджено live) для всіх {} знайдених об'єктів",
+        mono_layout::PLAYER_NAME, mono_layout::PLAYER_PLAYER_ID, hits.len()
+    );
+    let rows = collect_player_hits(remote, hits);
+    for p in &rows {
         eprintln!(
-            "  0x{addr:x}: ім'я={:<20} playerId={player_id}",
-            name.as_deref().unwrap_or("?")
+            "  0x{:x}: ім'я={:<20} playerId={} entityId={}",
+            p.addr,
+            p.name.as_deref().unwrap_or("?"),
+            p.player_id,
+            p.entity_id
         );
-        rows.push((addr, name, player_id));
     }
     rows
 }
@@ -1227,15 +1739,27 @@ fn dump_dotnet_list(remote: &Remote, list: u64) {
 
 fn game_tag_name(k: i32) -> Option<&'static str> {
     Some(match k {
+        19 => "STEP",
+        20 => "TURN",
+        23 => "CURRENT_PLAYER",
+        25 => "RESOURCES_USED",
+        26 => "RESOURCES",
+        27 => "HERO_ENTITY",
+        28 => "MAXHANDSIZE",
+        29 => "STARTHANDSIZE",
+        30 => "PLAYER_ID",
+        31 => "TEAM_ID",
         45 => "HEALTH",
         47 => "ATK",
         48 => "COST",
         49 => "ZONE",
         50 => "CONTROLLER",
         53 => "ENTITY_ID",
+        176 => "MAXRESOURCES",
         199 => "CLASS",
         202 => "CARDTYPE",
         263 => "ZONE_POSITION",
+        292 => "ARMOR",
         313 => "PREMIUM",
         _ => return None,
     })
