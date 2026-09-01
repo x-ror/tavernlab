@@ -273,6 +273,7 @@ fn print_snapshot(remote: &Remote, pid: u32, resolved: &[(String, u64, u64)], bo
                             o.field("name", |v| v.opt(p.name.as_deref(), |o, s| o.str(s)));
                             o.int_field("playerId", p.player_id as i64);
                             o.int_field("entityId", p.entity_id as i64);
+                            o.field("rawTags", |v| emit_tags(v, &p.tags));
                         })
                     });
                 }
@@ -464,6 +465,32 @@ fn emit_entity(v: &mut tavernlab_json::Out, e: &EntityHit) {
         o.field("zonePosition", |v| {
             v.opt(e.tag(TAG_ZONE_POSITION), |o, n| o.int(n as i64))
         });
+        o.field("rawTags", |v| emit_tags(v, &e.tags));
+    });
+}
+
+/// Every `(GameTag, value)` pair this object's own `List<Tag>` carried, not
+/// just the handful of curated fields above -- so the next live session
+/// can cross-check a real, known board state (Taunt just granted, damage
+/// just taken, ...) against whatever numeric tag changed, straight through
+/// `/api/memory`, without needing a terminal session running `memreader`
+/// by hand the way every earlier round of this reverse-engineering did.
+/// `name` is only ever the small set `game_tag_name` already recognises
+/// (confirmed live earlier this project) -- an unrecognised `tag` number is
+/// not a guess at what it means, just the number itself.
+fn emit_tags(v: &mut tavernlab_json::Out, tags: &[(i32, i32)]) {
+    v.arr(|a| {
+        for &(name, value) in tags {
+            a.item(|v| {
+                v.obj(|o| {
+                    o.int_field("tag", name as i64);
+                    o.int_field("value", value as i64);
+                    if let Some(known) = game_tag_name(name) {
+                        o.str_field("name", known);
+                    }
+                });
+            });
+        }
     });
 }
 
