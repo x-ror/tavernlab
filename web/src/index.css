@@ -513,6 +513,17 @@ body {
   --spectrum-accent-background-color-hover: #a7841c !important;
   --spectrum-accent-background-color-down: #6d5412 !important;
   --spectrum-accent-background-color-key-focus: #a7841c !important;
+
+  /* Text fields and text areas fall back to Spectrum's own darkest-theme
+     gray-50 when this token is unset, which is near-black -- every
+     TextField/TextArea in the app (Settings' deck code and battletag,
+     Arena's cards-taken box, ...) rendered as a flat black rectangle
+     against this page's warm brown ground, the one place Spectrum's own
+     dark palette was never re-pointed the way the accent ramp above was.
+     Pickers/dropdowns were already fine -- they don't read this token. */
+  --spectrum-textfield-background-color: var(--tl-bg-2) !important;
+  --spectrum-textfield-background-color-down: var(--tl-surface) !important;
+  --spectrum-textfield-background-color-disabled: var(--tl-bg-2) !important;
 }
 
 /* ------------------------------------------------------------------ table
