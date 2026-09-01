@@ -892,6 +892,28 @@ mod tests {
     }
 
     #[test]
+    fn a_battlecry_that_gains_health_is_tracked_at_its_boosted_number_not_the_printed_one() {
+        // Caged Cranium prints 3/1, but its own battlecry ("Gain +1 Health
+        // for each card in your hand") routinely pushes it to 5+ before
+        // anyone can attack it -- the real question this answers: does the
+        // plan know that, or does it reason about a 1-health body that
+        // isn't there anymore? Real Power.log writes the resolved number as
+        // an ordinary `tag=HEALTH` TAG_CHANGE right after the battlecry
+        // resolves, same mechanism as any other buff.
+        let mut t = Tracker::new(None);
+        feed(&mut t, &[
+            "[Zone] [entityName=Deathmantle Valeera id=64 zone=PLAY zonePos=0 \
+             cardId=HERO_11 player=1] zone from  -> FRIENDLY PLAY (Hero)",
+            "[Zone] [entityName=Caged Cranium id=35 zone=PLAY zonePos=0 \
+             cardId=JAIL_513 player=2] zone from OPPOSING HAND -> OPPOSING PLAY",
+            "D [Power] TAG_CHANGE Entity=[entityName=Caged Cranium id=35 zone=PLAY \
+             zonePos=0 cardId=JAIL_513 player=2] tag=HEALTH value=6",
+        ]);
+        assert_eq!(t.board[1].len(), 1);
+        assert_eq!(t.board[1][0].stats(), (3, 6), "6, not the printed 1 -- the battlecry already resolved");
+    }
+
+    #[test]
     fn the_opening_hand_stops_growing_once_the_game_starts() {
         let mut t = Tracker::new(None);
         feed(&mut t, &[
