@@ -587,7 +587,19 @@ fn plan(format: &str, tr: &Tracker, deck: &str) -> Vec<Line> {
     // The search, not the greedy policy: live advice is one decision at a
     // time rather than a batch, so the cost that keeps the search out of the
     // engine is affordable here. The README compares the two.
-    let mut agent = Planner::new(Style::Midrange, 4000, 4);
+    //
+    // depth=4, budget=4000 (the old numbers) meant an eight-action winning
+    // line -- a wide board with a weapon and several attackers, exactly the
+    // shape of a real turn -- could never reach `Game::is_over()` inside the
+    // search: `search()` falls back to the non-terminal heuristic at
+    // `depth == 0`, which has no way to know a line is lethal, so the search
+    // preferred a locally-better trade over a real kill. Below is called up
+    // to 16 times per poll (`for _ in 0..16` above); a scratch benchmark on a
+    // synthetic wide board (`core/src/planner.rs`'s `scratch_timing` test,
+    // since removed) measured budget=50_000/depth=10 at ~15ms per call, so
+    // ~240ms worst case per poll -- still affordable against the 1s poll
+    // interval `web/src/routes/Live.jsx` uses.
+    let mut agent = Planner::new(Style::Midrange, 50_000, 10);
     let mut out = Vec::new();
     let mut legal: tavernlab_core::inline::Inline<Action, 512> =
         tavernlab_core::inline::Inline::new();
