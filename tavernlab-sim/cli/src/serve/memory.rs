@@ -16,13 +16,17 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
+use tavernlab_json::Json;
+
 use super::http::Response;
 
-/// `memreader`'s own JSON is already exactly the document this endpoint
-/// wants to serve — see `memreader/README.md`'s `--snapshot` section — so
-/// this validates it parses (never forward a truncated or garbled write
-/// straight to a browser) and then echoes the original bytes rather than
-/// walking the tree and re-emitting it field by field.
+/// `memreader`'s own `cardId` is the game's internal card code
+/// (`"HERO_09dbp"`, `"CS2_182"`) -- correct for cross-checking against
+/// `Power.log`, useless for a person reading the Live tab. This endpoint is
+/// the one place both the raw snapshot and the card corpus (`core`, already
+/// linked into this binary) are in scope at once, so it is where the two
+/// meet: every entity object gets a `name` field alongside its `cardId`,
+/// resolved through the same lookup `/api/resolve` and friends already use.
 pub fn snapshot() -> Response {
     let Some(bin) = sibling_binary() else {
         return Response::error(
@@ -51,12 +55,53 @@ pub fn snapshot() -> Response {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    match tavernlab_json::Json::parse(&stdout) {
-        Ok(_) => Response::json(200, stdout),
-        Err(e) => Response::error(
-            502,
-            &format!("вивід memreader --snapshot не є валідним JSON: {}", e.msg),
-        ),
+    let doc = match Json::parse(&stdout) {
+        Ok(d) => d,
+        Err(e) => {
+            return Response::error(
+                502,
+                &format!("вивід memreader --snapshot не є валідним JSON: {}", e.msg),
+            );
+        }
+    };
+
+    let mut out = tavernlab_json::Out::new();
+    with_names(&doc, &mut out);
+    Response::json(200, out.finish())
+}
+
+/// A card's display name for the game's own internal code, or `None` for
+/// codes with no corpus entry (this build's card table is Standard/Wild's
+/// collectible+token set, not every internal id Hearthstone itself uses —
+/// see `core/src/cards/table.rs`'s generation note).
+fn card_name(card_id: &str) -> Option<&'static str> {
+    tavernlab_core::cards::by_id(card_id).map(|c| c.info().name)
+}
+
+/// Copy `v` through `out` unchanged, except: any object carrying a
+/// `cardId` key gains a `name` field resolved from it. Recurses into every
+/// array and object so it doesn't need to know the snapshot's exact shape
+/// (top-level `entities`, or `sides[].hero`/`play`/`hand`/... -- all of
+/// them are entity-shaped objects with a `cardId`).
+fn with_names(v: &Json, out: &mut tavernlab_json::Out) {
+    match v {
+        Json::Null => out.null(),
+        Json::Bool(b) => out.bool(*b),
+        Json::Num(n) => out.num(*n),
+        Json::Str(s) => out.str(s),
+        Json::Arr(items) => out.arr(|a| {
+            for item in items {
+                a.item(|v| with_names(item, v));
+            }
+        }),
+        Json::Obj(kvs) => out.obj(|o| {
+            for (k, val) in kvs {
+                o.field(k, |v| with_names(val, v));
+            }
+            if let Some(card_id) = v.get("cardId").and_then(Json::as_str) {
+                o.field("name", |v| v.opt(card_name(card_id), |o, s| o.str(s)));
+            }
+        }),
     }
 }
 

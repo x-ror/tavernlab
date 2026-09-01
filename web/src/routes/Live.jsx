@@ -161,7 +161,11 @@ const CAVEATS = new Set(['live.plan.mana_guessed', 'live.plan.no_deck'])
 
 function memCard(e) {
   if (!e) return '—'
-  const name = e.cardId || `#${e.id}`
+  // `name` is resolved server-side (cli/src/serve/memory.rs) from `cardId`
+  // — the internal code (`"HERO_09dbp"`) `memreader` reads out of process
+  // memory, not something to show as-is. `cardId` itself is the fallback
+  // for the rare id the corpus doesn't have a name for, `#id` past that.
+  const name = e.name || e.cardId || `#${e.id}`
   if (e.atk != null || e.health != null) return `${name} ${e.atk ?? '?'}/${e.health ?? '?'}`
   if (e.cost != null) return `${name} (${e.cost})`
   return name
