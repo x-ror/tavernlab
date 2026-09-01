@@ -97,6 +97,13 @@ impl Default for Weights {
     }
 }
 
+/// The score a proven win is worth. Effectively infinite against the
+/// heuristic below it, so a line that reaches this beats every line that
+/// does not, however good the board looks on paper -- `search` and `level`
+/// both short-circuit the instant they see it, rather than spending any more
+/// budget on siblings that cannot possibly outscore it.
+const WIN: f32 = 1.0e6;
+
 /// A turn-planning policy.
 #[derive(Clone, Copy, Debug)]
 pub struct Planner {
@@ -174,6 +181,45 @@ impl Planner {
         root
     }
 
+    /// A lower bound only: whether the damage already legally available on
+    /// `me`'s side of `g` -- no further search needed -- would kill the
+    /// opponent outright.
+    ///
+    /// A leaf that recognises this scores as a proven win without spending
+    /// any depth walking through the actual swings, which is exactly the
+    /// case a shallow search otherwise misses: Windfury's second hit, a
+    /// ready weapon and a wide board can add up to lethal well before
+    /// `search` would ever simulate every attack down to `g.is_over()`.
+    ///
+    /// Never a false positive. A live Taunt has to be cleared first, which is
+    /// a search question and not a static one. And an unrevealed secret --
+    /// Ice Block above all -- is a fact this engine's log/memory-reconstructed
+    /// `Game` cannot know (CLAUDE.md: the watcher never guesses), so *any*
+    /// secret in the zone silences this rather than risking advice the real
+    /// client can still falsify.
+    fn static_lethal(&self, g: &Game, me: Side) -> bool {
+        if g.current != me {
+            return false;
+        }
+        let victim = g.player(me.other());
+        if victim.has_taunt() || !victim.secrets.is_empty() {
+            return false;
+        }
+        let mut dmg: i32 = 0;
+        for m in g.player(me).board.iter().filter(|m| m.can_attack_face()) {
+            dmg += m.atk as i32 * (m.max_attacks() - m.attacks_done) as i32;
+        }
+        if g.player(me).hero_can_attack() {
+            dmg += g.player(me).hero_attack() as i32;
+        }
+        // Hero Power damage (Fireblast and its kin) has no existing "does
+        // this deal N face damage for free" accessor to key off, so it stays
+        // out of the bound rather than growing per-card infrastructure for
+        // it -- an occasionally too conservative bound is fine; a wrong one
+        // is advice a player has no way to see through.
+        dmg >= (victim.hero_hp + victim.armor) as i32
+    }
+
     /// What a finished turn is worth to `me`.
     ///
     /// Reads only public information: both boards, both hero totals, and the
@@ -185,10 +231,13 @@ impl Planner {
     fn eval(&self, g: &Game, me: Side) -> f32 {
         if let Some(o) = g.outcome {
             return match o {
-                Outcome::Win(w) if w == me => 1.0e6,
+                Outcome::Win(w) if w == me => WIN,
                 Outcome::Draw => 0.0,
-                _ => -1.0e6,
+                _ => -WIN,
             };
+        }
+        if self.static_lethal(g, me) {
+            return WIN;
         }
         let foe = me.other();
         let mut v = 0.0;
@@ -211,7 +260,8 @@ impl Planner {
     }
 
     /// Best value reachable from `g` within `depth` more actions, or `None`
-    /// if the budget ran out before the level was finished.
+    /// if the budget ran out before the level was finished and no line
+    /// reached a proven win along the way.
     ///
     /// Ending the turn is always one of the options, so a line that has run
     /// out of useful moves scores where it stands rather than being forced to
@@ -220,7 +270,8 @@ impl Planner {
     /// A truncated level is not a worse answer but a different question: the
     /// actions it reached were scored against each other while the rest were
     /// not scored at all. The caller discards it and keeps the last complete
-    /// one.
+    /// one -- unless `best` is already a proven win, which running the shared
+    /// budget dry on the *remaining* siblings cannot retroactively un-prove.
     fn search(&self, g: &Game, me: Side, depth: u8, budget: &mut u32) -> Option<f32> {
         if depth == 0 || g.is_over() || g.current != me {
             return Some(self.eval(g, me));
@@ -234,16 +285,25 @@ impl Planner {
                 continue;
             }
             if *budget == 0 {
-                return None;
+                return if best >= WIN { Some(best) } else { None };
             }
             *budget -= 1;
             let mut c = *g;
             if !c.apply(a) {
                 continue;
             }
-            let s = self.search(&c, me, depth - 1, budget)?;
-            if s > best {
-                best = s;
+            match self.search(&c, me, depth - 1, budget) {
+                Some(s) => {
+                    if s > best {
+                        best = s;
+                    }
+                    // Nothing left in `legal` can beat a proven win, so
+                    // there is no reason to keep spending budget on it.
+                    if best >= WIN {
+                        return Some(best);
+                    }
+                }
+                None => return if best >= WIN { Some(best) } else { None },
             }
         }
         Some(best)
@@ -251,8 +311,12 @@ impl Planner {
 
     /// Score every root action at exactly `depth`, or give up on the level.
     ///
-    /// `out` is only written when the whole level finished, so a caller can
-    /// keep the previous one intact.
+    /// `out` is only written when the whole level finished -- or when one
+    /// root action already proved a win, in which case nothing left in
+    /// `legal` could possibly outscore it, so the rest are never even
+    /// tried and cannot spend the shared budget down to the point where
+    /// that win would otherwise be discarded along with them. Otherwise a
+    /// caller can keep the previous level intact.
     fn level(
         &self,
         root: &Game,
@@ -280,7 +344,13 @@ impl Planner {
                 continue;
             }
             match self.search(&c, me, depth - 1, budget) {
-                Some(v) => scored[i] = v,
+                Some(v) => {
+                    scored[i] = v;
+                    if v >= WIN {
+                        out[..legal.len()].copy_from_slice(&scored[..legal.len()]);
+                        return true;
+                    }
+                }
                 None => return false,
             }
         }
@@ -353,5 +423,254 @@ impl Agent for Planner {
 
     fn mulligan(&mut self, game: &Game, drawn: &[crate::cards::CardId], aggressive: bool) -> u32 {
         self.greedy.mulligan(game, drawn, aggressive)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cards::{Class, Keywords, by_name};
+    use crate::state::{Flags, Permanent, Target, Weapon};
+
+    /// An empty game, current == `Player0`, ready for a test to place
+    /// minions directly onto either board.
+    fn fixture() -> Game {
+        Game::new((Class::Mage, &[]), (Class::Mage, &[]), 1).unwrap()
+    }
+
+    /// A battle-ready minion (summoning sickness already gone) with the
+    /// given stats, built off a real card so it carries a valid `CardId`.
+    fn minion(atk: i16, hp: i16) -> Permanent {
+        let mut m = Permanent::summon(by_name("Bloodfen Raptor").unwrap());
+        m.flags.remove(Flags::JUST_SUMMONED);
+        m.atk = atk;
+        m.max_hp = hp;
+        m
+    }
+
+    /// Seven 1/1s on my board, the opponent's hero at exactly that much
+    /// health and nothing else in the way -- the shape tests 1, 4 and 5 all
+    /// start from.
+    fn seven_ones_at_lethal() -> Game {
+        let mut g = fixture();
+        for _ in 0..7 {
+            g.players[0].board.push(minion(1, 1));
+        }
+        g.players[1].hero_hp = 7;
+        g.recompute_auras();
+        g
+    }
+
+    // ---------------------------------------------------- Part A: fail-soft
+
+    #[test]
+    fn a_proven_win_survives_a_later_sibling_exhausting_the_budget() {
+        let mut g = fixture();
+        for _ in 0..3 {
+            g.players[0].board.push(minion(1, 1));
+        }
+        g.players[1].board.push(minion(4, 1)); // an on-paper-attractive trade
+        g.players[1].hero_hp = 1;
+        // A secret keeps `static_lethal` (Part B) silent everywhere in this
+        // tree, so the only way any action here scores >= WIN is by really
+        // simulating the kill down to `g.outcome` -- which is what this test
+        // means to exercise, in isolation from Part B's own shortcut.
+        g.players[1].secrets.push(by_name("Counterspell").unwrap());
+        g.recompute_auras();
+
+        let mut legal: Inline<Action, MAX_ACTIONS> = Inline::new();
+        g.legal_actions(&mut legal);
+        // The trade is offered before the lethal face swing for the same
+        // minion -- exactly the enumeration order the bug needs to bite.
+        assert_eq!(
+            legal.as_slice()[0],
+            Action::Attack {
+                from: 0,
+                target: Target::Minion(Side::Player1, 0)
+            },
+            "test assumes the trade is tried before the winning swing"
+        );
+        assert_eq!(
+            legal.as_slice()[1],
+            Action::Attack {
+                from: 0,
+                target: Target::Hero(Side::Player1)
+            },
+            "test assumes this is the winning swing"
+        );
+
+        // At depth 1, `search` never recurses (depth - 1 == 0 stops it cold),
+        // so every unit of `budget` here is spent by `level` itself, one per
+        // action tried, in enumeration order. Budget 2 buys exactly the
+        // trade (index 0, non-winning) and then the win (index 1); a
+        // pre-fix `level` goes on to try index 2, finds `budget == 0`, and
+        // discards everything scored so far -- the win included.
+        let mut planner = Planner::new(Style::Midrange, 2, 3);
+        let chosen = planner.choose(&g, legal.as_slice());
+
+        assert_ne!(
+            chosen,
+            Action::EndTurn,
+            "a proven win must not be discarded as unreachable"
+        );
+        let mut after = g;
+        assert!(after.apply(chosen));
+        assert_eq!(
+            after.outcome,
+            Some(Outcome::Win(Side::Player0)),
+            "the chosen action must itself be part of the winning line"
+        );
+    }
+
+    // The test above only ever calls `search` with `depth - 1 == 0`, so it
+    // returns at the very first line ("depth == 0 ... return Some(eval)")
+    // without ever reaching `search`'s *own* loop -- every budget unit it
+    // spends is spent by `level`, and `search`'s two fail-soft sites
+    // (`budget == 0` at the top of the loop, and a recursive call's `None`)
+    // never run. These two go straight at `search`, deep enough that its
+    // own loop is the one that has to preserve the win, so a regression
+    // that reverts only `search`'s half of the fix -- leaving `level`'s
+    // intact -- fails here even though it keeps passing the test above.
+
+    #[test]
+    fn search_keeps_its_own_stand_still_win_when_handed_no_budget() {
+        // The floor at this node (`static_lethal`, Part B) is already a
+        // proven win before `search` looks at a single sibling. Handing it
+        // a budget of 0 means the first non-EndTurn action it considers
+        // hits `if *budget == 0` immediately -- the pre-fix line there was
+        // an unconditional `return None`, which would have discarded this
+        // win without `level` ever being involved.
+        let g = seven_ones_at_lethal();
+        let planner = Planner::new(Style::Midrange, 100, 3);
+        let mut budget = 0u32;
+        assert_eq!(
+            planner.search(&g, Side::Player0, 2, &mut budget),
+            Some(WIN),
+            "search's own budget == 0 check must not discard a win already \
+             standing at this node"
+        );
+    }
+
+    #[test]
+    fn search_keeps_a_proven_win_past_a_child_that_honestly_returns_none() {
+        // Root: `static_lethal` is already true standing still (seven
+        // attackers are already enough face damage without moving one).
+        // `push_attack_targets` offers the enemy minion before the face
+        // target for the same attacker, so the first action `search` tries
+        // spends attacker 0 on that trade -- taking its damage out of the
+        // bound without taking anything off the opponent's face. At the
+        // resulting child, `static_lethal` is honestly false (six 1-attack
+        // minions against 7 remaining health), and that recursive call is
+        // left with budget == 0, so it returns a perfectly correct `None`
+        // -- not a win, just out of budget. The root must still report the
+        // win it already had *before* trying that child, which pre-fix
+        // `search` discarded by propagating the child's `None` straight
+        // through `?`.
+        let mut g = seven_ones_at_lethal();
+        g.players[1].board.push(minion(5, 1)); // the trade tried first
+        g.recompute_auras();
+
+        let planner = Planner::new(Style::Midrange, 100, 3);
+        let mut budget = 1u32;
+        assert_eq!(
+            planner.search(&g, Side::Player0, 2, &mut budget),
+            Some(WIN),
+            "a proven win standing at the root must survive a child that \
+             genuinely ran out of budget without finding one itself"
+        );
+    }
+
+    // ------------------------------------------------ Part B: static lethal
+
+    #[test]
+    fn static_lethal_prefers_face_over_an_attractive_trade() {
+        let mut g = seven_ones_at_lethal();
+        g.players[1].board.push(minion(5, 1)); // dies to one swing, tempting
+        g.recompute_auras();
+
+        let mut legal: Inline<Action, MAX_ACTIONS> = Inline::new();
+        g.legal_actions(&mut legal);
+        let trade = Action::Attack {
+            from: 0,
+            target: Target::Minion(Side::Player1, 0),
+        };
+        assert_eq!(
+            legal.as_slice()[0],
+            trade,
+            "test assumes the trade is offered first"
+        );
+
+        let mut planner = Planner::new(Style::Midrange, 200, 3);
+        let chosen = planner.choose(&g, legal.as_slice());
+        assert_ne!(chosen, trade, "must not spend the first action on the trade");
+        assert_eq!(
+            chosen,
+            Action::Attack {
+                from: 0,
+                target: Target::Hero(Side::Player1)
+            }
+        );
+    }
+
+    #[test]
+    fn static_lethal_counts_windfurys_second_swing() {
+        let mut g = fixture();
+        let mut m = minion(4, 4);
+        m.keywords.insert(Keywords::WINDFURY);
+        g.players[0].board.push(m);
+        g.players[1].hero_hp = 8; // 4 * 2, not 4 * 1
+        g.recompute_auras();
+
+        let planner = Planner::new(Style::Midrange, 100, 3);
+        assert!(planner.static_lethal(&g, Side::Player0));
+    }
+
+    #[test]
+    fn static_lethal_counts_the_ready_weapon() {
+        let mut g = fixture();
+        g.players[0].board.push(minion(3, 3));
+        g.players[1].hero_hp = 5;
+        g.recompute_auras();
+
+        let planner = Planner::new(Style::Midrange, 100, 3);
+        assert!(
+            !planner.static_lethal(&g, Side::Player0),
+            "3 attack alone falls short of 5"
+        );
+
+        let mut weapon = Weapon::equip(by_name("Fiery War Axe").unwrap());
+        weapon.atk = 2;
+        g.players[0].weapon = Some(weapon);
+        assert!(
+            planner.static_lethal(&g, Side::Player0),
+            "the weapon supplies exactly the rest"
+        );
+    }
+
+    #[test]
+    fn static_lethal_stays_silent_behind_a_secret() {
+        let mut g = seven_ones_at_lethal();
+        g.players[1].secrets.push(by_name("Counterspell").unwrap());
+
+        let planner = Planner::new(Style::Midrange, 100, 3);
+        assert!(
+            !planner.static_lethal(&g, Side::Player0),
+            "an unrevealed secret could still block the swing"
+        );
+    }
+
+    #[test]
+    fn static_lethal_stays_silent_behind_a_taunt() {
+        let mut g = seven_ones_at_lethal();
+        let mut taunt = minion(1, 1);
+        taunt.keywords.insert(Keywords::TAUNT);
+        g.players[1].board.push(taunt);
+        g.recompute_auras();
+
+        let planner = Planner::new(Style::Midrange, 100, 3);
+        assert!(
+            !planner.static_lethal(&g, Side::Player0),
+            "the taunt has to be cleared first, which is a search question, not a static one"
+        );
     }
 }
