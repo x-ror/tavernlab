@@ -60,6 +60,7 @@ export const EXTRA = {
     'ui.live.deck': 'Колода',
     'ui.live.graveyard': 'Кладовище',
     'ui.live.turn_marker': 'хід',
+    'ui.live.raw_json': 'Сирий JSON (усі теги, для діагностики)',
     'ui.live.mana': 'мана',
     'ui.live.empty': 'порожньо',
 
@@ -248,6 +249,7 @@ export const EXTRA = {
     'ui.live.deck': 'Deck',
     'ui.live.graveyard': 'Graveyard',
     'ui.live.turn_marker': 'turn',
+    'ui.live.raw_json': 'Raw JSON (every tag, for diagnostics)',
     'ui.live.mana': 'mana',
     'ui.live.empty': 'empty',
 

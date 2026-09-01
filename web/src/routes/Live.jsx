@@ -275,6 +275,19 @@ function MemoryBoard({ snap, battletag }) {
         )}
         <SideBoard side={meSide} mine />
       </div>
+      <details style={{ marginTop: 10 }}>
+        <summary style={{ cursor: 'pointer', color: 'var(--tl-muted)', fontSize: '.8rem' }}>
+          {t('ui.live.raw_json')}
+        </summary>
+        {/* Every tag `memreader` read, not just the curated fields above --
+         * for pointing at exactly what a card's `rawTags` say without a
+         * terminal session, which is the whole reason `rawTags` exists
+         * (see memreader/README.md). A screenshot of this is itself useful
+         * evidence when chasing an offset. */}
+        <pre className="tl-mono" style={{ marginTop: 6, maxHeight: 320, overflow: 'auto' }}>
+          {JSON.stringify(snap, null, 2)}
+        </pre>
+      </details>
     </div>
   )
 }
