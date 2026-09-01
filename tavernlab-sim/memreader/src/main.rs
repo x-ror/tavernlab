@@ -579,14 +579,30 @@ fn current_game_entities(hits: &[EntityHit]) -> Vec<EntityHit> {
 }
 
 fn game_entity(hits: &[EntityHit]) -> Option<&EntityHit> {
-    // The live GameEntity has Player entities 2 and 3 within a megabyte.
-    hits.iter()
-        .filter(|e| e.id == 1)
-        .max_by_key(|g| {
-            hits.iter()
-                .filter(|e| (e.id == 2 || e.id == 3) && e.addr.abs_diff(g.addr) < 0x10_0000)
-                .count()
-        })
+    // A leftover GameEntity from a finished match is still `id == 1` and
+    // can easily have *more* Player-adjacent entities nearby than a game
+    // that just started (a fuller board from a match that ran its course,
+    // against a mulligan-fresh one) -- ranking by nearby-player-count alone
+    // picked exactly that stale island over the real live game, reported
+    // live: `/api/memory` showed a finished match's board while the log
+    // watcher correctly tracked a brand-new mulligan. A GameEntity actually
+    // being tracked live carries TURN/STEP tags; one whose match ended and
+    // whose tag list has since gone stale in memory often does not -- so
+    // that's checked first, and the nearby-player heuristic only breaks
+    // ties among genuinely live candidates (or is the fallback if none
+    // carry those tags, rather than nothing being returned at all).
+    let live_tagged = hits
+        .iter()
+        .filter(|e| e.id == 1 && (e.tag(TAG_TURN).is_some() || e.tag(TAG_STEP).is_some()));
+    let mut pool: Vec<&EntityHit> = live_tagged.collect();
+    if pool.is_empty() {
+        pool = hits.iter().filter(|e| e.id == 1).collect();
+    }
+    pool.into_iter().max_by_key(|g| {
+        hits.iter()
+            .filter(|e| (e.id == 2 || e.id == 3) && e.addr.abs_diff(g.addr) < 0x10_0000)
+            .count()
+    })
 }
 
 fn read_game_state(live: &[EntityHit]) -> GameState {
