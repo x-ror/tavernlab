@@ -554,6 +554,14 @@ fn dedup_by_id(hits: &[EntityHit], anchor: u64) -> Vec<EntityHit> {
     best
 }
 
+/// How close, in heap address space, an object has to sit to `GameEntity`
+/// to count as belonging to the same match. Shared between
+/// `current_game_entities` (which entities are "this game") and
+/// `build_sides` (which `Player` object is "this game"'s, not a same-name
+/// leftover from a stale island the raw nearest-address match would
+/// otherwise pick, per the mixed-up-sides report this fixes).
+const SAME_GAME_WINDOW: u64 = 32 * 1024 * 1024;
+
 /// The live GameEntity (`id=1`, `CARDTYPE=GAME`) sits in the same heap
 /// island as that match's other entities. Leftovers from earlier games
 /// keep high ids but live far away. Cap is the highest id in a 32 MiB
@@ -563,10 +571,9 @@ fn current_game_entities(hits: &[EntityHit]) -> Vec<EntityHit> {
         return dedup_by_id(hits, 0);
     };
     let deduped = dedup_by_id(hits, game.addr);
-    const WINDOW: u64 = 32 * 1024 * 1024;
     let mut cap = deduped
         .iter()
-        .filter(|e| e.addr.abs_diff(game.addr) < WINDOW)
+        .filter(|e| e.addr.abs_diff(game.addr) < SAME_GAME_WINDOW)
         .map(|e| e.id)
         .max()
         .unwrap_or(game.id);
@@ -636,10 +643,24 @@ fn build_sides(live: &[EntityHit], players: &[PlayerHit], current_player: Option
         let want_eid = pid + 1;
         let player_ent = live.iter().find(|e| e.id == want_eid);
         let anchor = game_entity(live).map(|g| g.addr).unwrap_or(0);
-        let player = players
+        // Prefer a Player object in the same heap island as this match's
+        // GameEntity: reported live, the plain "nearest of all ~200 found"
+        // match picked a same-`player_id` Player object from a completely
+        // different, stale island (a real past opponent's name attached to
+        // the live game, hand cards swapped to the wrong side) whenever
+        // that stale one happened to sit closer in raw address terms than
+        // the actual current one. Only falls back to nearest-overall when
+        // nothing for this `pid` exists within the window at all.
+        let candidates: Vec<&PlayerHit> = players
             .iter()
             .filter(|p| p.player_id == pid && p.name.is_some())
-            .min_by_key(|p| p.addr.abs_diff(anchor));
+            .collect();
+        let player = candidates
+            .iter()
+            .copied()
+            .filter(|p| p.addr.abs_diff(anchor) < SAME_GAME_WINDOW)
+            .min_by_key(|p| p.addr.abs_diff(anchor))
+            .or_else(|| candidates.into_iter().min_by_key(|p| p.addr.abs_diff(anchor)));
         let name = player.and_then(|p| p.name.clone());
         let of: Vec<&EntityHit> = live
             .iter()
