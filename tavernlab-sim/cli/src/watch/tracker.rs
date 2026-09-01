@@ -860,6 +860,38 @@ mod tests {
     }
 
     #[test]
+    fn a_printed_taunt_minion_keeps_it_after_being_revealed_in_hand_then_played() {
+        // Reproduces a real reported case: the opponent's Caged Cranium
+        // (printed Taunt) was drawn face-down, `SHOW_ENTITY`-revealed while
+        // still in hand (Power.log dumps its full tag state there,
+        // including `tag=TAUNT value=1`, which `Event::Reveal` does not
+        // carry -- only `entity`/`card_id`), then played. The turn plan
+        // still sent three attackers face as if no Taunt minion existed.
+        //
+        // This confirms the mechanism that *should* cover it regardless:
+        // `Body::reveal`/the `OPPOSING HAND -> OPPOSING PLAY` `ZoneMove`
+        // both derive keywords from the card's own printed definition
+        // (`card.def().keywords`), not from the ignored `SHOW_ENTITY` tag
+        // block. If this test passes, the reported plan was drawn from a
+        // stale poll (the board hadn't caught up to the screenshot's
+        // moment yet) rather than a logic bug in Taunt tracking itself --
+        // the class of staleness this project has already flagged
+        // elsewhere, not a new defect here.
+        let mut t = Tracker::new(None);
+        feed(&mut t, &[
+            "[Zone] [entityName=Deathmantle Valeera id=64 zone=PLAY zonePos=0 \
+             cardId=HERO_11 player=1] zone from  -> FRIENDLY PLAY (Hero)",
+            "[Zone] [entityName=UNKNOWN ENTITY [cardType=INVALID] id=35 zone=HAND \
+             zonePos=3 cardId= player=2] zone from OPPOSING DECK -> OPPOSING HAND",
+            "[Zone] [entityName=Caged Cranium id=35 zone=PLAY zonePos=0 \
+             cardId=JAIL_513 player=2] zone from OPPOSING HAND -> OPPOSING PLAY",
+        ]);
+        assert_eq!(t.board[1].len(), 1, "the minion is on the opponent's board");
+        assert_eq!(t.board[1][0].card.name(), "Caged Cranium");
+        assert!(t.board[1][0].keywords.has(Keywords::TAUNT), "and keeps its printed Taunt");
+    }
+
+    #[test]
     fn the_opening_hand_stops_growing_once_the_game_starts() {
         let mut t = Tracker::new(None);
         feed(&mut t, &[
