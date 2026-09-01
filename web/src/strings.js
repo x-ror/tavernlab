@@ -58,6 +58,8 @@ export const EXTRA = {
     'ui.live.hand': 'Рука',
     'ui.live.secret': 'Секрети',
     'ui.live.deck': 'Колода',
+    'ui.live.graveyard': 'Кладовище',
+    'ui.live.turn_marker': 'хід',
     'ui.live.mana': 'мана',
     'ui.live.empty': 'порожньо',
 
@@ -244,6 +246,8 @@ export const EXTRA = {
     'ui.live.hand': 'Hand',
     'ui.live.secret': 'Secrets',
     'ui.live.deck': 'Deck',
+    'ui.live.graveyard': 'Graveyard',
+    'ui.live.turn_marker': 'turn',
     'ui.live.mana': 'mana',
     'ui.live.empty': 'empty',
 

@@ -4,6 +4,7 @@ import * as api from '../api'
 import { useApp } from '../store'
 import { renderLine, useT } from '../i18n'
 import { ErrorNote, Panel } from '../components/ui'
+import CardTile from '../components/CardTile'
 
 /* Advice while you play: mulligan, the opponent, this turn, and the
  * board the memory reader can see. One panel. The log watcher and
@@ -159,16 +160,100 @@ function Advice({ live, hasBoard }) {
  * lose the number and the weight. */
 const CAVEATS = new Set(['live.plan.mana_guessed', 'live.plan.no_deck'])
 
-function memCard(e) {
-  if (!e) return '—'
-  // `name` is resolved server-side (cli/src/serve/memory.rs) from `cardId`
-  // — the internal code (`"HERO_09dbp"`) `memreader` reads out of process
-  // memory, not something to show as-is. `cardId` itself is the fallback
-  // for the rare id the corpus doesn't have a name for, `#id` past that.
-  const name = e.name || e.cardId || `#${e.id}`
-  if (e.atk != null || e.health != null) return `${name} ${e.atk ?? '?'}/${e.health ?? '?'}`
-  if (e.cost != null) return `${name} (${e.cost})`
-  return name
+/* `memreader`'s entity shape (`cardId`/`atk`/`health`/`cost`, `name`
+ * resolved server-side) onto `CardTile`'s (`card_id`/`atk`/`health`/
+ * `damage`/`cost`/`tags`) -- the same art-behind-a-scrim tile the deck lab
+ * and the replay use, so a card looks like the same card everywhere in the
+ * app. `damage` is always 0: memreader doesn't read `TAG_DAMAGE` yet, so
+ * `health` here is the printed/buffed maximum, not remaining health after
+ * a trade -- a known gap, not a silent wrong number (the tile just can't
+ * show a minion as hurt yet). No keyword tags either, for the same reason
+ * (Taunt/Divine Shield/... aren't read from `List<Tag>` yet), so a tile
+ * never claims a mark it can't back up. */
+function toTile(e) {
+  if (!e) return null
+  return {
+    card_id: e.cardId,
+    name: e.name,
+    atk: e.atk,
+    health: e.health,
+    damage: 0,
+    cost: e.cost,
+    tags: {},
+  }
+}
+
+function Crystals({ mana, manaMax }) {
+  const max = Math.max(0, manaMax || 0)
+  if (!max) return null
+  const cur = Math.max(0, Math.min(max, mana ?? 0))
+  return (
+    <span className="tl-crystals" aria-hidden="true">
+      {Array.from({ length: max }, (_, i) => (
+        <i key={i} className={`tl-crystal${i < cur ? '' : ' is-spent'}`} />
+      ))}
+    </span>
+  )
+}
+
+function BoardRow({ label, entities, kind }) {
+  const { t } = useT()
+  return (
+    <div>
+      <div className="tl-row-label">
+        {label} · {entities.length}
+        {kind === 'minion' ? '/7' : ''}
+      </div>
+      <div className="tl-board-row">
+        {entities.length ? (
+          entities.map((e, i) => <CardTile key={e.addr || i} entity={toTile(e)} kind={kind} />)
+        ) : (
+          <span className="tl-empty-hint">{t('ui.live.empty')}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SideBoard({ side, mine }) {
+  const { t } = useT()
+  return (
+    <div className="tl-board-side">
+      <div className="tl-board-head">
+        <Text UNSAFE_style={{ fontWeight: 700 }}>
+          {mine ? t('ui.live.you') : t('ui.live.them')}
+          {side.name ? ` — ${side.name}` : ''}
+          {side.current ? ` · ${t('ui.live.turn_marker')}` : ''}
+        </Text>
+        <span className="tl-chip">
+          {t('ui.live.mana')} {side.mana ?? '—'}/{side.manaMax ?? '—'}
+        </span>
+        <Crystals mana={side.mana} manaMax={side.manaMax} />
+        <span className="tl-chip">
+          {t('ui.live.deck')} {side.deck ?? 0}
+        </span>
+        <span className="tl-chip">
+          {t('ui.live.graveyard')} {side.graveyard ?? 0}
+        </span>
+      </div>
+      <Flex gap="size-100" wrap alignItems="flex-end">
+        {side.hero && <CardTile entity={toTile(side.hero)} kind="minion" />}
+        {side.heroPower && <CardTile entity={toTile(side.heroPower)} kind="hand" />}
+        {side.weapon && <CardTile entity={toTile(side.weapon)} kind="minion" />}
+      </Flex>
+      {side.secret?.length > 0 && (
+        <Flex gap="size-100" wrap>
+          {side.secret.map((s, i) => (
+            <span key={s.addr || i} className="tl-secret-pip">
+              🔒 {s.name || s.cardId}
+            </span>
+          ))}
+        </Flex>
+      )}
+      <BoardRow label={t('ui.live.play')} entities={side.play || []} kind="minion" />
+      <BoardRow label={t('ui.live.hand')} entities={side.hand || []} kind="hand" />
+    </div>
+  )
 }
 
 function MemoryBoard({ snap, battletag }) {
@@ -176,55 +261,20 @@ function MemoryBoard({ snap, battletag }) {
   const sides = snap?.sides || []
   if (!sides.length) return null
   const me = battletag.split('#')[0].toLowerCase()
-  const ordered = [...sides].sort((a, b) => {
-    const am = me && (a.name || '').toLowerCase() === me ? 0 : 1
-    const bm = me && (b.name || '').toLowerCase() === me ? 0 : 1
-    return am - bm || a.playerId - b.playerId
-  })
+  const meSide = (me && sides.find((s) => (s.name || '').toLowerCase() === me)) || sides[1] || sides[0]
+  const oppSide = sides.find((s) => s !== meSide)
   return (
     <div style={{ marginTop: 8 }}>
-      <div
-        style={{
-          fontSize: '.75rem',
-          letterSpacing: '.08em',
-          color: 'var(--tl-muted)',
-          marginBottom: 10,
-        }}
-      >
-        {t('ui.live.board')}
+      <div className="tl-row-label">{t('ui.live.board')}</div>
+      <div className="tl-felt">
+        {oppSide && (
+          <>
+            <SideBoard side={oppSide} mine={false} />
+            <hr className="tl-rule" />
+          </>
+        )}
+        <SideBoard side={meSide} mine />
       </div>
-      <Flex direction="column" gap="size-150">
-        {ordered.map((s) => {
-          const mine = me && (s.name || '').toLowerCase() === me
-          const row = (label, body) =>
-            body ? (
-              <div style={{ fontSize: '.95rem', lineHeight: 1.55 }}>
-                <span style={{ color: 'var(--tl-muted)', marginRight: 8 }}>{label}</span>
-                {body}
-              </div>
-            ) : null
-          const list = (arr) =>
-            arr?.length ? arr.map(memCard).join(', ') : t('ui.live.empty')
-          return (
-            <div key={s.playerId}>
-              <Text UNSAFE_style={{ fontWeight: 600 }}>
-                {mine ? t('ui.live.you') : t('ui.live.them')}
-                {s.name ? ` — ${s.name}` : ''}
-                {s.manaMax
-                  ? `  ${t('ui.live.mana')} ${s.mana ?? '—'}/${s.manaMax}`
-                  : ''}
-              </Text>
-              {row(t('ui.live.hero'), memCard(s.hero))}
-              {s.heroPower ? row(t('ui.live.hero_power'), memCard(s.heroPower)) : null}
-              {s.weapon ? row(t('ui.live.weapon'), memCard(s.weapon)) : null}
-              {row(t('ui.live.play'), list(s.play))}
-              {row(t('ui.live.hand'), list(s.hand))}
-              {s.secret?.length ? row(t('ui.live.secret'), list(s.secret)) : null}
-              {row(t('ui.live.deck'), String(s.deck ?? 0))}
-            </div>
-          )
-        })}
-      </Flex>
     </div>
   )
 }

@@ -554,6 +554,97 @@ body {
   padding-right: 0;
 }
 
+/* ------------------------------------------------------------------ felt
+ * The playing surface `/api/memory`'s board renders onto (Live.jsx's
+ * `MemoryBoard`) -- visually distinct from the advice text above it
+ * without competing with `.tl-panel`'s own frame, since this always sits
+ * inside one rather than standing as one itself.
+ */
+.tl-felt {
+  border-radius: 12px;
+  border: 1px solid var(--tl-line);
+  background: radial-gradient(ellipse at 50% 0%, rgba(201, 162, 39, 0.08), transparent 65%),
+    var(--tl-bg-2);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tl-board-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tl-board-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tl-row-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--tl-muted);
+  margin-bottom: 4px;
+}
+
+.tl-board-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px;
+  min-height: 58px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px dashed var(--tl-line-soft);
+}
+
+.tl-empty-hint {
+  font-size: 0.8rem;
+  color: var(--tl-faint);
+  align-self: center;
+  padding: 0 4px;
+}
+
+/* Mana, as a row of gems rather than a fraction -- the shape the game
+ * itself uses at the bottom of the screen. Filled vs. spent read at a
+ * glance without asking the reader to subtract. */
+.tl-crystals {
+  display: inline-flex;
+  gap: 3px;
+  vertical-align: middle;
+}
+
+.tl-crystal {
+  width: 9px;
+  height: 13px;
+  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
+  background: linear-gradient(180deg, #8ec0ff, #2450c8);
+  box-shadow: 0 0 3px rgba(60, 150, 230, 0.6);
+}
+
+.tl-crystal.is-spent {
+  background: linear-gradient(180deg, #2a3548, #121820);
+  box-shadow: none;
+}
+
+.tl-secret-pip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.72rem;
+  color: #e8d4ff;
+  background: rgba(80, 40, 160, 0.28);
+  border: 1px solid rgba(124, 77, 255, 0.55);
+}
+
 /* A path or a command the player is meant to be able to copy by eye. */
 .tl-code {
   display: inline-block;
