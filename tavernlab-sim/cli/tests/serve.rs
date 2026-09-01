@@ -631,6 +631,25 @@ D 09:00:02.0 [Zone] ZoneChangeList.ProcessChanges() - id=6 local=False [entityNa
         "and the position it read is there beside it: {advice}"
     );
 
+    // The advice that was actually shown above is kept, not just the
+    // game's eventual outcome -- so a session worth discussing afterward
+    // still has what the watcher said at the time.
+    let (status, body) = s.get("/api/advice-history");
+    assert_eq!(status, 200, "{body}");
+    let rows = json(&body).arr_or_empty("rows").to_vec();
+    assert!(!rows.is_empty(), "at least the turn 7 advice was recorded: {body}");
+    let row = &rows[0];
+    assert_eq!(row.i64_or_zero("turn"), 7, "{body}");
+    let row_title: Vec<&str> = row
+        .arr_or_empty("title")
+        .iter()
+        .map(|l| l.str_or_empty("k"))
+        .collect();
+    assert!(
+        row_title.contains(&"live.title.turn_mine"),
+        "the stored title is the same shape /api/live sends: {body}"
+    );
+
     let (status, body) = s.post("/api/live", "{\"action\":\"stop\"}");
     assert_eq!(status, 200, "{body}");
     assert!(!json(&body).bool_or_false("running"), "{body}");

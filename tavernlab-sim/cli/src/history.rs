@@ -282,6 +282,105 @@ pub fn append(path: &Path, games: &[Game]) -> Result<usize, String> {
     Ok(added + changed)
 }
 
+// ------------------------------------------------------------------ advice
+
+/// Columns only ever added at the end, same rule as `SCHEMA` above.
+pub const ADVICE_SCHEMA: &str = "CREATE TABLE advice (\
+id INTEGER PRIMARY KEY, \
+at INTEGER NOT NULL, \
+my_class TEXT NOT NULL, \
+opponent_class TEXT NOT NULL, \
+turn INTEGER NOT NULL, \
+mulligan INTEGER NOT NULL, \
+deck_code TEXT, \
+title TEXT, \
+sections TEXT)";
+
+/// One moment the watcher had something to say -- a mulligan verdict or a
+/// turn plan. Kept so a game worth discussing afterward has the actual
+/// advice that was shown, not just the outcome `games` records: `won`/
+/// `turns` says what happened, this says what the watcher told you to do
+/// about it.
+///
+/// One row per *change* (see `serve::live::run`'s `rebuild` flag), not per
+/// poll -- a mulligan verdict held for ten seconds is one row, not ten.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AdviceEntry {
+    pub at: i64,
+    pub my_class: String,
+    pub opponent_class: String,
+    pub turn: i64,
+    pub mulligan: bool,
+    pub deck_code: String,
+    /// `advice::to_json`'s output: a JSON array of `Line`s (`title`) and of
+    /// `{heading, lines}` objects (`sections`) -- the exact shape
+    /// `/api/live` already sends, so a future reader renders it with the
+    /// same `renderLine` the page has rather than a second format to keep
+    /// in sync.
+    pub title: String,
+    pub sections: String,
+}
+
+impl AdviceEntry {
+    fn to_values(&self) -> Vec<Value> {
+        vec![
+            Value::Null, // id: the rowid
+            Value::Int(self.at),
+            Value::Text(self.my_class.clone()),
+            Value::Text(self.opponent_class.clone()),
+            Value::Int(self.turn),
+            Value::Int(self.mulligan as i64),
+            Value::Text(self.deck_code.clone()),
+            Value::Text(self.title.clone()),
+            Value::Text(self.sections.clone()),
+        ]
+    }
+
+    fn from_row(row: &tavernlab_sqlite::Row) -> AdviceEntry {
+        let text = |i: usize| row.get(i).as_str().unwrap_or("").to_string();
+        AdviceEntry {
+            at: row.get(1).as_i64().unwrap_or(0),
+            my_class: text(2),
+            opponent_class: text(3),
+            turn: row.get(4).as_i64().unwrap_or(0),
+            mulligan: row.get(5).as_i64().unwrap_or(0) != 0,
+            deck_code: text(6),
+            title: text(7),
+            sections: text(8),
+        }
+    }
+}
+
+/// Every advice moment recorded, oldest first.
+pub fn read_advice(path: &Path) -> Result<Vec<AdviceEntry>, String> {
+    let db = tavernlab_sqlite::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let Some(table) = db.table("advice") else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<AdviceEntry> = table.rows.iter().map(AdviceEntry::from_row).collect();
+    out.sort_by_key(|e| e.at);
+    Ok(out)
+}
+
+/// Append advice moments. Plain appends, unlike `append`'s merge-by-game:
+/// each row is its own fact about a moment in a game, not a summary that a
+/// later, fuller read should overwrite.
+pub fn append_advice(path: &Path, entries: &[AdviceEntry]) -> Result<usize, String> {
+    if entries.is_empty() {
+        return Ok(0);
+    }
+    let mut db = tavernlab_sqlite::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let table = db.ensure("advice", ADVICE_SCHEMA);
+    if column_names(&table.sql).len() < column_names(ADVICE_SCHEMA).len() {
+        table.sql = ADVICE_SCHEMA.to_string();
+    }
+    for e in entries {
+        table.push(e.to_values());
+    }
+    tavernlab_sqlite::save(&db, path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(entries.len())
+}
+
 // ------------------------------------------------------------------ summary
 
 /// Games and wins for one grouping key.
@@ -464,5 +563,51 @@ mod tests {
             "the rowid alias is the first column, as every reader expects"
         );
         assert_eq!(t.rows[0].get(0), &Value::Int(1), "and it reads back as the id");
+    }
+
+    fn advice(at: i64, turn: i64, mulligan: bool) -> AdviceEntry {
+        AdviceEntry {
+            at,
+            my_class: "DEATHKNIGHT".into(),
+            opponent_class: "WARLOCK".into(),
+            turn,
+            mulligan,
+            deck_code: "AAECAfHhBA".into(),
+            title: r#"[{"k":"live.title.turn_mine"}]"#.into(),
+            sections: r#"[{"heading":"live.head.turn","lines":[{"k":"live.plan.attack"}]}]"#
+                .into(),
+        }
+    }
+
+    #[test]
+    fn an_advice_moment_survives_the_round_trip_whole() {
+        let path = scratch("advice-round.sqlite");
+        let a = advice(1_700_000_000, 3, false);
+        assert_eq!(append_advice(&path, std::slice::from_ref(&a)).expect("append"), 1);
+        assert_eq!(read_advice(&path).expect("read"), vec![a]);
+    }
+
+    #[test]
+    fn every_advice_change_is_its_own_row_not_a_merge() {
+        // Unlike `games`, a repeat isn't a re-read of the same session --
+        // it's the mulligan verdict shown, then the turn 1 plan a moment
+        // later, and both are worth keeping.
+        let path = scratch("advice-many.sqlite");
+        let entries = vec![
+            advice(1_700_000_000, 0, true),
+            advice(1_700_000_030, 1, false),
+        ];
+        assert_eq!(append_advice(&path, &entries).expect("first"), 2);
+        assert_eq!(append_advice(&path, &entries).expect("again"), 2, "still two more rows");
+        assert_eq!(read_advice(&path).expect("read").len(), 4);
+    }
+
+    #[test]
+    fn advice_and_games_live_in_the_same_file_without_colliding() {
+        let path = scratch("advice-and-games.sqlite");
+        append(&path, &[game(1_700_000_000, "WARLOCK", Some(true))]).expect("game");
+        append_advice(&path, &[advice(1_700_000_000, 3, false)]).expect("advice");
+        assert_eq!(read(&path).expect("games").len(), 1);
+        assert_eq!(read_advice(&path).expect("advice").len(), 1);
     }
 }

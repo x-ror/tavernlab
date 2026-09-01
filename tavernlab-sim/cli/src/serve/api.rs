@@ -1321,6 +1321,62 @@ pub fn history(_app: &App) -> Response {
     )
 }
 
+/// `GET /api/advice-history` — every mulligan verdict and turn plan the
+/// watcher has shown, newest first. `serve::live::save_advice` is the
+/// writer; this is its only reader so far, meant for pointing at a specific
+/// moment from a past game rather than for a page of its own yet.
+pub fn advice_history(_app: &App) -> Response {
+    let path = crate::history::default_path();
+    let entries = match crate::history::read_advice(&path) {
+        Ok(e) => e,
+        Err(e) => {
+            return Response::json(
+                200,
+                to_string(|o| {
+                    o.obj(|o| {
+                        o.str_field("error", &e);
+                        o.str_field("path", &path.display().to_string());
+                    })
+                }),
+            );
+        }
+    };
+    Response::json(
+        200,
+        to_string(|o| {
+            o.obj(|o| {
+                o.field("rows", |v| {
+                    v.arr(|a| {
+                        for e in entries.iter().rev() {
+                            a.item(|v| {
+                                v.obj(|o| {
+                                    o.int_field("at", e.at);
+                                    o.str_field("my_class", &e.my_class);
+                                    o.str_field("opponent_class", &e.opponent_class);
+                                    o.int_field("turn", e.turn);
+                                    o.bool_field("mulligan", e.mulligan);
+                                    o.str_field("deck_code", &e.deck_code);
+                                    // Already the exact JSON `/api/live` sends
+                                    // for `title`/`sections` -- see
+                                    // `watch::advice::to_json` -- so this
+                                    // splices the stored document in rather
+                                    // than re-walking it field by field.
+                                    o.field("title", |v| {
+                                        v.raw(if e.title.is_empty() { "[]" } else { &e.title })
+                                    });
+                                    o.field("sections", |v| {
+                                        v.raw(if e.sections.is_empty() { "[]" } else { &e.sections })
+                                    });
+                                })
+                            });
+                        }
+                    })
+                });
+            })
+        }),
+    )
+}
+
 pub fn metrics(app: &App) -> Response {
     let counts = |fmt: Formats| -> (usize, usize) {
         let deckable: Vec<CardId> = tavernlab_core::cards::all()

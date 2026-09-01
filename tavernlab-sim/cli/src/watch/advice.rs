@@ -188,3 +188,39 @@ pub fn write_line(o: &mut tavernlab_json::Out, line: &Line) {
         });
     });
 }
+
+/// `title`/`sections` as the same JSON `/api/live` sends (via [`write_line`]
+/// and the section shape `serve::api::live_read` builds), packed into two
+/// strings a `history::AdviceEntry` row can hold. Meant for a record kept
+/// past the poll that produced it, not for the live response itself -- see
+/// `history.rs`'s module docs for why this exists at all: without it, a
+/// game worth discussing afterward has only its outcome, not the advice
+/// that was actually shown while it was played.
+pub fn to_json(advice: &Advice) -> (String, String) {
+    let title = tavernlab_json::to_string(|o| {
+        o.arr(|a| {
+            for part in &advice.title {
+                a.item(|v| write_line(v, part));
+            }
+        })
+    });
+    let sections = tavernlab_json::to_string(|o| {
+        o.arr(|a| {
+            for s in advice.sections.iter().filter(|s| !s.lines.is_empty()) {
+                a.item(|v| {
+                    v.obj(|o| {
+                        o.str_field("heading", s.key);
+                        o.field("lines", |v| {
+                            v.arr(|a| {
+                                for line in &s.lines {
+                                    a.item(|v| write_line(v, line));
+                                }
+                            })
+                        });
+                    })
+                });
+            }
+        })
+    });
+    (title, sections)
+}

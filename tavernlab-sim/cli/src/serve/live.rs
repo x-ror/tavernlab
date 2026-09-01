@@ -187,6 +187,7 @@ fn run(
     recorded += write(app, format, deck, runner.take_finished());
     if runner.watching().is_some() {
         let advice = watch::build_advice(app, format, runner.tracker(), deck);
+        save_advice(deck, runner.tracker(), &advice);
         let capped = runner.log_capped();
         app.live.publish(|s| {
             s.advice = Some(advice);
@@ -221,6 +222,7 @@ fn run(
         };
         if rebuild {
             let advice = watch::build_advice(app, format, runner.tracker(), deck);
+            save_advice(deck, runner.tracker(), &advice);
             let capped = runner.log_capped();
             app.live.publish(|s| {
                 s.advice = Some(advice);
@@ -250,6 +252,37 @@ fn path_of(p: Option<&Path>) -> Option<String> {
 
 fn capped_note(capped: bool) -> Option<Line> {
     capped.then(|| Line::new("live.note.log_capped"))
+}
+
+/// Keep one row per advice change -- a mulligan verdict, a new turn's plan
+/// -- so a game worth discussing afterward still has what was actually
+/// shown, not just how it ended. Called only when [`Advice`] was just
+/// rebuilt (see `rebuild` in [`run`]), not on every poll: a plan held for
+/// several seconds is one row, not one per tick.
+///
+/// A history that cannot be written costs the record, not the session --
+/// same reasoning as `write` below, same reason it only logs the error.
+fn save_advice(deck: &str, tracker: &watch::tracker::Tracker, advice: &Advice) {
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let class_name = |c| tavernlab_core::gauntlet::class_name(c);
+    let (title, sections) = watch::advice::to_json(advice);
+    let entry = crate::history::AdviceEntry {
+        at,
+        my_class: tracker.my_class().map(class_name).unwrap_or_default().to_string(),
+        opponent_class: tracker.opponent_class().map(class_name).unwrap_or_default().to_string(),
+        turn: tracker.turn as i64,
+        mulligan: !tracker.started,
+        deck_code: deck.to_string(),
+        title,
+        sections,
+    };
+    let path = crate::history::default_path();
+    if let Err(e) = crate::history::append_advice(&path, &[entry]) {
+        eprintln!("live: не вдалося записати пораду: {e}");
+    }
 }
 
 /// Append finished games and count what was new. A history that cannot be
