@@ -5,6 +5,7 @@ import { useApp } from '../store'
 import { renderLine, useT } from '../i18n'
 import { ErrorNote, Panel } from '../components/ui'
 import CardTile from '../components/CardTile'
+import { heroArt } from '../classes'
 
 /* Advice while you play: mulligan, the opponent, this turn, and the
  * board the memory reader can see. One panel. The log watcher and
@@ -215,16 +216,44 @@ function BoardRow({ label, entities, kind }) {
   )
 }
 
-function SideBoard({ side, mine }) {
+/* The hero as a medallion, not a flat minion tile -- the one piece of the
+ * real board this owes more to `HeroPortrait`/`.tl-portrait` than to
+ * `CardTile`. Keyed on `hero.class` (server-resolved in
+ * cli/src/serve/memory.rs from the hero's card id), not the card id
+ * itself: every hero *skin* is its own id (`HERO_11`, `HERO_11bp`, ...)
+ * the art cache was never built against, while `/api/art/hero/{class}`
+ * has real art for all eleven classes. A hero with no class here (an
+ * unresolved corpus lookup) just shows the ring on an empty disc. */
+function HeroMedallion({ hero, armor, current }) {
+  const [failed, setFailed] = useState(false)
+  const art = hero?.class && !failed ? heroArt(hero.class) : null
+  return (
+    <div className={`tl-hero-wrap${current ? ' is-current' : ''}`} title={hero?.name}>
+      <div className="tl-hero-portrait">
+        {art && <img src={art} alt="" onError={() => setFailed(true)} />}
+      </div>
+      <span className="tl-hero-ring" aria-hidden="true" />
+      {hero && (
+        <>
+          <span className="tl-cs tl-atk">{hero.atk ?? 0}</span>
+          <span className="tl-cs tl-hp">{hero.health ?? '?'}</span>
+        </>
+      )}
+      {armor > 0 && <span className="tl-armor">{armor}</span>}
+    </div>
+  )
+}
+
+function SideHead({ side }) {
   const { t } = useT()
   return (
-    <div className="tl-board-side">
-      <div className="tl-board-head">
-        <Text UNSAFE_style={{ fontWeight: 700 }}>
-          {mine ? t('ui.live.you') : t('ui.live.them')}
-          {side.name ? ` — ${side.name}` : ''}
-          {side.current ? ` · ${t('ui.live.turn_marker')}` : ''}
-        </Text>
+    <div className="tl-side-head">
+      <HeroMedallion hero={side.hero} armor={side.armor} current={side.current} />
+      <div className="tl-gear">
+        {side.heroPower && <CardTile entity={toTile(side.heroPower)} kind="hand" />}
+        {side.weapon && <CardTile entity={toTile(side.weapon)} kind="minion" />}
+      </div>
+      <div className="tl-side-stats">
         <span className="tl-chip">
           {t('ui.live.mana')} {side.mana ?? '—'}/{side.manaMax ?? '—'}
         </span>
@@ -236,22 +265,42 @@ function SideBoard({ side, mine }) {
           {t('ui.live.graveyard')} {side.graveyard ?? 0}
         </span>
       </div>
-      <Flex gap="size-100" wrap alignItems="flex-end">
-        {side.hero && <CardTile entity={toTile(side.hero)} kind="minion" />}
-        {side.heroPower && <CardTile entity={toTile(side.heroPower)} kind="hand" />}
-        {side.weapon && <CardTile entity={toTile(side.weapon)} kind="minion" />}
-      </Flex>
-      {side.secret?.length > 0 && (
-        <Flex gap="size-100" wrap>
-          {side.secret.map((s, i) => (
-            <span key={s.addr || i} className="tl-secret-pip">
-              🔒 {s.name || s.cardId}
-            </span>
-          ))}
-        </Flex>
-      )}
-      <BoardRow label={t('ui.live.play')} entities={side.play || []} kind="minion" />
-      <BoardRow label={t('ui.live.hand')} entities={side.hand || []} kind="hand" />
+    </div>
+  )
+}
+
+/* Mirrored on purpose: the opponent's hand sits above their board, yours
+ * below yours, the two `play` rows meeting at the divider -- the same
+ * reading order the game's own table has, not an arbitrary stack of
+ * sections. `flip` reverses the row order for the opponent's half. */
+function SideBoard({ side, mine, flip }) {
+  const { t } = useT()
+  const name = (
+    <div className="tl-side-name">
+      {mine ? t('ui.live.you') : t('ui.live.them')}
+      {side.name ? ` — ${side.name}` : ''}
+      {side.current ? ` · ${t('ui.live.turn_marker')}` : ''}
+    </div>
+  )
+  const secrets = side.secret?.length > 0 && (
+    <Flex gap="size-100" wrap>
+      {side.secret.map((s, i) => (
+        <span key={s.addr || i} className="tl-secret-pip">
+          🔒 {s.name || s.cardId}
+        </span>
+      ))}
+    </Flex>
+  )
+  const hand = <BoardRow label={t('ui.live.hand')} entities={side.hand || []} kind="hand" />
+  const play = <BoardRow label={t('ui.live.play')} entities={side.play || []} kind="minion" />
+  const head = <SideHead side={side} />
+  const rows = flip ? [head, hand, secrets, play] : [play, secrets, hand, head]
+  return (
+    <div className="tl-board-side">
+      {name}
+      {rows.map((r, i) => (
+        <div key={i}>{r}</div>
+      ))}
     </div>
   )
 }
@@ -269,7 +318,7 @@ function MemoryBoard({ snap, battletag }) {
       <div className="tl-felt">
         {oppSide && (
           <>
-            <SideBoard side={oppSide} mine={false} />
+            <SideBoard side={oppSide} mine={false} flip />
             <hr className="tl-rule" />
           </>
         )}

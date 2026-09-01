@@ -78,6 +78,20 @@ fn card_name(card_id: &str) -> Option<&'static str> {
     tavernlab_core::cards::by_id(card_id).map(|c| c.info().name)
 }
 
+/// A *hero* card's class (`"DEATHKNIGHT"`, ...), for the one thing `name`
+/// alone can't do: the web UI's hero portrait has real art cached by class
+/// (`/api/art/hero/{class}`, drawn from the same set `Class::` selectors
+/// already use) but not by the hero's own card id -- every hero skin is a
+/// separate id (`HERO_11`, `HERO_11bp`, ...) the art cache was never built
+/// against, so a portrait keyed on `cardId` 404s for nearly every hero.
+/// `None` for anything that isn't a hero card, so a minion never grows a
+/// spurious `class` field it has no use for.
+fn hero_class(card_id: &str) -> Option<&'static str> {
+    let card = tavernlab_core::cards::by_id(card_id)?;
+    (card.def().kind() == tavernlab_core::cards::Kind::Hero)
+        .then(|| tavernlab_core::gauntlet::class_name(card.def().class()))
+}
+
 /// Copy `v` through `out` unchanged, except: any object carrying a
 /// `cardId` key gains a `name` field resolved from it. Recurses into every
 /// array and object so it doesn't need to know the snapshot's exact shape
@@ -100,6 +114,9 @@ fn with_names(v: &Json, out: &mut tavernlab_json::Out) {
             }
             if let Some(card_id) = v.get("cardId").and_then(Json::as_str) {
                 o.field("name", |v| v.opt(card_name(card_id), |o, s| o.str(s)));
+                if let Some(class) = hero_class(card_id) {
+                    o.str_field("class", class);
+                }
             }
         }),
     }
