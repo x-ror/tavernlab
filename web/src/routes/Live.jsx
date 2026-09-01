@@ -5,7 +5,7 @@ import { useApp } from '../store'
 import { renderLine, useT } from '../i18n'
 import { ErrorNote, Panel } from '../components/ui'
 import CardTile from '../components/CardTile'
-import { heroArt } from '../classes'
+import HeroPortrait from '../components/HeroPortrait'
 
 /* Advice while you play: mulligan, the opponent, this turn, and the
  * board the memory reader can see. One panel. The log watcher and
@@ -216,23 +216,20 @@ function BoardRow({ label, entities, kind }) {
   )
 }
 
-/* The hero as a medallion, not a flat minion tile -- the one piece of the
- * real board this owes more to `HeroPortrait`/`.tl-portrait` than to
- * `CardTile`. Keyed on `hero.class` (server-resolved in
- * cli/src/serve/memory.rs from the hero's card id), not the card id
- * itself: every hero *skin* is its own id (`HERO_11`, `HERO_11bp`, ...)
- * the art cache was never built against, while `/api/art/hero/{class}`
- * has real art for all eleven classes. A hero with no class here (an
- * unresolved corpus lookup) just shows the ring on an empty disc. */
+/* The hero as a medallion, not a flat minion tile. Reuses `HeroPortrait`
+ * itself (not a second art/CSS system) so a missing `/api/art/hero/{class}`
+ * file falls back to the same hand-drawn `ClassCrest` every other hero
+ * portrait in the app already falls back to, per serve/mod.rs's own stated
+ * intent ("a missing file is a 404 and the UI draws its own class crest
+ * instead") -- rather than the blank ring a first version of this left
+ * when `hero.class` was empty or the art 404s. `hero.class` is resolved
+ * server-side (cli/src/serve/memory.rs) from the hero's card id: every
+ * hero *skin* is its own id (`HERO_11`, `HERO_11bp`, ...) the art cache
+ * was never built against, only the eleven classes were. */
 function HeroMedallion({ hero, armor, current }) {
-  const [failed, setFailed] = useState(false)
-  const art = hero?.class && !failed ? heroArt(hero.class) : null
   return (
-    <div className={`tl-hero-wrap${current ? ' is-current' : ''}`} title={hero?.name}>
-      <div className="tl-hero-portrait">
-        {art && <img src={art} alt="" onError={() => setFailed(true)} />}
-      </div>
-      <span className="tl-hero-ring" aria-hidden="true" />
+    <div className={`tl-hero-wrap${current ? ' is-current' : ''}`}>
+      <HeroPortrait cls={hero?.class} size={84} title={hero?.name} />
       {hero && (
         <>
           <span className="tl-cs tl-atk">{hero.atk ?? 0}</span>
@@ -319,7 +316,9 @@ function MemoryBoard({ snap, battletag }) {
         {oppSide && (
           <>
             <SideBoard side={oppSide} mine={false} flip />
-            <hr className="tl-rule" />
+            <div className="tl-board-divider" aria-hidden="true">
+              <span>VS</span>
+            </div>
           </>
         )}
         <SideBoard side={meSide} mine />

@@ -634,54 +634,20 @@ body {
 }
 
 /* -------------------------------------------------------- hero medallion
- * `Live.jsx`'s `HeroMedallion` -- a bigger cousin of `.tl-portrait` (which
- * is keyed on a *class*, and a memory-read hero is keyed on a *card id*
- * instead) with the same atk/hp/armor discs a board minion tile carries,
- * scaled up. The current player's ring lights gold, the same colour the
- * turn indicator already uses everywhere else in the app.
+ * `Live.jsx`'s `HeroMedallion` wraps `HeroPortrait` itself (art-or-crest,
+ * never a blank circle -- see that component's own doc comment) with the
+ * atk/hp/armor discs a board minion tile carries, scaled up, plus a glow
+ * on the current player's turn in the same gold the rest of the app uses
+ * for it. Nothing here draws the portrait or its ring; `.tl-portrait`/
+ * `.tl-portrait-ring` already do, at whatever `size` is passed in.
  */
 .tl-hero-wrap {
   position: relative;
   flex: 0 0 auto;
 }
 
-.tl-hero-portrait {
-  width: 84px;
-  height: 84px;
-  border-radius: 50%;
-  overflow: hidden;
-  display: grid;
-  place-items: center;
-  background: linear-gradient(160deg, var(--tl-surface-2), var(--tl-surface));
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7), 0 4px 14px rgba(0, 0, 0, 0.55);
-}
-
-.tl-hero-portrait img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: 50% 22%;
-  display: block;
-}
-
-.tl-hero-ring {
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  pointer-events: none;
-  border: 2px solid transparent;
-  background: linear-gradient(160deg, var(--tl-gold-lit), var(--tl-gold-deep) 45%, var(--tl-gold-lit))
-    border-box;
-  -webkit-mask: linear-gradient(#000 0 0) padding-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.75);
-  opacity: 0.55;
-}
-
-.tl-hero-wrap.is-current .tl-hero-ring {
-  opacity: 1;
-  box-shadow: 0 0 14px 2px rgba(232, 198, 90, 0.65);
+.tl-hero-wrap.is-current {
+  filter: drop-shadow(0 0 9px rgba(232, 198, 90, 0.7));
 }
 
 .tl-hero-wrap .tl-cs {
@@ -729,10 +695,15 @@ body {
 }
 
 .tl-gear .tl-tile-name {
+  /* The base rule vertically centres via `top: 50%` + a matching
+     `translateY(-50%)`; overriding `top` alone without resetting the
+     transform pushed the text half its own height above the tile,
+     clipping the first line at the top edge. */
   font-size: 0.62rem;
   left: 4px;
   right: 4px;
   top: 4px;
+  transform: none;
 }
 
 /* The two boards face each other, hero row outermost -- same reading
@@ -757,6 +728,42 @@ body {
   gap: 8px;
   flex-wrap: wrap;
   margin-left: auto;
+}
+
+/* The one seam that has to be unmistakable: this is exactly the boundary
+ * a real reported bug lived at (whose hand is whose, drawn from the wrong
+ * heap island -- see memreader/README.md's "sides mismatch" note). A
+ * plain `.tl-rule` reads as a quiet divider between two halves of the
+ * same list; this reads as two different tables. */
+.tl-board-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0;
+}
+
+.tl-board-divider::before,
+.tl-board-divider::after {
+  content: '';
+  flex: 1;
+  height: 2px;
+}
+
+.tl-board-divider::before {
+  background: linear-gradient(90deg, transparent, var(--tl-gold-deep) 40%, var(--tl-gold-lit));
+}
+
+.tl-board-divider::after {
+  background: linear-gradient(90deg, var(--tl-gold-lit), var(--tl-gold-deep) 60%, transparent);
+}
+
+.tl-board-divider span {
+  font-family: var(--tl-display);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--tl-gold-lit);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
 }
 
 .tl-secret-pip {
