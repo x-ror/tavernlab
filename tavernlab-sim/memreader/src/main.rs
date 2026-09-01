@@ -1841,3 +1841,196 @@ fn read_cstring(remote: &Remote, addr: u64, max: usize) -> Option<String> {
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
 }
+
+/// Unit tests for the pure reconstruction logic (`game_entity`,
+/// `dedup_by_id`, `current_game_entities`, `build_sides`, ...) -- built by
+/// hand from `EntityHit`/`PlayerHit`, no running process needed. This is
+/// deliberately the one part of `memreader` that *can* be tested this way:
+/// everything upstream of these functions (PID discovery, PE parsing, the
+/// heap scan itself) genuinely needs a real Hearthstone process and can't
+/// be exercised offline, which is why this file had zero tests until now.
+///
+/// Several of these encode addresses and tag shapes taken straight from
+/// real live dumps this session (see the commit history and
+/// `memreader/README.md`'s "known, not yet resolved bug" note) -- close
+/// enough to reality to be worth keeping as regressions, not just
+/// hypothetical shapes.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entity(id: i32, addr: u64, tags: &[(i32, i32)]) -> EntityHit {
+        EntityHit {
+            addr,
+            card_id: None,
+            id,
+            tags: tags.to_vec(),
+        }
+    }
+
+    fn player(name: &str, player_id: i32, entity_id: i32, addr: u64) -> PlayerHit {
+        PlayerHit {
+            addr,
+            name: Some(name.to_string()),
+            player_id,
+            entity_id,
+            tags: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn game_entity_prefers_a_candidate_that_actually_carries_turn_or_step() {
+        // The stale one has more nearby "players" (a fuller, finished
+        // board leaves more resident garbage) -- exactly the shape that
+        // fooled the old nearby-count-only heuristic, per the live report
+        // this fix was written for.
+        let stale_game = entity(1, 0x1000_0000, &[(TAG_CARDTYPE, 1)]);
+        let stale_p2 = entity(2, 0x1000_1000, &[(TAG_CONTROLLER, 1)]);
+        let stale_p3 = entity(3, 0x1000_2000, &[(TAG_CONTROLLER, 2)]);
+        let stale_extra = entity(4, 0x1000_3000, &[(TAG_CONTROLLER, 1)]);
+
+        let live_game = entity(1, 0x9000_0000, &[(TAG_TURN, 9), (TAG_STEP, 10)]);
+        let live_p2 = entity(2, 0x9000_1000, &[(TAG_CONTROLLER, 1)]);
+        let live_p3 = entity(3, 0x9000_2000, &[(TAG_CONTROLLER, 2)]);
+
+        let hits = vec![
+            stale_game, stale_p2, stale_p3, stale_extra, live_game, live_p2, live_p3,
+        ];
+        let picked = game_entity(&hits).expect("a candidate");
+        assert_eq!(picked.addr, 0x9000_0000, "the live-tagged one, not the more crowded stale one");
+    }
+
+    #[test]
+    fn game_entity_falls_back_to_nearby_player_count_when_nothing_is_tagged() {
+        // Neither candidate carries TURN/STEP (the common case -- see
+        // README's note that this doesn't always help), so the original
+        // heuristic still has to do its job as a fallback.
+        let sparse = entity(1, 0x1000_0000, &[]);
+        let sparse_p2 = entity(2, 0x1000_1000, &[]);
+
+        let crowded = entity(1, 0x2000_0000, &[]);
+        let crowded_p2 = entity(2, 0x2000_1000, &[]);
+        let crowded_p3 = entity(3, 0x2000_2000, &[]);
+
+        let hits = vec![sparse, sparse_p2, crowded, crowded_p2, crowded_p3];
+        let picked = game_entity(&hits).expect("a candidate");
+        assert_eq!(picked.addr, 0x2000_0000, "two nearby players beats one");
+    }
+
+    #[test]
+    fn dedup_by_id_keeps_the_more_filled_copy_over_a_closer_empty_one() {
+        let anchor = 0x5000_0000u64;
+        let empty_but_close = EntityHit {
+            addr: anchor + 0x40,
+            card_id: None,
+            id: 7,
+            tags: vec![],
+        };
+        let filled_but_far = EntityHit {
+            addr: anchor + 0x1000_0000,
+            card_id: Some("CS2_182".into()),
+            id: 7,
+            tags: vec![(TAG_ZONE, ZONE_PLAY)],
+        };
+        let deduped = dedup_by_id(&[empty_but_close, filled_but_far.clone()], anchor);
+        assert_eq!(deduped.len(), 1);
+        assert_eq!(deduped[0].addr, filled_but_far.addr, "card_id+zone beats mere proximity");
+    }
+
+    #[test]
+    fn dedup_by_id_breaks_a_tie_in_fill_by_proximity_to_the_anchor() {
+        let anchor = 0x5000_0000u64;
+        let near = EntityHit {
+            addr: anchor + 0x40,
+            card_id: Some("CS2_182".into()),
+            id: 7,
+            tags: vec![(TAG_ZONE, ZONE_PLAY)],
+        };
+        let far = EntityHit {
+            addr: anchor + 0x1000_0000,
+            card_id: Some("CS2_182".into()),
+            id: 7,
+            tags: vec![(TAG_ZONE, ZONE_PLAY)],
+        };
+        let deduped = dedup_by_id(&[far, near.clone()], anchor);
+        assert_eq!(deduped.len(), 1);
+        assert_eq!(deduped[0].addr, near.addr, "equally filled -- the closer one wins");
+    }
+
+    #[test]
+    fn current_game_entities_excludes_high_ids_far_outside_the_window() {
+        let game = entity(1, 0x5000_0000, &[(TAG_TURN, 3)]);
+        let near_minion = entity(10, 0x5000_1000, &[]);
+        // Same id-space as a real leftover match's entities, but physically
+        // in a different heap island entirely -- must not raise the cap.
+        let far_leftover = entity(9000, 0x9000_0000_0000, &[]);
+        let live = current_game_entities(&[game, near_minion, far_leftover]);
+        assert!(live.iter().any(|e| e.id == 10), "the real neighbour is kept");
+        assert!(!live.iter().any(|e| e.id == 9000), "the distant leftover is not");
+    }
+
+    #[test]
+    fn build_sides_prefers_a_player_in_the_same_heap_island_over_a_closer_stale_one() {
+        // The exact shape reported live: a same-`player_id`, correctly
+        // named Player object sits in the *wrong*, distant heap island
+        // (from an old, finished match) and is nonetheless the raw-nearest
+        // one to the anchor; the real, live-game Player is farther away in
+        // raw address terms but within `SAME_GAME_WINDOW` of the anchor
+        // this game's entities actually live in.
+        let anchor = 0x1ef7_0000u64;
+        let game = entity(1, anchor, &[(TAG_TURN, 9), (TAG_STEP, 10)]);
+        let live_p2 = entity(2, anchor + 0x1000, &[(TAG_CONTROLLER, 1)]);
+        let live = vec![game, live_p2];
+
+        let real = player("Seizan", 1, 1_008_624_192, anchor + 0x3000); // within window
+        // Outside the window, but still nearer in raw address terms than
+        // `real` would be to a *different* anchor -- the fix has to reject
+        // it for being out of window, not merely for being farther away
+        // than some other candidate, or a case with only one in-window
+        // candidate wouldn't be distinguishable from "no window match at
+        // all". 64 MiB puts it solidly past `SAME_GAME_WINDOW` (32 MiB).
+        let stale = player("Jafgaf", 1, -386_974_768, anchor.wrapping_sub(0x0400_0000));
+
+        let sides = build_sides(&live, &[stale, real], None);
+        let side1 = sides.iter().find(|s| s.player_id == 1).expect("a side for pid 1");
+        assert_eq!(side1.name.as_deref(), Some("Seizan"), "the live-island player, not the nearer stale one");
+    }
+
+    #[test]
+    fn build_sides_falls_back_to_nearest_when_nothing_is_in_the_window() {
+        // No live-window candidate exists at all -- the old "nearest
+        // overall" behaviour is the only thing left to try, and must still
+        // produce an answer rather than silently dropping the side.
+        let anchor = 0x1ef7_0000u64;
+        let game = entity(1, anchor, &[(TAG_TURN, 9)]);
+        let live_p2 = entity(2, anchor + 0x1000, &[(TAG_CONTROLLER, 1)]);
+        let live = vec![game, live_p2];
+
+        let far_a = player("Far1", 1, 1, anchor + 0x1000_0000);
+        let far_b = player("Far2", 1, 2, anchor + 0x2000_0000);
+        let sides = build_sides(&live, &[far_a, far_b], None);
+        let side1 = sides.iter().find(|s| s.player_id == 1).expect("still answers");
+        assert_eq!(side1.name.as_deref(), Some("Far1"), "the nearer of the two, as a last resort");
+    }
+
+    #[test]
+    fn find_tag_reads_the_first_matching_pair_and_none_when_absent() {
+        let tags = [(TAG_ZONE, ZONE_HAND), (TAG_COST, 3)];
+        assert_eq!(find_tag(&tags, TAG_ZONE), Some(ZONE_HAND));
+        assert_eq!(find_tag(&tags, TAG_COST), Some(3));
+        assert_eq!(find_tag(&tags, TAG_ATK), None);
+    }
+
+    #[test]
+    fn looks_like_card_id_accepts_the_lowercase_suffixes_real_cards_have() {
+        // The exact regression this fixed: HERO_09dbp is a real, live-
+        // confirmed card id (see mono_layout.rs and this session's commit
+        // history) that an uppercase-only filter silently dropped.
+        for id in ["HERO_09dbp", "EDR_463b", "JAIL_430e1", "CATA_476t", "CS2_182"] {
+            assert!(looks_like_card_id(id), "{id} should be accepted");
+        }
+        assert!(!looks_like_card_id("no_underscore".replace('_', "").as_str()));
+        assert!(!looks_like_card_id("x"), "too short");
+    }
+}
+
