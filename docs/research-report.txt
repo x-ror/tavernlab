@@ -217,6 +217,64 @@ A.7 PR3 -- STILL NOT done, but a real first attempt was made 2026-09-02
   re-running them now that chaining is fixed may turn up what they
   missed, PowerSpellController's own indirect reference chain
   included.
+
+  **`s_instance` FOUND, 2026-09-02, same session.** The reason it
+  didn't turn up in `find_self_typed_static`'s scan window: per real
+  Mono source (`mono/metadata/class-internals.h`, `struct MonoVTable`),
+  `has_static_fields`'s doc comment says the vtable-array's trailing
+  slot (`vtable[vtable_size]` -- exactly this file's own "computed"
+  offset, already printed but never read as data) holds a *pointer to*
+  the real static-data block, not the block itself inline. Reading
+  that one pointer and scanning *its* target (not the vtable's own
+  neighbourhood) found `s_instance` immediately, at offset +0x0 of the
+  block, on the first try, against a real live match:
+
+    GameState.s_instance @ 0x13174fa80 (own klass confirmed = GameState)
+      +0x40  -> 0x75d91000, klass StandardGameEntity  ("m_gameEntity")
+      +0x28  -> Map`2 whose values array is klass Entity[]   ("m_entityMap", ~94 live entries)
+      +0x30  -> Map`2 whose values array is klass Player[]   ("m_playerMap")
+      +0x38  -> Map`2 whose values array is klass SharedPlayerInfo[]
+      +0x70  -> Map`2 whose values array is klass EntityChoices[]
+      +0x160 -> Map`2 whose values array is klass TurnTimerUpdate[]
+      +0x138 -> PowerProcessor instance (the same class this file
+                already tries as a `find_singletons` target, itself
+                with no self-typed static of its own -- reached
+                through GameState instead)
+
+  `m_playerMap`'s values array, read directly (`MonoArray.max_length`
+  at +0x18, elements starting at +0x20 -- Mono's ordinary array
+  layout, `try_mono_string` already assumes the analogous string
+  layout elsewhere in this file): **exactly two live `Player`
+  objects, definitively, no heuristic involved** --
+  `Player[0]` name="xror" playerId=1, `Player[1]` name="Sudowoodo"
+  playerId=2 (both read via the already-confirmed `PLAYER_NAME`/
+  `PLAYER_PLAYER_ID` offsets). This closes A.7 for real: no more
+  heap-wide scanning, no more topology scoring, no more risk of a
+  stale finished match's Player object being picked -- `GameState`'s
+  own `m_playerMap` *is* the current match's authoritative roster,
+  the same way HearthMirror's public sources (S6, S7) describe.
+
+  `Map`2` is a custom hash map (an `Int32[]` bucket-index array plus a
+  `Link[]` open-addressing chain array plus parallel key/value arrays
+  -- NOT `System.Collections.Generic.Dictionary`), so its own internal
+  layout (which field is "keys" vs "values", bucket/link semantics)
+  is not needed at all for this -- only the *values* array pointer
+  (a fixed field offset within the `Map`2` object, empirically +0x28
+  across all five instances found) and Mono's ordinary array layout,
+  both far simpler than reverse-engineering a real hash table's
+  internals would have been.
+
+  Field offsets used above (GameState-instance-relative, and the one
+  `Map`2`-relative) are confirmed against one live process this
+  session only -- same evidence bar as everything else in this file,
+  not yet cross-checked against a second, independent match/session.
+  Next step: wire this into `memreader` properly (a new confirmed
+  `mono_layout.rs` constant for `MonoArray`'s `max_length`/vector
+  offsets, a `GameState`-first path in `build_sides`/`game_entity`
+  that falls back to the existing heap-scan heuristic only if
+  `GameState`/`s_instance`/`m_playerMap` can't be resolved), with
+  the same adversarial-review discipline as the B.5/A.7-PR1+2 work
+  earlier this session.
 A.7 PR4 -- NOT done, deferred for scope/risk, not blocked on a live
   client. Needs new cross-invocation state (memreader is a one-shot
   process; a temporal lock means remembering the last-good anchor
