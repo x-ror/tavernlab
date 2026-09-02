@@ -1434,6 +1434,18 @@ fn dump_class_names(remote: &Remote, image: u64) -> Vec<(String, u64)> {
             eprintln!("    {n}");
         }
     }
+    // `INTERESTING_SUBSTRINGS` is a guess at what a relevant class is
+    // named, and guesses miss -- `GameState`/`GameMgr`/`GameLogic`/
+    // `ZoneMgr` all turned out not to exist under those names at all
+    // (2026-09-02). Opt-in, not printed by default: 16k names is not
+    // something to scroll past on an ordinary run, but a real file to
+    // grep against beats guessing another substring blind.
+    if let Ok(path) = std::env::var("MEMREADER_DUMP_CLASSES") {
+        let mut sorted: Vec<&str> = classes.iter().map(|(n, _)| n.as_str()).collect();
+        sorted.sort_unstable();
+        let _ = std::fs::write(&path, sorted.join("\n"));
+        eprintln!("  (діагностика: усі {} назви класів записано в {path})", sorted.len());
+    }
     classes
 }
 
@@ -1528,12 +1540,46 @@ fn find_self_typed_static(remote: &Remote, class_ptr: u64, vtable: u64) -> Vec<u
 /// For every class this session's chat named as a live-tracking target,
 /// try to find a static field holding an instance of itself -- the
 /// pattern every C# singleton (`Foo.Get()`, `Foo.Instance`, ...) compiles
-/// down to. Returns `(class_name, class_ptr, vtable_ptr)` for every class
+/// down to.
+///
+/// `GameState`/`GameMgr`/`GameLogic`/`ZoneMgr` -- report A.4's public
+/// HearthMirror-derived names -- do not exist under those exact names in
+/// this build's `class_cache` (confirmed 2026-09-02 against a live match
+/// via `MEMREADER_DUMP_CLASSES`, not merely absent from this file's
+/// keyword filter): the class names those names' era of reverse
+/// engineering assumed have evidently changed since. `Player` DID
+/// resolve one stable, single (not a repeated-noise pattern the way
+/// `SceneMgr`'s hits are -- see below) static field across four
+/// consecutive runs, at a fixed address, with `playerId == 1` -- but its
+/// address does not match the current match's own live `Player` object
+/// (cross-checked against a same-session `--snapshot`'s `players[]`),
+/// and its `name` does not decode. Ruled out as this match's live
+/// Player, not chased further: most likely some other Player-typed
+/// reference (account/profile-level, not per-match) that this file has
+/// no independent way to identify. `SceneMgr` resolved dozens of "hits"
+/// that all point back at its own `MonoClass*` rather than a normal
+/// object instance -- almost certainly reflection/type-metadata noise,
+/// not a real singleton field; not investigated further.
+///
+/// Returns `(class_name, class_ptr, vtable_ptr)` for every class
 /// a `MonoVTable*` was found for, whether or not a singleton was, since
 /// the vtable pointer itself is exactly what a heap scan for live
 /// instances needs next (see `scan_heap_for_class`).
 fn find_singletons(remote: &Remote, classes: &[(String, u64)]) -> Vec<(String, u64, u64)> {
-    const TARGETS: &[&str] = &["DraftManager", "PowerProcessor", "GameState", "Entity", "Player"];
+    const TARGETS: &[&str] = &[
+        "DraftManager",
+        "PowerProcessor",
+        "GameState",
+        "Entity",
+        "Player",
+        "GameEntity",
+        "GameMgr",
+        "GameLogic",
+        "ZoneMgr",
+        "InputManager",
+        "SceneMgr",
+        "TurnStartManager",
+    ];
     eprintln!("\n--deep: пошук статичних синглтонів для {TARGETS:?}");
     let mut resolved = Vec::new();
     for &target in TARGETS {
@@ -1560,6 +1606,35 @@ fn find_singletons(remote: &Remote, classes: &[(String, u64)]) -> Vec<(String, u
                  ширшому діапазоні -- ймовірно, синглтон зберігається інакше \
                  (ServiceLocator, а не static-поле)."
             );
+        }
+        // A structural match (vtable->klass == class_ptr) only proves the
+        // hit is *an* instance of the right class, not that it is the
+        // live match's own -- reading the same curated fields the normal
+        // heap scan already trusts turns "found a hit" into something a
+        // human (or a `--snapshot` cross-check) can actually judge.
+        if target == "Player" {
+            for &addr in &hits {
+                let name = remote
+                    .read(addr + mono_layout::PLAYER_NAME, 8)
+                    .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+                    .and_then(|p| try_mono_string(remote, p));
+                let pid = remote
+                    .read(addr + mono_layout::PLAYER_PLAYER_ID, 4)
+                    .map(|b| i32::from_le_bytes(b.try_into().unwrap()));
+                eprintln!("    Player-екземпляр 0x{addr:x}: name={name:?} playerId={pid:?}");
+            }
+        }
+        if target == "Entity" {
+            for &addr in &hits {
+                let card_id = remote
+                    .read(addr + mono_layout::ENTITY_CARD_ID, 8)
+                    .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+                    .and_then(|p| try_mono_string(remote, p));
+                let eid = remote
+                    .read(addr + mono_layout::ENTITY_ID, 4)
+                    .map(|b| i32::from_le_bytes(b.try_into().unwrap()));
+                eprintln!("    Entity-екземпляр 0x{addr:x}: cardId={card_id:?} id={eid:?}");
+            }
         }
     }
     resolved
