@@ -193,6 +193,20 @@ fn main() {
             } else if mode == "--find-all-singletons" {
                 let classes = dump_class_names(&remote, image);
                 scan_all_for_self_typed_statics(&remote, &classes);
+            } else if mode == "--find-refs-to" {
+                let targets: Vec<u64> = args
+                    .get(2)
+                    .map(|s| s.as_str())
+                    .unwrap_or("")
+                    .split(',')
+                    .filter_map(|s| u64::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok())
+                    .collect();
+                if targets.is_empty() {
+                    eprintln!("використання: memreader --find-refs-to 0x<адреса1>,0x<адреса2>,...");
+                    exit(1);
+                }
+                let classes = dump_class_names(&remote, image);
+                scan_all_statics_for_addresses(&remote, &classes, &targets);
             } else {
                 let classes = dump_class_names(&remote, image);
                 let resolved = find_singletons(&remote, &classes);
@@ -1576,6 +1590,59 @@ fn find_self_typed_static(remote: &Remote, class_ptr: u64, vtable: u64, verbose:
         }
     }
     hits
+}
+
+/// Every class with a resolvable vtable, scanned for a static field
+/// holding one of `targets` verbatim -- not "an instance of the same
+/// class" (`find_self_typed_static`'s question) but "who points at this
+/// *specific*, already-known-live object". Strictly stronger evidence
+/// when `targets` are addresses a heap scan already trusts (the current
+/// match's own `GameEntity`/`Entity` id 2/3): the class doing the
+/// pointing doesn't have to be guessed at all, unlike every
+/// `find_singletons`/`scan_all_for_self_typed_statics` candidate name
+/// tried so far.
+fn scan_all_statics_for_addresses(
+    remote: &Remote,
+    classes: &[(String, u64)],
+    targets: &[u64],
+) -> Vec<(String, u64, u64)> {
+    let mut found = Vec::new();
+    let mut with_vtable = 0usize;
+    let mut blobs_read = 0usize;
+    for (name, class_ptr) in classes {
+        let Some(vtable) = find_vtable(remote, *class_ptr) else {
+            continue;
+        };
+        with_vtable += 1;
+        // The same wide window `find_self_typed_static` scans (hypothesis
+        // (b) there) rather than the narrower `vtable_size`-computed one --
+        // an exact-value match is strong enough evidence on its own that
+        // there's no need to also gamble on `vtable_size` being right.
+        let wide_start = vtable + mono_layout::MONO_VTABLE_VTABLE_ARRAY;
+        const WIDE_LEN: usize = 0x3000;
+        let Some(blob) = remote.read(wide_start, WIDE_LEN) else {
+            continue;
+        };
+        blobs_read += 1;
+        for chunk in blob.chunks_exact(8) {
+            let val = u64::from_le_bytes(chunk.try_into().unwrap());
+            if targets.contains(&val) {
+                found.push((name.clone(), *class_ptr, val));
+            }
+        }
+    }
+    eprintln!(
+        "\n--deep: {with_vtable}/{} класів мали vtable, {blobs_read} статичних блобів прочитано. \
+         Посилання на відомі живі адреси {targets:x?}:",
+        classes.len()
+    );
+    if found.is_empty() {
+        eprintln!("  жодне статичне поле жодного класу з vtable не тримає жодну з них.");
+    }
+    for (name, class_ptr, val) in &found {
+        eprintln!("  {name} (MonoClass* = 0x{class_ptr:x}) тримає 0x{val:x}");
+    }
+    found
 }
 
 /// Every class with a resolvable vtable, scanned for a self-typed static

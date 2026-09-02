@@ -122,13 +122,36 @@ A.7 PR3 -- STILL NOT done, but a real first attempt was made 2026-09-02
     a `List<T>`/`Dictionary<K,V>` wrapper needs its own internal-layout
     offsets, not attempted yet). Not confirmed; not ruled out either --
     the most promising open thread for the next attempt.
-  Next step: either follow `PowerSpellController`'s pointer graph
-  further (needs `List<T>`/`Dictionary<K,V>` internal layout, not
-  established anywhere in this file yet), or scan the other
-  single-stable-hit classes from `--find-all-singletons` not yet
-  looked at (`Zone`, `ZoneHero`, `AchieveManager`, `CardBackManager`,
-  `ContextManager`, `ReconnectMgr`, ... -- the full list is in this
-  session's `--find-all-singletons` output, not saved to the repo).
+  - Built the inverse of the above: `scan_all_statics_for_addresses`
+    (`--find-refs-to 0x<addr1>,0x<addr2>,...`) checks every class with
+    a resolvable vtable for a static field holding one of a set of
+    ALREADY-KNOWN-LIVE addresses verbatim -- strictly stronger evidence
+    than `find_self_typed_static`'s "an instance of the same class"
+    question, since it doesn't require guessing which class wraps the
+    reference at all. Ran it against the current match's own confirmed
+    GameEntity + Entity id 2/3 + both heroes + both hero powers (7
+    addresses, taken from a same-session `--snapshot`). Result: of
+    6898 classes that currently have a resolvable vtable, **zero**
+    hold any of the 7 addresses in their own static data.
+  This rules out "some class's own top-level static field directly
+  holds the live entity" as the mechanism, at least among classes
+  already touched by the runtime and within the 0x3000-byte window
+  scanned. Two real possibilities left, both a materially bigger
+  effort than anything tried so far: (a) the reference is nested one
+  or more levels inside a `List<T>`/`Dictionary<K,V>` object that IS
+  reachable from a static field, just not a flat pointer match (needs
+  those collection types' internal layout, not established anywhere
+  in this file yet); (b) the live reference isn't a Mono static field
+  at all but lives on a Unity scene object (a `MonoBehaviour`
+  component instance attached to a live `GameObject` in the scene
+  hierarchy) -- a fundamentally different technique (walking Unity's
+  scene graph, not Mono statics) that nothing in this file attempts.
+  A parallel web-research pass (this session, three agents) was
+  dispatched to check whether any current, public, open-source
+  Hearthstone tool (HDT, Firestone, UnitySpy successors, or anything
+  else) documents which of these -- or a different mechanism entirely
+  -- the current build actually uses, before sinking more effort into
+  guessing between them blind.
 A.7 PR4 -- NOT done, deferred for scope/risk, not blocked on a live
   client. Needs new cross-invocation state (memreader is a one-shot
   process; a temporal lock means remembering the last-good anchor
