@@ -1,0 +1,594 @@
+TavernLab research report
+=========================
+Date: 2026-09-01
+Updated: 2026-09-02 (B.5 A+B and A.7 PR1+PR2 implemented and committed;
+         see the STATUS block below each section header for what's
+         actually done versus still planned. The rest of this file is
+         left as originally written -- it is the plan those commits
+         executed, not a stale record.)
+Scope: two open correctness problems in this checkout, plus external
+       methods that actually solve the same goals.
+Status: sections A.7 PR1/PR2 and B.5 A/B are DONE (code + tests,
+        committed). Everything else here is still analysis and plan
+        only, not an implementation, a README claim, or a measured
+        number.
+Review: checked 1:1 against the current tree (planner.rs, memreader
+        main.rs / mono_layout.rs, state.rs can_attack_face). Factual
+        claims in A and B match the code. Plan order (B.5 A+B first)
+        stands. Narrowings below are from that review, not a rewrite.
+
+IMPLEMENTATION STATUS (2026-09-02)
+-----------------------------------
+B.5 A -- DONE. search()/level() no longer discard a proven win when the
+  shared budget dies on a later sibling. Shared `const WIN` used by
+  eval() too. 8 tests in core/src/planner.rs (mod tests).
+B.5 B -- DONE. eval() gains static_lethal(): a lower-bound "already
+  lethal in the face" shortcut (Windfury-aware, weapon-aware), silent
+  behind an enemy Taunt or an unrevealed secret. Same test module.
+B.5 C -- covered as part of B.5 B's tests (Taunt silences the shortcut;
+  the existing deep-search Taunt regression elsewhere is unmodified).
+B.5 D -- NOT done, deliberately. A real damage-only lethal probe risks
+  false-positive lethal claims (worse than the miss it would fix) if
+  rushed; needs careful design (a Taunt-vs-face damage assignment is a
+  bin-covering problem, not a sum comparison). Live search already
+  benefits from B.5 A's fail-soft change in the meantime.
+B.5 E -- honored: CLI policy/weights knobs (4000/4) untouched; live
+  Planner::new(50_000, 10) untouched.
+
+A.7 PR1 -- DONE (the code-only half). build_sides() no longer falls
+  back to the nearest same-player_id Player *outside* the window --
+  name stays null instead of being borrowed from a different match.
+  PlayerHit.entity_id is Option<i32>, always None (the +0x38 offset is
+  Entity's, not Player's; Player's own List<Tag> reads back empty at
+  the assumed offset). "Use tag 53 instead" is NOT done -- needs a
+  live-confirmed Player tag-list offset first (see A.7 PR3 below).
+A.7 PR2 -- PARTIALLY done. game_entity()'s anchor score now uses real
+  board-legality topology (hero in PLAY per controller, <=7 minions)
+  as a lexicographic primary key that tag presence/neighbour count
+  cannot outvote -- replaces the old TURN/STEP-or-nearby-count
+  heuristic. A first cut of this blended TURN/STEP into the same flat
+  score and reproduced the exact bug it was meant to fix (a tagged
+  stale island outscoring an untagged live one); adversarial review
+  caught it before commit, fixed via lexicographic (topology, tags,
+  neighbours) instead of a weighted sum -- see the doc comment on
+  game_entity_score() for the full account. The union-find /
+  current_game_entities part of PR2 is NOT done: it needs an
+  address-gap threshold "from measured dumps, not 32 MiB" (this
+  file's own words) that no live dump was available to measure.
+  current_game_entities still uses the old SAME_GAME_WINDOW cap.
+  Also added: a "confidence": "high"/"low"/"none" field on the
+  snapshot (the code-only half of PR1's "add confidence... when
+  topology fails" line item).
+A.7 PR3 -- STILL NOT done, but a real first attempt was made 2026-09-02
+  against a live match and turned up concrete negative results, not a
+  guess:
+  - `GameState`, `GameMgr`, `GameLogic`, `ZoneMgr` (the names this
+    report's A.4 took from public, ~2017-era HearthMirror source) do
+    not exist as class names anywhere in this build's ~16,000-class
+    Assembly-CSharp `class_cache`, confirmed directly (a new opt-in
+    `MEMREADER_DUMP_CLASSES=<path>` env var on `--deep` writes every
+    resolved class name to a file, not just the fixed
+    `INTERESTING_SUBSTRINGS` list) rather than inferred from the
+    keyword filter missing them. The class names those tools assumed
+    have evidently changed sometime in the ~9 years since.
+  - `find_singletons`'s target list was widened (`GameEntity`, the
+    literal id==1 class this file already reads tags from; plus
+    `InputManager`, `SceneMgr`, `TurnStartManager` as plausible
+    Assembly-CSharp classes actually present) and re-run four times
+    against the same live match. `Player` resolved one stable,
+    non-noise static field (`playerId == 1`, same address every run)
+    -- but its address did not match the live match's own `Player`
+    object from a same-session `--snapshot`, and its `name` did not
+    decode. Ruled out as this match's live Player (most likely some
+    other, non-per-match Player-typed reference); not chased further.
+    `SceneMgr` resolved dozens of hits that all point back at its own
+    `MonoClass*` -- reflection/type-metadata noise, not a real
+    instance field.
+  - CORRECTION to an earlier version of this note: `PowerProcessor`
+    showing "no vtable" in the very first `--deep` run of the session
+    and a resolved one in every run after was NOT `find_vtable` being
+    non-deterministic -- it was never touched by the runtime yet at
+    that first moment (early in the match) and had been by the later
+    ones (more turns played, more code paths exercised). Re-ran three
+    more times well into the same match: stable every time, same
+    `MonoClass*` and `MonoVTable*` both runs. `MONO_CLASS_RUNTIME_INFO`/
+    `_DOMAIN_VTABLES` (mono_layout.rs) also checked against the real,
+    public Mono source (github.com/mono/mono, class-internals.h):
+    `MonoClassRuntimeInfo` is `{ guint16 max_domain; MonoVTable
+    *domain_vtables[]; }`, and offset 8 for `domain_vtables[0]` is
+    exactly where 8-byte pointer alignment puts it after a `guint16`
+    on a 64-bit target -- the existing offset is right, not the bug.
+  - Built the broader scan: `scan_all_for_self_typed_statics` (main.rs)
+    checks every class with a resolvable vtable, not just TARGETS --
+    `--find-all-singletons` mode, ~6s against this build's ~16,000
+    classes. Filters out `candidate == class_ptr` (the `SceneMgr`
+    reflection-noise pattern) and anything with more than 3 hits (same
+    noise, wider). Also added `--dump-addr 0x<addr>` for ad-hoc
+    follow-up on any address this or a future scan turns up, and
+    `MEMREADER_DUMP_CLASSES=<path>` (on `--deep`) to write the full
+    class list to a file instead of only the fixed keyword filter.
+  - One real, not-yet-confirmed lead from that scan: `PowerSpellController`
+    resolved a single stable instance (same address twice, i.e. two
+    static fields both pointing at it -- consistent with a real
+    `.Instance`-style singleton, not noise). Its raw fields (dumped via
+    `--dump-addr`) are dense with plausible heap pointers and small
+    integers (one, `+0xbc`, reads 157 -- plausible as an id or a
+    count), consistent with a busy, central controller object. Neither
+    its direct fields nor one level of indirection through them
+    resolve to an `Entity`/`Player`/`GameEntity`-klass object (checked
+    programmatically, not by eye) -- so if it *is* useful, whatever it
+    holds is at least two hops away, or the useful data isn't reachable
+    through class-identity matching the way `Entity`/`Player` are (e.g.
+    a `List<T>`/`Dictionary<K,V>` wrapper needs its own internal-layout
+    offsets, not attempted yet). Not confirmed; not ruled out either --
+    the most promising open thread for the next attempt.
+  Next step: either follow `PowerSpellController`'s pointer graph
+  further (needs `List<T>`/`Dictionary<K,V>` internal layout, not
+  established anywhere in this file yet), or scan the other
+  single-stable-hit classes from `--find-all-singletons` not yet
+  looked at (`Zone`, `ZoneHero`, `AchieveManager`, `CardBackManager`,
+  `ContextManager`, `ReconnectMgr`, ... -- the full list is in this
+  session's `--find-all-singletons` output, not saved to the repo).
+A.7 PR4 -- NOT done, deferred for scope/risk, not blocked on a live
+  client. Needs new cross-invocation state (memreader is a one-shot
+  process; a temporal lock means remembering the last-good anchor
+  somewhere -- a small state file under TAVERNLAB_HOME is the natural
+  fit, per CLAUDE.md's data-separation rule) plus a scan-completeness
+  change to scan_heap_for_class's hit cap, which has real performance
+  tradeoffs worth thinking through rather than rushing.
+
+mana `RESOURCES` (tag 26) -- NOT done, not really part of A or B above
+  (it's its own gap, first hit investigating A this session). Tag 26
+  was not found on either the live Entity id=2/3 objects or the
+  Player objects' own (currently-empty, see PR1 above) tag lists in
+  any dump taken this session. Needs a live client and a fresh
+  rawTags dump, ideally cross-checked against the real on-screen mana
+  count at the time of the dump.
+
+This report covers:
+
+  A. memreader "sides" mismatch (who is who)
+  B. live-advice lethal search (depth=10 / budget mid-level drop)
+  C. what was checked and confirmed as already correct
+  D. ranked algorithms and an incremental plan
+  E. sources and uncertainty
+
+The two bugs are independent. They share only that both currently
+*guess under a horizon* (heap proximity; eval() at depth 0) instead of
+proving the thing the caller actually asked for (the live match; a
+line that ends the game).
+
+The 2026-08-31 live-advice stopgap (Planner budget 50_000, depth 10)
+is complementary, not replaced. It remains the path through Taunt.
+A+B close the other hole: no Taunt, budget dies mid-level, a proven
+Win is discarded.
+
+
+================================================================
+A. MEMREADER: SIDES SOMETIMES SWAP PLAYERS
+================================================================
+
+A.1 Symptom
+-----------
+`--snapshot` / `/api/memory` `sides` can attach the wrong Player
+objects. Hands, heroes, and battleTags swap. Documented live
+2026-09-01 in tavernlab-sim/memreader/README.md.
+
+Flat `entities` and `players` lists are more honest: they do not
+claim "whose". `sides` is a derived view that *does* claim that.
+
+A.2 Current pipeline
+--------------------
+1. Scan anonymous rw maps (`/proc/PID/maps`, empty pathname) for the
+   literal MonoVTable* of class Entity (cap 12_000) and Player (cap
+   200). Chunk 4 MiB, scan-byte cap 3 GB. First hits in map order
+   win; later regions are never visited once the cap is hit.
+
+2. game_entity(): among Entity hits with id == 1, prefer those that
+   still carry TURN (tag 20) or STEP (tag 19). If that pool is empty,
+   take every id==1 and pick the one with the most nearby id 2/3
+   within 0x10_0000.
+
+3. current_game_entities(): keep hits whose address is within
+   SAME_GAME_WINDOW = 32 MiB of that GameEntity, then cap by max id
+   in the window (plus HERO_ENTITY+2).
+
+4. build_sides(): for playerId 1 and 2, take Entity id 2/3 from the
+   live set, then pick a named Player with matching player_id inside
+   the same 32 MiB window. If none is in the window, fall back to
+   the nearest named Player of that player_id *anywhere*.
+
+5. CONTROLLER / ZONE slice cards onto sides *after* the island is
+   chosen. They do not choose the island.
+
+6. collect_player_hits() reads Player.entity_id from ENTITY_ID
+   (+0x38), the offset confirmed on *Entity*, not on Player (name is
+   at +0x120). Live dump: real pair had entity_id ~1e9, stale pair
+   had a negative garbage word. Neither is a join key.
+
+A.3 Why this cannot become reliable by tuning the window
+--------------------------------------------------------
+Boehm (mono-2.0-bdwgc) does not move objects. Finished matches stay
+on the heap until collected. A vtable scan always sees several
+complete games with the same EntityIDs (Game=1, Players=2 and 3).
+
+Proximity is allocation-era, not identity. 32 MiB is an arbitrary
+cut. "More nearby 2/3" prefers a *finished* fuller board over a
+mulligan-fresh live game -- already observed.
+
+TURN/STEP on id==1 is not guaranteed in the scanned tag lists. The
+2026-09-01 dump: *neither* id==1 candidate had those tags, including
+the island that actually held the live Players. game_entity() then
+did not land in that island.
+
+The 32 MiB filter is correct *if the anchor is right*. Offline test
+build_sides_prefers_a_player_in_the_same_heap_island_over_a_closer_stale_one
+proves only that. The live failure is the anchor, plus the
+nearest-overall fallback when the window misses.
+
+Scan order + max_hits can omit the live GameEntity entirely
+(README suspicion: "maybe the real live GameEntity never entered
+the id==1 candidate list").
+
+A.4 How HDT / HearthMirror actually do this
+-------------------------------------------
+They do not cluster leftover heap instances.
+
+Path (public HearthMirror snapshot / UnitySpy / HDT Watchers):
+
+  mono_get_root_domain
+    -> MonoDomain.domain_assemblies until image name Assembly-CSharp
+    -> MonoClass statics (typically s_instance)
+       UnitySpy: _MonoClass->runtime_info->domain_vtables->vtable
+       + VTableSize, then the field
+    -> GameState.s_instance.m_playerMap (keySlots / valueSlots),
+       skip slots whose class is not Player
+    -> GameMgr.s_instance for match metadata (m_gameType, spectator,
+       missionId)
+
+Current-match Players come from that map, not from a global Player
+vtable scan. Power.log reconstruction is a *separate* watcher.
+Official HearthMirror is not in the HDT tree (shipped zip + hashes).
+
+No inspected HearthMirror/HDT source roots GameEntity via
+Network.GetGameState; that name is the network protocol, not the
+mirror walk. Closed-source field names after ~2017 (entity cache vs
+m_playerMap / m_entityMap) were not inspectable; only
+GameState.s_instance.m_playerMap is evidenced in the public snapshot.
+
+A.5 Wine / process_vm_readv (constraints that stay)
+---------------------------------------------------
+Under Wine on Linux, Hearthstone.exe is already a native x86-64
+Linux process. process_vm_readv needs no Windows debug layer.
+
+Access: same UID (not root/sudo) or CAP_SYS_PTRACE; Yama
+ptrace_scope 0 or 1. Scope 2/3 blocks the read.
+
+Remote::read treats any short copy as failure. The heap scan still
+advances by the requested len, so a short iovec skips that chunk.
+plausible_ptr keeps non-null pointers in the canonical low half
+(< 0x0000800000000000).
+
+Legal posture (docs/DESIGN.md): read-only, user's own process, never
+merged into tracker.rs, never silent fallback between log and
+memory, no traffic intercept, no input emulation.
+
+A.6 Better methods for sides (ranked)
+-------------------------------------
+1. Singleton walk (same class of trick as HearthMirror; best).
+   Resolve GameState / EntityMgr / GameMgr statics from
+   Assembly-CSharp. The class walk already exists:
+   find_singletons() / find_self_typed_static() (main.rs ~1396)
+   already target GameState via --deep. No static-field offset is
+   confirmed live yet (Entity / Player are; GameState is not).
+   That function already notes the singleton may be a ServiceLocator
+   rather than a self-typed static -- so "infrastructure exists" is
+   not "the offset is almost in hand". If --deep still finds no
+   s_instance, the next step is the locator, not a wider heap window.
+   Follow only objects reachable from the confirmed root. Stale heap
+   copies are never candidates. Still process_vm_readv only. Same
+   evidence bar as mono_layout.rs.
+
+2. Until that offset exists: score *islands as whole games*.
+   Union-find on address (gap from measured dumps, not 32 MiB).
+   Score topology from the game-state protocol:
+     one Game id=1, two Players id=2,3,
+     CONTROLLER in {1,2},
+     <=7 minions PLAY, <=10 HAND, heroes in PLAY,
+     dense id range 1..cap,
+     STEP in a live range (not GAMEOVER),
+     named Player pair with PLAYER_ID 1 and 2.
+   Pick argmax. Do not fall back to nearest-overall Player.
+   If the winning island has no named Player, name=null and
+   confidence=low.
+
+   Boehm is non-moving: a temporal prior (prefer the island that
+   overlaps the previous snapshot's addresses) is cheap and strong.
+
+3. Join Player to a side without +0x38.
+   Use List<Tag> on the Player object: PLAYER_ID (30), ENTITY_ID (53),
+   HERO_ENTITY (27), RESOURCES. Match to Entity id 2/3 in the winning
+   island. Drop the struct field until an offset is confirmed live
+   the same way PLAYER_NAME was.
+
+4. Scan completeness: do not stop at 12_000 if no legal island has
+   been seen; finish remaining rw regions. Prefer walking
+   EntityMgr's dictionary once the static is known.
+
+5. Honest uncertainty: if topology score is low, omit sides names /
+   skip sides rather than swap. Optional diagnostic compare to the
+   log tracker without merging (DESIGN rule 4).
+
+Do not: enlarge SAME_GAME_WINDOW; rank only by neighbor count; trust
+Player+0x38; merge log + memory on disagreement.
+
+A.7 Implementation plan (memreader)
+-----------------------------------
+PR 1 -- stop the harmful fallback
+  Remove nearest-Player-overall when the window is empty.
+  Stop treating Player+0x38 as entity_id; use tag 53.
+  Add confidence or skip sides when topology fails.
+  Tests: existing stale-nearer-than-live; no in-window Player must
+  not invent a name from another match.
+
+PR 2 -- island scoring instead of game_entity + 32 MiB
+  Union-find; score; current_game_entities = that island's dense
+  1..cap. Synthetic tests from the live dump shapes already in
+  main.rs tests (stale fuller board vs live mulligan; two id==1
+  with no TURN/STEP; correct pair with garbage field ids).
+  Keep SAME_GAME_WINDOW as a debug metric, not the join.
+
+PR 3 -- find the singleton (the actual fix)
+  --deep already looks for a GameState self-typed static. Dump that
+  hit (or the empty "ServiceLocator, not a static field" path) plus
+  GameMgr / EntityMgr / InputManager. Confirm one root against
+  Power.log in the same session (same evidence style as HERO_09dbp /
+  id=57). Snapshot follows that root; heap scan becomes a fallback
+  diagnostic. Do not treat a miss as a reason to enlarge
+  SAME_GAME_WINDOW.
+
+PR 4 -- temporal lock + scan completeness
+  Remember last-good island addresses across /api/memory polls
+  (server-side). Finish heap regions if no legal island yet.
+
+
+================================================================
+B. LIVE ADVICE: DEPTH=10 STILL MISSES LETHAL ON A WIDE BOARD
+================================================================
+
+B.1 Symptom (medium confidence; the important remaining hole)
+-------------------------------------------------------------
+After raising live plan() from depth=4 / budget=4000 to
+depth=10 / budget=50_000 (watch/mod.rs, comment at the Planner::new
+call), a turn with 6-7 attackers plus a spell, hero power, and The
+Coin is already 10+ actions.
+
+search() at depth==0 calls eval(). eval() returns Outcome::Win
+(1.0e6) only if Game::is_over() is already true. Remaining legal
+attacks are invisible. The search prefers a locally better trade.
+
+Independently: if budget hits 0 mid-level, search returns None and
+level() discards the *entire* level, even if a sibling already
+scored Win. Iterative deepening then keeps the last *complete*
+shallower level, which may never have explored the lethal line at
+all.
+
+plan() re-chooses up to 16 times, one action at a time. That does
+not save a lethal whose *first* action was not selected, because
+the wrong first trade already spent the attacker.
+
+B.2 Code facts
+--------------
+File: tavernlab-sim/core/src/planner.rs
+  search(): budget==0 => return None (discards best so far)
+  level(): any None from search => return false, out untouched
+  choose(): iterative 1..=depth, keep last finished level
+  eval(): terminals first; else minion_value, face_weight, weights
+
+File: tavernlab-sim/cli/src/watch/mod.rs
+  Planner::new(Style::Midrange, 50_000, 10)
+  for _ in 0..16 { choose; describe; apply }
+
+policy / weights CLI still use budget 4000, depth 4. Those knobs
+are a measured comparison, not live advice. Do not change them
+without a new make policy run.
+
+B.3 Why "just raise depth" is the wrong fix
+-------------------------------------------
+Branching on a wide board is large (attacks * targets * plays).
+Budget dies *inside* a deep level; iterative deepening then
+silently keeps a shallow complete result. The failure mode is
+identical to depth=4, only on a wider board.
+
+Lethal and "play well" are different questions. Mate search is not
+positional eval. Uniform DFS with a heuristic at the leaf will
+always have a horizon.
+
+B.4 Better methods for lethal (ranked)
+--------------------------------------
+1. Compress the attack phase in eval (largest gain per line).
+   While it is still our turn and the game is not over, a leaf may
+   count *already legal* face damage without spending depth.
+
+   Bound (lower bound only; never a guess through a blocker):
+
+     enemy Taunt in PLAY          => do NOT declare Win
+     opponent secret in zone      => do NOT declare Win from static
+                                     (live advice; engine does not
+                                     model Ice Block / Noble Sacrifice
+                                     on the hero, so a static 1e6 would
+                                     be a kill the real client can still
+                                     eat. Leave those lines to search.)
+     else:
+       minions: for each with can_attack_face(), add
+                atk * (max_attacks() - attacks_done)
+                -- can_attack_face() is a boolean (Rush vs Charge,
+                summoning sickness, remaining swings > 0). It does
+                *not* count Windfury's second hit. Using it as the
+                sum's only filter undercounts a 4/4 Windfury.
+       hero:    add weapon atk if the hero can still swing
+       hero power / 0-cost damage only if mana is already there
+
+   If that lower bound >= enemy hp+armor, score 1.0e6 (same as
+   Outcome::Win). Seven 1/1s into face stop costing seven plies.
+   depth=10 remains for spells, Coin, hero power, and punching Taunt.
+   This is quiescence / static lethal, not "search deeper".
+
+   Immune: Keywords::IMMUNE is checked on minions in deal_damage;
+   damage_hero() does not. Hero Immune / Ice Block is absent
+   mechanics, not a missed branch in eval -- except the secret
+   rule above, which is for live advice vs the real client.
+
+2. Dedicated lethal probe before the heuristic plan (live only).
+   Tree of damage-relevant actions only: attacks, damage spells,
+   hero power, weapon, Coin if it unlocks damage. No "play a 3/4".
+   Iterative deepening, face/damage ordered first, stop at hp<=0.
+   Disproof: upper bound on available damage (taunts/shields
+   counted) < hp.
+   If a line exists, that line *is* the plan. eval() does not vote.
+   If not, run the current planner (depth 4-6 is enough for trades).
+
+3. Do not throw away Win when budget dies (a bug, not a heuristic).
+   When best >= WIN, return Some(best) immediately.
+   When budget==0: if best >= WIN then Some(best), else None
+   (do not mix a partial heuristic level with a complete one).
+   Iterative deepening stays honest for eval scores and stops
+   hiding a proven mate.
+
+4. Do not:
+   blindly set depth=16 / budget=200_000
+   treat "almost lethal" as Win through Taunt / Divine Shield /
+     an opponent secret
+   change greedy agent.rs / policy knobs without re-measuring
+   replace the 50_000/10 live stopgap -- it stays for Taunt lines
+
+B.5 Implementation plan (planner / live advice)
+-----------------------------------------------
+A. Fail-soft / early-exit on 1e6 in search/level.
+   When best >= WIN, return Some(best) immediately.
+   When budget==0: if best >= WIN then Some(best), else None
+   (do not keep a partial *heuristic* level).
+   Test: found Win, then budget=1 on remaining siblings => first
+   action still from the lethal line.
+
+B. Static lethal in eval (face, no Taunt, no enemy secret).
+   Test: seven 1/1s, enemy at 7 hp, depth=3, small budget => face,
+   not a trade.
+   Test: Windfury 4/4 with 0 attacks_done, enemy at 8 hp => Win bound
+   (2*4), not a miss from treating can_attack_face as the damage.
+   Test: ready weapon that makes up the last points of face damage.
+   Test: enemy secret in zone => static stays silent (no 1e6).
+
+C. Same board with a 1/1 Taunt and spare damage: static must NOT
+   declare Win; search/probe kills the Taunt. Keep the existing
+   watch taunt regression.
+
+D. Live: lethal-probe (damage-only) then normal plan.
+   Test: 6 attacks + spell + hero power + Coin.
+
+E. Leave tavernsim policy knobs (4000/4) until a new measurement.
+   README stays a claims file. Live Planner::new(50_000, 10) stays
+   until D lands; A+B do not lower it.
+
+A+B close the reported wide-board-without-taunt case, including the
+mid-level budget death that discards a Win already in `best`.
+D is required when lethal goes through targeted spells and Taunt.
+
+
+================================================================
+C. CHECKED AND CONFIRMED CORRECT (low-priority leftovers)
+================================================================
+
+tracker.rs never guesses. Unconfirmed fields stay None. Synthetic
+values (mana, etc.) appear only in watch/mod.rs with an explicit
+caveat.
+
+describe() whose-turn / targets bind to g.current, not stale sides.
+
+determinize() touches only the searching player's deck and effects
+stream. Opponent hand is not read.
+
+Coin trimming and no_deck / mana_guessed caveats are correct.
+
+advice.rs placeholder fill is sequential .replace, not simultaneous.
+A pair of placeholder names where one is a substring of the other
+could theoretically corrupt text. No such pair exists today.
+Fix if ever needed: one pass, keys sorted by descending length, or
+a strings.rs test that names cannot nest. Does not block lethal.
+
+
+================================================================
+D. WHAT TO DO FIRST
+================================================================
+
+If the next change is live advice missing lethal on a wide board:
+  implement B.5 A then B, with the synthetic tests above
+  (Windfury remaining hits, weapon, Taunt silence, enemy-secret
+  silence). Do not raise depth. Do not revert 50_000/10.
+
+If the next change is /api/memory swapping names:
+  implement A.7 PR1 then PR2.
+  The real fix is PR3 (GameState singleton). Do not enlarge the
+  window.
+
+Do not merge the two workstreams. Do not merge memory into
+tracker.rs. Do not add crates.
+
+
+================================================================
+E. SOURCES
+================================================================
+
+In-tree
+  tavernlab-sim/memreader/README.md
+  tavernlab-sim/memreader/src/main.rs
+    (game_entity, current_game_entities, build_sides, scan_heap_for_class,
+     collect_player_hits, find_singletons, find_self_typed_static,
+     SAME_GAME_WINDOW, tests)
+  tavernlab-sim/memreader/src/mono_layout.rs  (ENTITY_ID +0x38 on Entity)
+  tavernlab-sim/memreader/src/procmem.rs
+  tavernlab-sim/core/src/planner.rs
+  tavernlab-sim/core/src/state.rs  (can_attack_face, max_attacks)
+  tavernlab-sim/core/src/game.rs   (deal_damage IMMUNE on minions;
+                                    damage_hero has no hero Immune)
+  tavernlab-sim/cli/src/watch/mod.rs  (plan(), Planner::new 50_000/10)
+  tavernlab-sim/cli/src/watch/advice.rs
+  tavernlab-sim/cli/src/watch/tracker.rs
+  docs/DESIGN.md  (legal regime)
+  CLAUDE.md       (zero deps, Game memcpy, watcher never guesses)
+
+External (deep-research, partial coverage)
+  [S1][S3][S4] Bright1992 snapshot of HearthSim HearthMirror
+       Mirror.cs, Reflection.cs (GetMatchInfoInternal, GameMgr)
+       https://github.com/Bright1992/HearthMirror
+  [S2] hackf5/unityspy TypeDefinition.cs (GetStaticValue /
+       domain_vtables)
+  [S5] HearthSim/Hearthstone-Deck-Tracker Watchers.cs
+       (Reflection.Client vs Power.log as separate watchers)
+  [S21] process_vm_readv(2)
+
+Uncertainty called out by the research pass
+  Closed-source HearthMirror field names after 2017 not inspectable.
+  Whether the live GameEntity is absent from the scan (hit cap)
+    versus present but untagged is unconfirmed in the README.
+  No in-tree or HearthMirror source uses union-find / max-clique
+    on EntityIDs to pick GameEntity; that is a proposed method here,
+    not an observed one.
+  Network.GetGameState is protocol, not a documented mirror root.
+  32-bit WoW64 / historic Wine low-4G layout does not apply to this
+    x86-64 client as documented.
+  GameState may be a ServiceLocator, not s_instance -- find_singletons
+    already says so; unconfirmed until a live --deep dump.
+  Hero Immune / Ice Block is unmodelled in the engine. Static lethal
+    must still refuse 1e6 when the *live* opponent has a secret, so
+    advice does not claim a kill the client can still eat.
+
+Independent code review (2026-09-01)
+  Confirmed 1:1: search/level/choose Win-discard; Player+0x38;
+  find_singletons targeting GameState; can_attack_face as the
+  primitive (boolean, not the damage sum). Agreed: B.5 A+B first,
+  CLI 4000/4 untouched, 50_000/10 stays for Taunt.
+  Folded in: Windfury remaining hits, hero weapon, enemy-secret
+  silence, ServiceLocator fork on PR3.
+
+End of report.

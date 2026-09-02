@@ -111,6 +111,24 @@ fn main() {
     eprintln!("mono_get_root_domain: RVA=0x{rva:x} -> адреса в процесі 0x{func_addr:x}");
 
     let remote = Remote::new(pid);
+
+    // Ad-hoc follow-up on a specific address already found some other way
+    // (a `find_self_typed_static`/`scan_all_for_self_typed_statics` hit,
+    // typically) -- doesn't need any of the domain/class-cache walk below,
+    // just the raw read `dump_object_fields` already knows how to do.
+    if mode == "--dump-addr" {
+        let Some(hex_arg) = args.get(2).map(|s| s.trim_start_matches("0x")) else {
+            eprintln!("використання: memreader --dump-addr 0x<адреса>");
+            exit(1);
+        };
+        let Ok(addr) = u64::from_str_radix(hex_arg, 16) else {
+            eprintln!("не зрозумів адресу \"{hex_arg}\" як шістнадцяткове число");
+            exit(1);
+        };
+        dump_object_fields(&remote, addr, hex_arg);
+        return;
+    }
+
     let prologue = match remote.read(func_addr, 16) {
         Some(b) => b,
         None => {
@@ -172,6 +190,9 @@ fn main() {
         if let Some(image) = read_image(&remote, csharp) {
             if mode == "--scan-classes" {
                 scan_for_class_table(&remote, image);
+            } else if mode == "--find-all-singletons" {
+                let classes = dump_class_names(&remote, image);
+                scan_all_for_self_typed_statics(&remote, &classes);
             } else {
                 let classes = dump_class_names(&remote, image);
                 let resolved = find_singletons(&remote, &classes);
@@ -1483,15 +1504,29 @@ fn find_vtable(remote: &Remote, class_ptr: u64) -> Option<u64> {
 /// for every candidate rather than needing to know which field or its
 /// name. This is the same "known shape, unknown offset" trick as every
 /// other scan in this file, just one level further down.
-fn find_self_typed_static(remote: &Remote, class_ptr: u64, vtable: u64) -> Vec<u64> {
+///
+/// `candidate == class_ptr` is excluded outright: a real object instance
+/// can never legitimately share an address with its own `MonoClass*` --
+/// seen live against `SceneMgr`, where dozens of candidates in its
+/// static blob all "matched" this way (some reflection/type-metadata
+/// array aliasing the class descriptor itself, not a real singleton
+/// field), and no other class scanned this session produced it.
+///
+/// `verbose` prints the same per-candidate detail `--deep` always has --
+/// off for `scan_all_for_self_typed_statics`, which calls this hundreds
+/// of times and would otherwise bury a real hit under noise from classes
+/// that were never going to be it.
+fn find_self_typed_static(remote: &Remote, class_ptr: u64, vtable: u64, verbose: bool) -> Vec<u64> {
     let vtable_size = remote
         .read(class_ptr + mono_layout::MONO_CLASS_VTABLE_SIZE, 4)
         .map(|vs| i32::from_le_bytes(vs.try_into().unwrap()).max(0) as u64)
         .unwrap_or(0);
-    eprintln!(
-        "    vtable_size (MonoClass+0x{:x}) = {vtable_size}",
-        mono_layout::MONO_CLASS_VTABLE_SIZE
-    );
+    if verbose {
+        eprintln!(
+            "    vtable_size (MonoClass+0x{:x}) = {vtable_size}",
+            mono_layout::MONO_CLASS_VTABLE_SIZE
+        );
+    }
 
     // Two hypotheses scanned at once, since vtable_size's correctness is
     // itself unverified: (a) static data starts right after the method
@@ -1503,19 +1538,23 @@ fn find_self_typed_static(remote: &Remote, class_ptr: u64, vtable: u64) -> Vec<u
     let computed = vtable + mono_layout::MONO_VTABLE_VTABLE_ARRAY + vtable_size * 8;
     let wide_start = vtable + mono_layout::MONO_VTABLE_VTABLE_ARRAY;
     const WIDE_LEN: usize = 0x3000;
-    eprintln!(
-        "    обчислений старт статичних даних: 0x{computed:x}; ширший діапазон: \
-         0x{wide_start:x}..+0x{WIDE_LEN:x}"
-    );
+    if verbose {
+        eprintln!(
+            "    обчислений старт статичних даних: 0x{computed:x}; ширший діапазон: \
+             0x{wide_start:x}..+0x{WIDE_LEN:x}"
+        );
+    }
 
     let Some(blob) = remote.read(wide_start, WIDE_LEN) else {
-        eprintln!("    не зміг прочитати навіть ширший діапазон з 0x{wide_start:x}");
+        if verbose {
+            eprintln!("    не зміг прочитати навіть ширший діапазон з 0x{wide_start:x}");
+        }
         return Vec::new();
     };
     let mut hits = Vec::new();
     for (i, chunk) in blob.chunks_exact(8).enumerate() {
         let candidate = u64::from_le_bytes(chunk.try_into().unwrap());
-        if !plausible_ptr(candidate) {
+        if !plausible_ptr(candidate) || candidate == class_ptr {
             continue;
         }
         let Some(vt_bytes) = remote.read(candidate, 8) else { continue };
@@ -1525,16 +1564,58 @@ fn find_self_typed_static(remote: &Remote, class_ptr: u64, vtable: u64) -> Vec<u
         }
         let Some(kb) = remote.read(obj_vtable + mono_layout::MONO_VTABLE_KLASS, 8) else { continue };
         if u64::from_le_bytes(kb.try_into().unwrap()) == class_ptr {
-            let off = i as u64 * 8;
-            eprintln!(
-                "    vtable+0x48+0x{off:x} (абс. 0x{:x}): 0x{candidate:x} -> \
-                 vtable 0x{obj_vtable:x} -> klass збігається!",
-                wide_start + off
-            );
+            if verbose {
+                let off = i as u64 * 8;
+                eprintln!(
+                    "    vtable+0x48+0x{off:x} (абс. 0x{:x}): 0x{candidate:x} -> \
+                     vtable 0x{obj_vtable:x} -> klass збігається!",
+                    wide_start + off
+                );
+            }
             hits.push(candidate);
         }
     }
     hits
+}
+
+/// Every class with a resolvable vtable, scanned for a self-typed static
+/// -- not just the fixed `TARGETS` list `find_singletons` tries. A guess
+/// at what the right class is *named* has already missed twice
+/// (`GameState`/`GameMgr`/`GameLogic`/`ZoneMgr` don't exist under those
+/// names in this build at all); this doesn't guess a name, it looks at
+/// every candidate the class cache actually has.
+///
+/// Only classes with between 1 and `MAX_CLEAN_HITS` hits are kept: zero
+/// means nothing to report, and a large count (`SceneMgr` had several
+/// dozen) is the same static-array/reflection noise pattern seen there,
+/// not a plausible "the one live instance" singleton field.
+fn scan_all_for_self_typed_statics(
+    remote: &Remote,
+    classes: &[(String, u64)],
+) -> Vec<(String, u64, Vec<u64>)> {
+    const MAX_CLEAN_HITS: usize = 3;
+    let mut found = Vec::new();
+    let mut with_vtable = 0usize;
+    for (name, class_ptr) in classes {
+        let Some(vtable) = find_vtable(remote, *class_ptr) else {
+            continue;
+        };
+        with_vtable += 1;
+        let hits = find_self_typed_static(remote, *class_ptr, vtable, false);
+        if !hits.is_empty() && hits.len() <= MAX_CLEAN_HITS {
+            found.push((name.clone(), *class_ptr, hits));
+        }
+    }
+    eprintln!(
+        "\n--deep: повне сканування self-typed static -- {with_vtable}/{} класів мали vtable, \
+         {} дали 1..={MAX_CLEAN_HITS} влучань (не шум):",
+        classes.len(),
+        found.len()
+    );
+    for (name, class_ptr, hits) in &found {
+        eprintln!("  {name} (MonoClass* = 0x{class_ptr:x}): {hits:x?}");
+    }
+    found
 }
 
 /// For every class this session's chat named as a live-tracking target,
@@ -1599,7 +1680,7 @@ fn find_singletons(remote: &Remote, classes: &[(String, u64)]) -> Vec<(String, u
         };
         eprintln!("    MonoVTable* = 0x{vtable:x}");
         resolved.push((target.to_string(), class_ptr, vtable));
-        let hits = find_self_typed_static(remote, class_ptr, vtable);
+        let hits = find_self_typed_static(remote, class_ptr, vtable, true);
         if hits.is_empty() {
             eprintln!(
                 "    жодного статичного поля з екземпляром цього ж типу в \
