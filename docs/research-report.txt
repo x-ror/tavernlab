@@ -35,6 +35,12 @@ B.5 D -- NOT done, deliberately. A real damage-only lethal probe risks
 B.5 E -- honored: CLI policy/weights knobs (4000/4) untouched; live
   Planner::new(50_000, 10) untouched.
 
+A.7 -- DONE FOR REAL (see the "WIRED AND SHIPPED" entry later in this
+  section): `GameState.s_instance.m_playerMap` is now the primary,
+  deterministic Player source; PR1/PR2's heuristics below are the
+  fallback for when it can't resolve. PR3 (below) was the actual fix
+  A.6/A.7 were chasing, found and shipped this session.
+
 A.7 PR1 -- DONE (the code-only half). build_sides() no longer falls
   back to the nearest same-player_id Player *outside* the window --
   name stays null instead of being borrowed from a different match.
@@ -268,13 +274,54 @@ A.7 PR3 -- STILL NOT done, but a real first attempt was made 2026-09-02
   `Map`2`-relative) are confirmed against one live process this
   session only -- same evidence bar as everything else in this file,
   not yet cross-checked against a second, independent match/session.
-  Next step: wire this into `memreader` properly (a new confirmed
-  `mono_layout.rs` constant for `MonoArray`'s `max_length`/vector
-  offsets, a `GameState`-first path in `build_sides`/`game_entity`
-  that falls back to the existing heap-scan heuristic only if
-  `GameState`/`s_instance`/`m_playerMap` can't be resolved), with
-  the same adversarial-review discipline as the B.5/A.7-PR1+2 work
-  earlier this session.
+  **WIRED AND SHIPPED, 2026-09-02, same session.** `build_sides` now
+  tries `find_players_via_game_state` first; when it resolves, those
+  players are authoritative (no `SAME_GAME_WINDOW` proximity check, no
+  name-must-decode gate) and win outright over the heap-scan heuristic,
+  which only runs as a fallback when `GameState`/`s_instance`/
+  `m_playerMap` can't be resolved (not in a match, an old build, a
+  future patch shifting the field offsets -- every step is validated
+  by klass name, not trusted blindly, so a shift fails closed to the
+  fallback rather than misreading garbage). The snapshot JSON gained a
+  top-level `"source": "game_state" | "heuristic"` field so a caller
+  can tell which path answered.
+
+  Adversarial review (three lenses, this session) caught a real bug
+  before it shipped: `find_players_via_game_state` could return
+  `Some(vec![])` -- structurally-validated `Player` addresses that
+  then failed `collect_player_hits`'s own, stricter 0x200-byte window
+  read, collapsing to an empty roster that still got stamped
+  `"source": "game_state"` (indistinguishable from a genuine, trusted
+  empty answer). Fixed: re-checks emptiness after that second read too.
+  Also caught and fixed: a stale doc-comment cross-reference in
+  `scan_all_statics_for_addresses` (pointed at reasoning
+  `find_self_typed_static` no longer uses), and a real gap -- the two
+  new memory-parsing primitives (`read_mono_array_of_pointers`,
+  `class_name_of`) had no tests, fixed by exploiting that
+  `process_vm_readv` works against the calling process's own memory
+  (same uid): the test suite now fabricates real Mono-shaped byte
+  layouts in the test binary's own memory and reads them back through
+  the actual syscall (`Remote::new(std::process::id())`) -- 5 new
+  tests, no live Hearthstone process needed to run them.
+
+  Live-verified against the real match, cross-checked against
+  `Power.log` for exact agreement (`PlayerID=1 -> xror`, confirmed
+  present the entire match): `"source": "game_state"`,
+  `"confidence": "high"`, both sides named correctly, stable across
+  repeated polls. One real, documented caveat (not a bug): right at a
+  match transition (`--deep`/`--snapshot` polled in the few seconds
+  around a match tearing down and the next one starting) both the
+  deterministic path and the heap-scan fallback can transiently answer
+  with no name at all -- a real, observed window, noted in
+  `print_snapshot`'s own doc comment now.
+
+  **A.7 is closed for real.** No more heap-wide scanning or topology
+  scoring needed to answer "who is who" when a match is live -- those
+  remain exactly as good as they were as the fallback for everything
+  else (`current_game_entities`/card discovery still uses them; only
+  Player *identity* moved to the deterministic root). PR1/PR2's
+  heuristic work was not wasted: it is still what runs whenever
+  `GameState` doesn't resolve.
 A.7 PR4 -- NOT done, deferred for scope/risk, not blocked on a live
   client. Needs new cross-invocation state (memreader is a one-shot
   process; a temporal lock means remembering the last-good anchor

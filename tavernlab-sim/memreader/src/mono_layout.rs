@@ -205,3 +205,51 @@ pub const ENTITY_UNKNOWN_PTRS: [u64; 4] = [0x10, 0x18, 0x20, 0x28];
 /// the 16-byte `MonoObject` header. Confirmed by the same lists.
 pub const TAG_NAME: u64 = 0x10;
 pub const TAG_VALUE: u64 = 0x14;
+
+// ---- GameState.s_instance.m_playerMap -- the deterministic Player-roster
+// path (found 2026-09-02; see docs/research-report.txt section A's
+// "BREAKTHROUGH" / "s_instance FOUND" notes and memreader/README.md for the
+// full account). Getting here needed two separate fixes: the class-cache
+// collision-chain fix above (`MONO_CLASS_NEXT_CLASS_CACHE`, without which
+// `GameState` itself was invisible), and a fix to `find_self_typed_static`
+// in main.rs -- a class's real static-data block turned out to be one more
+// pointer indirection away than this file originally assumed. Per real Mono
+// source (`mono/metadata/class-internals.h`, `struct MonoVTable`), the doc
+// comment on `has_static_fields` says the vtable array's trailing slot
+// holds a *pointer to* the static-data block, not the block inline; reading
+// that pointer and scanning its target found `s_instance` immediately, at
+// offset +0x0 of the block, against a real live match.
+
+/// `GameState` instance field holding `m_playerMap` -- a `Map`2` (see
+/// `MAP_VALUES` below) whose values are `Player[]`. **Confirmed live,
+/// 2026-09-02**: read end to end (this offset, then `MAP_VALUES`, then
+/// ordinary `MonoArray` layout below) against a real live match and got
+/// exactly the two real, independently-verifiable `Player` objects for
+/// that match -- `Player[0]` name="xror" playerId=1, `Player[1]`
+/// name="Sudowoodo" playerId=2, both matching `PLAYER_NAME`/
+/// `PLAYER_PLAYER_ID` above. No heap scan, no proximity heuristic.
+pub const GAME_STATE_PLAYER_MAP: u64 = 0x30;
+
+/// `Map`2` instance field holding its values array (`TValue[]`) --
+/// **confirmed live, 2026-09-02**, same evidence as
+/// `GAME_STATE_PLAYER_MAP` above. `Map`2` is Hearthstone's own custom hash
+/// map (an `Int32[]` bucket-index array plus a `Link[]` open-addressing
+/// chain array plus parallel key/value arrays) -- NOT
+/// `System.Collections.Generic.Dictionary` -- but none of that internal
+/// layout is needed here, only this one field.
+pub const MAP_VALUES: u64 = 0x28;
+
+/// `MonoArray.max_length` -- the element count, a signed 8-byte field
+/// (`mono_array_size_t`) right after the 16-byte `MonoObject` header and
+/// the `bounds` pointer that follows it. **Confirmed live, 2026-09-02**:
+/// this is the offset `GameState`'s `m_playerMap` values array was read
+/// through end to end (see `GAME_STATE_PLAYER_MAP` above) -- the same
+/// "MonoObject header, then a length field, then the payload" shape
+/// `try_mono_string` already assumes for `System.String` elsewhere in this
+/// file, here confirmed for an ordinary reference-type array too.
+pub const MONO_ARRAY_LENGTH: u64 = 0x18;
+
+/// `MonoArray`'s vector -- the elements themselves (8-byte pointers for a
+/// reference-type array), immediately after `max_length`. **Confirmed
+/// live**, same evidence as `MONO_ARRAY_LENGTH` above.
+pub const MONO_ARRAY_VECTOR: u64 = 0x20;

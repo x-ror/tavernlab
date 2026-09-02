@@ -257,6 +257,31 @@ fn main() {
 /// `ENTITY_TAG_LIST`/`PLAYER_NAME`/`PLAYER_PLAYER_ID`) are the ones
 /// `mono_layout.rs` marks confirmed live -- see `README.md` for the
 /// evidence behind each.
+///
+/// `sides` prefers `find_players_via_game_state`'s deterministic
+/// `GameState.m_playerMap` roster over the heap-scanned `players` list
+/// below whenever it resolves (`"source": "game_state"` in the JSON) --
+/// it wins outright, not as a tie-break, since it needs no proximity
+/// heuristic at all. Falls back to the heap scan (`"source":
+/// "heuristic"`) only when the deterministic path returns `None` (not in
+/// a match, an old build, `GameState`/`s_instance`/`m_playerMap` not
+/// resolvable right now). The top-level `players` array itself stays the
+/// full heap-scanned diagnostic list either way, unaffected by which
+/// source `sides` used -- that's "every Player-klassed object this heap
+/// scan found", not "this match's roster".
+///
+/// **Known caveat, observed live 2026-09-02:** right around a match
+/// transition (the previous match tearing down, before `CREATE_GAME`
+/// lands for the next one), `s_instance` can transiently report zero
+/// self-typed static hits, so `find_players_via_game_state` correctly
+/// returns `None` per its own fail-closed contract -- but the heap-scan
+/// fallback isn't guaranteed to have a name ready at that exact moment
+/// either, so a caller polling `--snapshot` right through a transition can
+/// see `"source": "heuristic"` with `name: null` on both sides, from
+/// either path, for a run or two. Not a bug in either path (each is doing
+/// exactly what its own contract promises); a caller that wants a stable
+/// answer across a transition should retry rather than treat one
+/// `"heuristic"`+`null` snapshot as final.
 fn print_snapshot(remote: &Remote, pid: u32, resolved: &[(String, u64, u64)], board: bool) {
     use tavernlab_json::Out;
 
@@ -271,12 +296,22 @@ fn print_snapshot(remote: &Remote, pid: u32, resolved: &[(String, u64, u64)], bo
         players = collect_player_hits(remote, &hits);
     }
 
+    // The deterministic path wins outright when it resolves -- see the
+    // doc comment above. `game_state_players` has to be its own binding
+    // (not matched-and-dropped inline) so `side_players` can borrow out of
+    // it without the `Option<Vec<_>>` being freed first.
+    let game_state_players = find_players_via_game_state(remote, resolved);
+    let (side_players, player_source): (&[PlayerHit], &'static str) = match &game_state_players {
+        Some(hits) => (hits.as_slice(), "game_state"),
+        None => (&players, "heuristic"),
+    };
+
     let live = current_game_entities(&entities);
     let game = read_game_state(&live);
-    let sides = build_sides(&live, &players, game.current_player);
+    let sides = build_sides(&live, side_players, game.current_player, game_state_players.is_some());
 
     if board {
-        print_board(&game, &sides, &live);
+        print_board(&game, &sides, &live, player_source);
         return;
     }
 
@@ -295,6 +330,7 @@ fn print_snapshot(remote: &Remote, pid: u32, resolved: &[(String, u64, u64)], bo
             })
         });
         o.str_field("confidence", confidence);
+        o.str_field("source", player_source);
         o.field("entities", |v| {
             v.arr(|a| {
                 for e in &live {
@@ -328,14 +364,15 @@ fn print_snapshot(remote: &Remote, pid: u32, resolved: &[(String, u64, u64)], bo
     println!("{}", out.finish());
 }
 
-fn print_board(game: &GameState, sides: &[Side], live: &[EntityHit]) {
+fn print_board(game: &GameState, sides: &[Side], live: &[EntityHit], player_source: &str) {
     eprintln!(
-        "хід {}  крок {}  ходить гравець {}  idCap {}  довіра {}",
+        "хід {}  крок {}  ходить гравець {}  idCap {}  довіра {}  джерело гравців {}",
         game.turn.map(|n| n.to_string()).unwrap_or("?".into()),
         game.step.map(|n| n.to_string()).unwrap_or("?".into()),
         game.current_player.map(|n| n.to_string()).unwrap_or("?".into()),
         game.id_cap,
-        topology_confidence(live)
+        topology_confidence(live),
+        player_source
     );
     for id in [1, 2, 3] {
         if let Some(e) = live.iter().find(|e| e.id == id) {
@@ -799,6 +836,15 @@ fn game_entity(hits: &[EntityHit]) -> Option<&EntityHit> {
 /// score, so they are not wrong just because this label is "low". This is
 /// only a hint to a caller about whether to trust the *identity* of the
 /// island it got back.
+///
+/// Orthogonal to `print_snapshot`'s `"source"` field (`find_players_via_
+/// game_state` vs. the heap-scan fallback): this score is about which
+/// heap island `game_entity`/`current_game_entities` picked for the
+/// *board* (entities, zones, tags), entirely independent of where `sides`
+/// got its `Player` names from. A `"game_state"`-sourced snapshot can
+/// still show `"confidence": "low"` if the board-topology heuristic below
+/// doesn't confirm both heroes; this field's contract hasn't changed by
+/// that addition.
 fn topology_confidence(live: &[EntityHit]) -> &'static str {
     match game_entity(live) {
         None => "none",
@@ -834,34 +880,67 @@ fn read_game_state(live: &[EntityHit]) -> GameState {
     }
 }
 
-fn build_sides(live: &[EntityHit], players: &[PlayerHit], current_player: Option<i32>) -> Vec<Side> {
+/// `players_are_authoritative`: `true` when `players` came from
+/// `find_players_via_game_state` (`GameState.m_playerMap` -- every entry
+/// already known, structurally, to belong to *this* match), `false` for
+/// the heap-scanned `collect_player_hits` fallback (untrusted candidates
+/// that need the proximity/name-presence filtering below). Found live
+/// 2026-09-02, verifying this exact fix against a real match: an
+/// authoritative `Player` can sit *anywhere* on the heap relative to
+/// `anchor` (itself just this file's own separately heap-scanned
+/// `GameEntity`, an unrelated object) -- applying `SAME_GAME_WINDOW` to it
+/// anyway silently dropped a confirmed-correct match (a real player's own
+/// name, "xror", read successfully off the very `Player` object
+/// `find_players_via_game_state` returned) for no reason connected to
+/// whether it was right. Report A.7 PR3's whole point was to stop needing
+/// that heuristic at all once a ground-truth root exists -- gating it
+/// behind this flag so it still applies to the untrusted fallback path.
+fn build_sides(
+    live: &[EntityHit],
+    players: &[PlayerHit],
+    current_player: Option<i32>,
+    players_are_authoritative: bool,
+) -> Vec<Side> {
     let mut sides = Vec::new();
     for pid in [1, 2] {
         // Current match's Player entities are EntityID 2 (P1) and 3 (P2).
         let want_eid = pid + 1;
         let player_ent = live.iter().find(|e| e.id == want_eid);
         let anchor = game_entity(live).map(|g| g.addr).unwrap_or(0);
-        // Prefer a Player object in the same heap island as this match's
-        // GameEntity: reported live, the plain "nearest of all ~200 found"
-        // match picked a same-`player_id` Player object from a completely
-        // different, stale island (a real past opponent's name attached to
-        // the live game, hand cards swapped to the wrong side) whenever
-        // that stale one happened to sit closer in raw address terms than
-        // the actual current one. Deliberately no nearest-overall fallback
-        // when nothing for this `pid` is in the window: that fallback *was*
-        // the bug -- it is exactly how a stranger's battletag/hand from a
-        // long-finished match got attached to a live game (same mechanism
-        // this window exists to reject, just applied without the window's
-        // protection). Better to leave `name` as `None` (nullable in the
-        // JSON) than to hand back a name we have no reason to believe
-        // belongs to this match. The board itself (`of`, below) is
-        // resolved from `CONTROLLER`/`ZONE` independently of this lookup,
-        // so it is unaffected by a missing name.
-        let player = players
-            .iter()
-            .filter(|p| p.player_id == pid && p.name.is_some())
-            .filter(|p| p.addr.abs_diff(anchor) < SAME_GAME_WINDOW)
-            .min_by_key(|p| p.addr.abs_diff(anchor));
+        let player = if players_are_authoritative {
+            // No window, no name.is_some() gate: this list is already
+            // known to be exactly this match's roster. Matching by
+            // player_id alone is enough -- and unlike the heuristic branch
+            // below, a name that failed to decode (try_mono_string is
+            // ASCII-only; a real live dump 2026-09-02 hit a Cyrillic
+            // battletag, "Личард#2547") must not throw away an otherwise-
+            // confirmed Player: its own tags (ARMOR, RESOURCES, ...) are
+            // still real and still worth using even when `name` ends up
+            // `None`.
+            players.iter().find(|p| p.player_id == pid)
+        } else {
+            // Prefer a Player object in the same heap island as this match's
+            // GameEntity: reported live, the plain "nearest of all ~200 found"
+            // match picked a same-`player_id` Player object from a completely
+            // different, stale island (a real past opponent's name attached to
+            // the live game, hand cards swapped to the wrong side) whenever
+            // that stale one happened to sit closer in raw address terms than
+            // the actual current one. Deliberately no nearest-overall fallback
+            // when nothing for this `pid` is in the window: that fallback *was*
+            // the bug -- it is exactly how a stranger's battletag/hand from a
+            // long-finished match got attached to a live game (same mechanism
+            // this window exists to reject, just applied without the window's
+            // protection). Better to leave `name` as `None` (nullable in the
+            // JSON) than to hand back a name we have no reason to believe
+            // belongs to this match. The board itself (`of`, below) is
+            // resolved from `CONTROLLER`/`ZONE` independently of this lookup,
+            // so it is unaffected by a missing name.
+            players
+                .iter()
+                .filter(|p| p.player_id == pid && p.name.is_some())
+                .filter(|p| p.addr.abs_diff(anchor) < SAME_GAME_WINDOW)
+                .min_by_key(|p| p.addr.abs_diff(anchor))
+        };
         let name = player.and_then(|p| p.name.clone());
         let of: Vec<&EntityHit> = live
             .iter()
@@ -1124,6 +1203,40 @@ fn try_mono_string(remote: &Remote, ptr: u64) -> Option<String> {
     s.chars()
         .all(|c| c.is_ascii_graphic() || c == ' ')
         .then(|| s)
+}
+
+/// Read an ordinary Mono array of pointers (`T[]` for a reference type
+/// `T`): the element count at `MONO_ARRAY_LENGTH` (a signed 8-byte count),
+/// elements themselves starting at `MONO_ARRAY_VECTOR` -- confirmed live
+/// 2026-09-02 reading `GameState.m_playerMap`'s values array end to end
+/// and getting exactly the two real `Player` objects for that match (see
+/// `mono_layout.rs`). `max_length` is not trusted blindly: a corrupted or
+/// misread array pointer could claim an enormous count, so it's clamped
+/// to `max_count` the same way this file's other heap scans cap their hit
+/// counts (`scan_heap_for_class`'s `max_hits`). Only elements that
+/// themselves read back as plausible pointers are returned; the caller is
+/// still expected to validate each one structurally (klass check) before
+/// trusting it as anything more specific than "a pointer".
+fn read_mono_array_of_pointers(remote: &Remote, array_ptr: u64, max_count: usize) -> Vec<u64> {
+    if !plausible_ptr(array_ptr) {
+        return Vec::new();
+    }
+    let Some(len_bytes) = remote.read(array_ptr + mono_layout::MONO_ARRAY_LENGTH, 8) else {
+        return Vec::new();
+    };
+    let len = i64::from_le_bytes(len_bytes.try_into().unwrap());
+    if len <= 0 {
+        return Vec::new();
+    }
+    let n = (len as u64 as usize).min(max_count.max(1));
+    let Some(vec_bytes) = remote.read(array_ptr + mono_layout::MONO_ARRAY_VECTOR, n * 8) else {
+        return Vec::new();
+    };
+    vec_bytes
+        .chunks_exact(8)
+        .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+        .filter(|&p| plausible_ptr(p))
+        .collect()
 }
 
 /// Real card ids routinely carry a lowercase suffix -- `HERO_09dbp` (the
@@ -1541,13 +1654,28 @@ fn find_vtable(remote: &Remote, class_ptr: u64) -> Option<u64> {
     None
 }
 
-/// Look for a static field, anywhere in the class's static-data blob,
-/// whose value is a pointer to an object of *this same class* — the
+/// Look for a static field, anywhere in the class's real static-data
+/// block, whose value is a pointer to an object of *this same class* — the
 /// signature every Mono object has is its own first 8 bytes being a
 /// `MonoVTable*`, so `object -> vtable -> klass == class_ptr` is checked
 /// for every candidate rather than needing to know which field or its
 /// name. This is the same "known shape, unknown offset" trick as every
 /// other scan in this file, just one level further down.
+///
+/// **Where the static data actually lives (fixed 2026-09-02).** Per real
+/// Mono source (`mono/metadata/class-internals.h`, `struct MonoVTable`),
+/// the doc comment on `has_static_fields` says the vtable array's trailing
+/// slot (`vtable[vtable_size]`, i.e. `computed` below) holds a *pointer
+/// to* the real static-data block — not the block itself inline. An
+/// earlier version of this function scanned starting right at `vtable +
+/// MONO_VTABLE_VTABLE_ARRAY` as though the static fields sat there
+/// directly, which is why it never found `GameState.s_instance` even
+/// after the class itself started resolving correctly (see
+/// `mono_layout::MONO_CLASS_NEXT_CLASS_CACHE`'s doc comment for that
+/// separate, earlier fix). Reading the pointer *at* `computed` and
+/// scanning *its* target instead found `s_instance` immediately, at
+/// offset +0x0 of the block, on the first try against a real live match
+/// (`docs/research-report.txt`, section A, "s_instance FOUND").
 ///
 /// `candidate == class_ptr` is excluded outright: a real object instance
 /// can never legitimately share an address with its own `MonoClass*` --
@@ -1555,6 +1683,14 @@ fn find_vtable(remote: &Remote, class_ptr: u64) -> Option<u64> {
 /// static blob all "matched" this way (some reflection/type-metadata
 /// array aliasing the class descriptor itself, not a real singleton
 /// field), and no other class scanned this session produced it.
+///
+/// Fails closed rather than guessing when the indirection doesn't pan
+/// out: `vtable_size == 0` means no method table, so the trailing slot's
+/// `has_static_fields` promise isn't even computable for this class (no
+/// hits, not a guess at some other offset). A `vtable_size` that reads
+/// back fine but whose slot doesn't hold a plausible pointer means either
+/// this class genuinely has no static fields, or `has_static_fields` is
+/// false for it — either way, nothing to scan.
 ///
 /// `verbose` prints the same per-candidate detail `--deep` always has --
 /// off for `scan_all_for_self_typed_statics`, which calls this hundreds
@@ -1571,27 +1707,50 @@ fn find_self_typed_static(remote: &Remote, class_ptr: u64, vtable: u64, verbose:
             mono_layout::MONO_CLASS_VTABLE_SIZE
         );
     }
-
-    // Two hypotheses scanned at once, since vtable_size's correctness is
-    // itself unverified: (a) static data starts right after the method
-    // table, at vtable[] + vtable_size*8, the textbook Mono layout; (b) it
-    // sits somewhere in a wider window from the vtable array's own start,
-    // in case vtable_size or MONO_VTABLE_VTABLE_ARRAY is off and the real
-    // data is nearby anyway (Mono usually allocates the vtable and its
-    // trailing data as one block).
-    let computed = vtable + mono_layout::MONO_VTABLE_VTABLE_ARRAY + vtable_size * 8;
-    let wide_start = vtable + mono_layout::MONO_VTABLE_VTABLE_ARRAY;
-    const WIDE_LEN: usize = 0x3000;
-    if verbose {
-        eprintln!(
-            "    обчислений старт статичних даних: 0x{computed:x}; ширший діапазон: \
-             0x{wide_start:x}..+0x{WIDE_LEN:x}"
-        );
+    if vtable_size == 0 {
+        if verbose {
+            eprintln!(
+                "    vtable_size == 0 -- немає таблиці методів, тож сенс кінцевого \
+                 слоту (has_static_fields) для цього класу не обчислити; пропускаю, \
+                 а не гадаю."
+            );
+        }
+        return Vec::new();
     }
 
-    let Some(blob) = remote.read(wide_start, WIDE_LEN) else {
+    // vtable[vtable_size] -- MonoVTable's trailing slot. Per
+    // has_static_fields's doc comment (see the function doc comment
+    // above), this holds a *pointer to* the real static-data block, not
+    // the block itself.
+    let computed = vtable + mono_layout::MONO_VTABLE_VTABLE_ARRAY + vtable_size * 8;
+    if verbose {
+        eprintln!("    обчислений слот статичних даних (сам вказівник): 0x{computed:x}");
+    }
+    let Some(slot_bytes) = remote.read(computed, 8) else {
         if verbose {
-            eprintln!("    не зміг прочитати навіть ширший діапазон з 0x{wide_start:x}");
+            eprintln!("    не зміг прочитати слот за 0x{computed:x}");
+        }
+        return Vec::new();
+    };
+    let static_data = u64::from_le_bytes(slot_bytes.try_into().unwrap());
+    if !plausible_ptr(static_data) {
+        if verbose {
+            eprintln!(
+                "    значення слоту 0x{static_data:x} не схоже на вказівник -- або в \
+                 цього класу немає статичних полів, або has_static_fields=false; \
+                 нічого сканувати."
+            );
+        }
+        return Vec::new();
+    }
+    if verbose {
+        eprintln!("    блок статичних даних (ціль слоту): 0x{static_data:x}");
+    }
+
+    const SCAN_LEN: usize = 0x3000;
+    let Some(blob) = remote.read(static_data, SCAN_LEN) else {
+        if verbose {
+            eprintln!("    не зміг прочитати 0x{SCAN_LEN:x} байтів з 0x{static_data:x}");
         }
         return Vec::new();
     };
@@ -1611,9 +1770,9 @@ fn find_self_typed_static(remote: &Remote, class_ptr: u64, vtable: u64, verbose:
             if verbose {
                 let off = i as u64 * 8;
                 eprintln!(
-                    "    vtable+0x48+0x{off:x} (абс. 0x{:x}): 0x{candidate:x} -> \
+                    "    static+0x{off:x} (абс. 0x{:x}): 0x{candidate:x} -> \
                      vtable 0x{obj_vtable:x} -> klass збігається!",
-                    wide_start + off
+                    static_data + off
                 );
             }
             hits.push(candidate);
@@ -1644,10 +1803,25 @@ fn scan_all_statics_for_addresses(
             continue;
         };
         with_vtable += 1;
-        // The same wide window `find_self_typed_static` scans (hypothesis
-        // (b) there) rather than the narrower `vtable_size`-computed one --
-        // an exact-value match is strong enough evidence on its own that
-        // there's no need to also gamble on `vtable_size` being right.
+        // Scans directly at `vtable + MONO_VTABLE_VTABLE_ARRAY` -- the same
+        // starting point `find_self_typed_static` used *before* its
+        // 2026-09-02 fix (see that function's "Where the static data
+        // actually lives" doc comment), which established that a class's
+        // real static-field block sits one more pointer indirection away
+        // (`*(vtable + MONO_VTABLE_VTABLE_ARRAY + vtable_size*8)`), not
+        // inline in this window. That fix matters for
+        // `find_self_typed_static`'s job -- klass-validating candidates
+        // found by scanning the block's actual contents -- but doesn't
+        // carry over here the same way: this function does exact-value
+        // matching against already-known-live `targets`, not structural
+        // validation, so scanning this wider, un-indirected region costs
+        // nothing extra (an accidental 8-byte match against a real heap
+        // address isn't a coincidence worth worrying about) and needs no
+        // `vtable_size` to be right at all. It can still miss a target that
+        // only appears inside the real static-data block and nowhere in
+        // this window -- exactly the `GameState.s_instance` case the
+        // indirection fix was for -- a real limitation of this function,
+        // not a "hypothesis" it still shares with `find_self_typed_static`.
         let wide_start = vtable + mono_layout::MONO_VTABLE_VTABLE_ARRAY;
         const WIDE_LEN: usize = 0x3000;
         let Some(blob) = remote.read(wide_start, WIDE_LEN) else {
@@ -1816,6 +1990,81 @@ fn find_singletons(remote: &Remote, classes: &[(String, u64)]) -> Vec<(String, u
         }
     }
     resolved
+}
+
+/// The deterministic, ground-truth path to this match's Player roster --
+/// `GameState.s_instance.m_playerMap`'s values array, confirmed live
+/// 2026-09-02 (`docs/research-report.txt`, section A, "s_instance FOUND";
+/// `mono_layout::GAME_STATE_PLAYER_MAP`/`MAP_VALUES`/`MONO_ARRAY_*` for the
+/// offset evidence). No heap scan, no `SAME_GAME_WINDOW` proximity
+/// heuristic, no risk of a stale finished match's `Player` object being
+/// picked -- if this returns `Some`, it should be preferred outright over
+/// `build_sides`'s heap-scanned fallback, not merely used as a tie-break.
+///
+/// Fails closed at every step, never guesses (CLAUDE.md's "the log watcher
+/// never guesses" rule; this file already follows the same discipline for
+/// memory reads throughout):
+///   - `GameState` not in `resolved` (an old build resolved via
+///     `find_singletons` before this was wired in, or the class genuinely
+///     isn't there) -- `None`.
+///   - `find_self_typed_static` returns anything other than exactly one
+///     hit -- zero (not in a match, or `s_instance` isn't resolvable right
+///     now) or more than one (ambiguous; don't guess which) -- `None`.
+///   - The field at `GAME_STATE_PLAYER_MAP` doesn't structurally validate
+///     as a `Map`2` (checked the same way `class_name_of` validates any
+///     object elsewhere in this file: `obj -> vtable -> klass -> name`) --
+///     `None`. A future Hearthstone patch could move this field; silently
+///     reading whatever garbage sits there instead would be exactly the
+///     kind of guess this project's discipline exists to prevent.
+///   - Zero elements of the values array structurally validate as
+///     `Player` -- `None`, rather than a partial/empty answer that looks
+///     like real data.
+fn find_players_via_game_state(
+    remote: &Remote,
+    resolved: &[(String, u64, u64)],
+) -> Option<Vec<PlayerHit>> {
+    let &(_, class_ptr, vtable) = resolved.iter().find(|(n, _, _)| n == "GameState")?;
+
+    let hits = find_self_typed_static(remote, class_ptr, vtable, false);
+    let [s_instance] = hits.as_slice() else {
+        return None; // 0: not resolvable right now; >1: ambiguous -- don't guess which
+    };
+
+    let map_bytes = remote.read(s_instance + mono_layout::GAME_STATE_PLAYER_MAP, 8)?;
+    let map_addr = u64::from_le_bytes(map_bytes.try_into().unwrap());
+    if class_name_of(remote, map_addr).as_deref() != Some("Map`2") {
+        return None; // field moved, or GameState isn't in a match right now -- don't trust it
+    }
+
+    let values_bytes = remote.read(map_addr + mono_layout::MAP_VALUES, 8)?;
+    let values_ptr = u64::from_le_bytes(values_bytes.try_into().unwrap());
+    // Never more than a handful of players even in unusual formats -- 10 is
+    // generous headroom, not a guess at the real count (that comes from
+    // MonoArray.max_length itself, inside the helper).
+    let elements = read_mono_array_of_pointers(remote, values_ptr, 10);
+
+    let valid: Vec<u64> = elements
+        .into_iter()
+        .filter(|&addr| class_name_of(remote, addr).as_deref() == Some("Player"))
+        .collect();
+    if valid.is_empty() {
+        return None;
+    }
+    // `collect_player_hits` silently drops any address whose 0x200-byte
+    // window read fails (main.rs, `collect_player_hits`) -- a strictly
+    // bigger request, from the same start address, than the 8-byte reads
+    // `class_name_of` just used to validate that same address as `Player`
+    // above. So a `valid` that passed the check right above can still
+    // collapse to an empty `rows` here. Re-check emptiness on the far side
+    // of that read, not just on `valid`, so this never returns `Some(vec![])`
+    // -- a `Some` that `print_snapshot` would stamp `"source": "game_state"`
+    // / `players_are_authoritative: true` and that is functionally
+    // indistinguishable from total failure (empty names, no roster).
+    let rows = collect_player_hits(remote, &valid);
+    if rows.is_empty() {
+        return None;
+    }
+    Some(rows)
 }
 
 /// Every live object of `class_name` has, as its first 8 bytes, a pointer
@@ -2241,17 +2490,37 @@ fn hex(bytes: &[u8]) -> String {
 
 /// Unit tests for the pure reconstruction logic (`game_entity`,
 /// `dedup_by_id`, `current_game_entities`, `build_sides`, ...) -- built by
-/// hand from `EntityHit`/`PlayerHit`, no running process needed. This is
-/// deliberately the one part of `memreader` that *can* be tested this way:
-/// everything upstream of these functions (PID discovery, PE parsing, the
-/// heap scan itself) genuinely needs a real Hearthstone process and can't
-/// be exercised offline, which is why this file had zero tests until now.
+/// hand from `EntityHit`/`PlayerHit`, no running process needed. This was
+/// originally the one part of `memreader` that could be tested this way:
+/// most of what's upstream of these functions (PID discovery, PE parsing,
+/// the heap scan itself) genuinely needs a real Hearthstone process and
+/// can't be exercised offline, which is why this file had zero tests until
+/// this crate's tests were first added.
 ///
 /// Several of these encode addresses and tag shapes taken straight from
-/// real live dumps this session (see the commit history and
+/// real live dumps from that session (see the commit history and
 /// `memreader/README.md`'s "known, not yet resolved bug" note) -- close
 /// enough to reality to be worth keeping as regressions, not just
 /// hypothetical shapes.
+///
+/// One narrower exception to "needs a real Hearthstone process": the
+/// offset-driven byte parsing in `read_mono_array_of_pointers` and
+/// `class_name_of` (the `obj -> vtable -> klass -> name` chain
+/// `find_players_via_game_state` uses to validate `Map`2`/`Player`) does
+/// nothing Hearthstone-specific -- it is "read these bytes at these
+/// `mono_layout` offsets and interpret them", over whatever `Remote`
+/// points at. `Remote` is `process_vm_readv`, which the kernel permits a
+/// process to call on *itself* (same uid) exactly as it does on any other
+/// process this tool can already read -- so the tests below fabricate a
+/// real object/vtable/klass/array-shaped buffer in this test process's own
+/// memory and read it back through the real syscall
+/// (`Remote::new(std::process::id())`), catching an offset flip or an
+/// off-by-one in the length clamp without a live client. This still does
+/// NOT cover `find_self_typed_static`'s static-block heap scan or
+/// `find_players_via_game_state` end to end -- those depend on the target
+/// process's actual Mono runtime state (a resolved vtable, a populated
+/// static-data block), not just fixed byte offsets, and stay
+/// live-verification-only.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2657,7 +2926,7 @@ mod tests {
         // all". 64 MiB puts it solidly past `SAME_GAME_WINDOW` (32 MiB).
         let stale = player("Jafgaf", 1, anchor.wrapping_sub(0x0400_0000));
 
-        let sides = build_sides(&live, &[stale, real], None);
+        let sides = build_sides(&live, &[stale, real], None, false);
         let side1 = sides.iter().find(|s| s.player_id == 1).expect("a side for pid 1");
         assert_eq!(side1.name.as_deref(), Some("Seizan"), "the live-island player, not the nearer stale one");
     }
@@ -2685,10 +2954,61 @@ mod tests {
 
         let far_a = player("Far1", 1, anchor + 0x1000_0000);
         let far_b = player("Far2", 1, anchor + 0x2000_0000);
-        let sides = build_sides(&live, &[far_a, far_b], None);
+        let sides = build_sides(&live, &[far_a, far_b], None, false);
         let side1 = sides.iter().find(|s| s.player_id == 1).expect("board entities keep the side alive");
         assert_eq!(side1.name, None, "no in-window Player -- must not borrow one from outside it");
         assert_eq!(side1.play.len(), 1, "board entities (via CONTROLLER/ZONE) are unaffected by the missing name");
+    }
+
+    #[test]
+    fn build_sides_trusts_an_authoritative_player_regardless_of_heap_distance_from_the_anchor() {
+        // The exact shape found live 2026-09-02, verifying this fix against
+        // a real match: `find_players_via_game_state`'s Player objects can
+        // sit anywhere on the heap relative to `anchor` (this file's own,
+        // separately heap-scanned GameEntity -- an unrelated object) --
+        // `SAME_GAME_WINDOW` is a heuristic for the untrusted heap-scan
+        // path only, and must not reject an authoritative match just
+        // because the two happen to live in different heap regions. A real
+        // run hit exactly this: a confirmed match's own "xror" was
+        // silently dropped by the window filter before this fix.
+        let anchor = 0x1ef7_0000u64;
+        let game = entity(1, anchor, &[(TAG_TURN, 9)]);
+        let live_p2 = entity(2, anchor + 0x1000, &[(TAG_CONTROLLER, 1)]);
+        let live = vec![game, live_p2];
+
+        // Far outside SAME_GAME_WINDOW (32 MiB) from `anchor`.
+        let far_but_authoritative = player("xror", 1, anchor + 0x1000_0000);
+
+        let sides = build_sides(&live, &[far_but_authoritative], None, true);
+        let side1 = sides.iter().find(|s| s.player_id == 1).expect("a side for pid 1");
+        assert_eq!(
+            side1.name.as_deref(),
+            Some("xror"),
+            "authoritative players win outright, no window filter applied"
+        );
+    }
+
+    #[test]
+    fn build_sides_keeps_an_authoritative_players_tags_even_when_its_name_did_not_decode() {
+        // Non-ASCII battletags never decode through try_mono_string
+        // (ASCII-only) -- confirmed live 2026-09-02 against a real
+        // opponent named "Личард#2547" (Cyrillic). An authoritative match
+        // must not be discarded just because `name` came back `None`: the
+        // object is still confirmed correct by player_id, and its own
+        // tags (ARMOR, ...) are still real and worth using.
+        let anchor = 0x1ef7_0000u64;
+        let game = entity(1, anchor, &[]);
+        let live_p2 = entity(2, anchor + 0x1000, &[(TAG_CONTROLLER, 1)]);
+        let live = vec![game, live_p2];
+
+        let mut nameless = player("ignored", 1, anchor + 0x2000);
+        nameless.name = None;
+        nameless.tags = vec![(TAG_ARMOR, 5)];
+
+        let sides = build_sides(&live, &[nameless], None, true);
+        let side1 = sides.iter().find(|s| s.player_id == 1).expect("a side for pid 1");
+        assert_eq!(side1.name, None, "name really did not decode -- stays None, not invented");
+        assert_eq!(side1.armor, 5, "but the confirmed player's own ARMOR tag is still used");
     }
 
     #[test]
@@ -2709,6 +3029,115 @@ mod tests {
         }
         assert!(!looks_like_card_id("no_underscore".replace('_', "").as_str()));
         assert!(!looks_like_card_id("x"), "too short");
+    }
+
+    // ---- Self-process memory tests for `read_mono_array_of_pointers` and
+    // `class_name_of` -- see the module doc comment above for why reading
+    // this test process's own memory through the real `process_vm_readv`
+    // syscall is a legitimate way to exercise these two, unlike the rest of
+    // this file.
+
+    #[test]
+    fn read_mono_array_of_pointers_reads_length_then_vector_and_clamps_to_max_count() {
+        let len_off = mono_layout::MONO_ARRAY_LENGTH as usize;
+        let vec_off = mono_layout::MONO_ARRAY_VECTOR as usize;
+        let mut buf = Box::new([0u8; 0x20 + 4 * 8]);
+        buf[len_off..len_off + 8].copy_from_slice(&4i64.to_le_bytes());
+        let elems: [u64; 4] = [0x1000, 0x2000, 0x3000, 0x4000];
+        for (i, e) in elems.iter().enumerate() {
+            let off = vec_off + i * 8;
+            buf[off..off + 8].copy_from_slice(&e.to_le_bytes());
+        }
+
+        let remote = Remote::new(std::process::id());
+        let ptr = buf.as_ptr() as u64;
+
+        // max_count below the real length (4) must clamp the read, not just
+        // filter the result down afterwards -- a regression here would be
+        // an off-by-one either direction.
+        let clamped = read_mono_array_of_pointers(&remote, ptr, 2);
+        assert_eq!(clamped, vec![0x1000, 0x2000], "clamps to max_count");
+
+        let all = read_mono_array_of_pointers(&remote, ptr, 10);
+        assert_eq!(all, elems.to_vec(), "max_count above the real length reads exactly max_length elements");
+    }
+
+    #[test]
+    fn read_mono_array_of_pointers_rejects_non_positive_length_without_reading_the_vector() {
+        let len_off = mono_layout::MONO_ARRAY_LENGTH as usize;
+        let vec_off = mono_layout::MONO_ARRAY_VECTOR as usize;
+        let mut buf = Box::new([0u8; 0x20 + 8]);
+        buf[len_off..len_off + 8].copy_from_slice(&0i64.to_le_bytes());
+        // A plausible-looking value at the vector slot -- if this function
+        // ever read it despite length<=0, it would show up as a spurious
+        // element instead of the empty Vec the doc comment promises.
+        buf[vec_off..vec_off + 8].copy_from_slice(&0x1234u64.to_le_bytes());
+
+        let remote = Remote::new(std::process::id());
+        let got = read_mono_array_of_pointers(&remote, buf.as_ptr() as u64, 10);
+        assert!(got.is_empty(), "length<=0 must return no elements, not a guess at the vector");
+    }
+
+    #[test]
+    fn read_mono_array_of_pointers_filters_elements_that_dont_look_like_pointers() {
+        let len_off = mono_layout::MONO_ARRAY_LENGTH as usize;
+        let vec_off = mono_layout::MONO_ARRAY_VECTOR as usize;
+        let mut buf = Box::new([0u8; 0x20 + 3 * 8]);
+        buf[len_off..len_off + 8].copy_from_slice(&3i64.to_le_bytes());
+        // null, a plausible small pointer, and a high-half value real
+        // user-mode pointers never have (`plausible_ptr`'s exact check).
+        let raw: [u64; 3] = [0, 0x5000, 0xffff_ffff_ffff_ffff];
+        for (i, e) in raw.iter().enumerate() {
+            let off = vec_off + i * 8;
+            buf[off..off + 8].copy_from_slice(&e.to_le_bytes());
+        }
+
+        let remote = Remote::new(std::process::id());
+        let got = read_mono_array_of_pointers(&remote, buf.as_ptr() as u64, 10);
+        assert_eq!(got, vec![0x5000], "null and high-half values are dropped, not returned as pointers");
+    }
+
+    #[test]
+    fn class_name_of_walks_the_obj_vtable_klass_name_chain() {
+        // Fabricates the exact chain `find_players_via_game_state` relies
+        // on to validate `m_playerMap`'s map (`Map`2`) and each element of
+        // its values array (`Player`) before trusting either.
+        let name = b"Player\0";
+        let klass_name_off = mono_layout::MONO_CLASS_NAME as usize;
+        let mut klass = Box::new([0u8; 0x50]);
+        klass[klass_name_off..klass_name_off + 8]
+            .copy_from_slice(&(name.as_ptr() as u64).to_le_bytes());
+
+        let vtable_klass_off = mono_layout::MONO_VTABLE_KLASS as usize;
+        let mut vt = Box::new([0u8; 8]);
+        vt[vtable_klass_off..vtable_klass_off + 8]
+            .copy_from_slice(&(klass.as_ptr() as u64).to_le_bytes());
+
+        let mut obj = Box::new([0u8; 8]);
+        obj[0..8].copy_from_slice(&(vt.as_ptr() as u64).to_le_bytes());
+
+        let remote = Remote::new(std::process::id());
+        let got = class_name_of(&remote, obj.as_ptr() as u64);
+        assert_eq!(got.as_deref(), Some("Player"));
+    }
+
+    #[test]
+    fn class_name_of_fails_closed_when_the_klass_pointer_is_not_plausible() {
+        // The chain stops at the first implausible link rather than
+        // reading further and risking a misleading name -- same discipline
+        // `find_players_via_game_state`'s doc comment describes for the
+        // `Map`2` field check it builds on.
+        let mut vt = Box::new([0u8; 8]);
+        let vtable_klass_off = mono_layout::MONO_VTABLE_KLASS as usize;
+        // Top-half-set value: fails `plausible_ptr`, must not be dereferenced.
+        vt[vtable_klass_off..vtable_klass_off + 8]
+            .copy_from_slice(&0xffff_ffff_ffff_ffffu64.to_le_bytes());
+
+        let mut obj = Box::new([0u8; 8]);
+        obj[0..8].copy_from_slice(&(vt.as_ptr() as u64).to_le_bytes());
+
+        let remote = Remote::new(std::process::id());
+        assert_eq!(class_name_of(&remote, obj.as_ptr() as u64), None);
     }
 }
 
