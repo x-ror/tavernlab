@@ -307,6 +307,14 @@ pub struct Tracker {
     /// inside `CREATE_GAME`, before any card is dealt, so a turn counter of
     /// one does not mean the opening has been handed out.
     pub started: bool,
+    /// Tags that arrived before the entity was in a zone this keeps.
+    ///
+    /// A summoned token is created in SETASIDE, given its real ATK/HEALTH
+    /// (and whatever else the log wrote) there, and only then moved to PLAY.
+    /// Those tags have nowhere to land until the body exists, so they wait:
+    /// dropping them left the printed stats, and one point of damage then
+    /// read as a corpse.
+    pending_tags: Vec<(u32, EntityTag)>,
 }
 
 fn card_of(card_id: &str) -> Option<CardId> {
@@ -337,6 +345,29 @@ impl Tracker {
     fn index(&self, player: u8) -> Option<usize> {
         let me = self.me?;
         Some(if player == me { 0 } else { 1 })
+    }
+
+    /// Tags parked for this entity, in the order they arrived, then forgotten.
+    fn take_pending(&mut self, entity: u32) -> Vec<EntityTag> {
+        let mut out = Vec::new();
+        self.pending_tags.retain(|(e, tag)| {
+            if *e == entity {
+                out.push(*tag);
+                false
+            } else {
+                true
+            }
+        });
+        out
+    }
+
+    /// A new body, with anything the log already said about it.
+    fn body_from(&mut self, entity: u32, card: CardId) -> Body {
+        let mut b = Body::new(entity, card, self.turn);
+        for what in self.take_pending(entity) {
+            b.apply(what);
+        }
+        b
     }
 
     /// My side, then theirs — `0` is always the player holding the log.
@@ -657,6 +688,7 @@ impl Tracker {
                         return;
                     }
                 }
+                self.pending_tags.push((entity, what));
             }
             Event::Zone(m) => self.zone(m),
             // Not a game event. The runner records the cap; the position is
@@ -709,13 +741,17 @@ impl Tracker {
                     ..Hero::default()
                 };
             }
+            for what in self.take_pending(entity) {
+                self.heroes[i].apply(what);
+            }
             return;
         }
         // The Hero Power's own entity, so the `EXHAUSTED` written on it can
         // be found. Which power it is comes from the class; whether it has
         // been used this turn is only knowable from this line's id.
         if kind == Some("Hero Power") {
-            self.hero_powers[i] = Some(Body::new(entity, card.unwrap_or_default(), self.turn));
+            let p = self.body_from(entity, card.unwrap_or_default());
+            self.hero_powers[i] = Some(p);
             return;
         }
         if kind.is_some() && kind != Some("Weapon") {
@@ -737,7 +773,8 @@ impl Tracker {
         match zone {
             "HAND" if i == 0 => {
                 if let Some(c) = card {
-                    self.hand.push(Body::new(entity, c, self.turn));
+                    let b = self.body_from(entity, c);
+                    self.hand.push(b);
                     if !self.started {
                         self.opening.push(c);
                     }
@@ -752,7 +789,8 @@ impl Tracker {
                         // a whole play out of the turn.
                         tavernlab_core::cards::Kind::Minion
                         | tavernlab_core::cards::Kind::Location => {
-                            self.board[i].push(Body::new(entity, c, self.turn));
+                            let b = self.body_from(entity, c);
+                            self.board[i].push(b);
                         }
                         // What the card is, not what the line called it. The
                         // client marks a weapon `(Weapon)` and the branch
@@ -761,12 +799,16 @@ impl Tracker {
                         // correctly whether or not the note is written, and
                         // no line shape has to be assumed.
                         tavernlab_core::cards::Kind::Weapon => {
-                            self.weapons[i] = Some(Weapon {
+                            let mut w = Weapon {
                                 entity,
                                 card: c,
                                 atk: None,
                                 durability: None,
-                            });
+                            };
+                            for what in self.take_pending(entity) {
+                                w.apply(what);
+                            }
+                            self.weapons[i] = Some(w);
                         }
                         _ => {}
                     }
@@ -1121,6 +1163,38 @@ mod tests {
         let b = &t.board[0][0];
         assert_eq!(b.stats(), (6, 3), "a 4/5 buffed to 6 attack with 2 damage on it");
         assert!(b.keywords.has(Keywords::TAUNT), "granted, not printed");
+    }
+
+    #[test]
+    fn tags_that_arrive_before_the_zone_line_still_stick() {
+        // Twilight Egg's Whelp: Power.log writes the sized ATK/HEALTH on
+        // the SETASIDE entity (`Entity=100 tag=ATK value=3`), and Zone.log
+        // only later says `zone from  -> FRIENDLY PLAY`. Dropping those
+        // tags left the printed 2/1; one damage then read as a corpse, and
+        // the turn plan said there was nothing to do while the Whelp could
+        // still attack.
+        let mut t = Tracker::new(None);
+        feed(&mut t, &[
+            "[Zone] [entityName=The Lich King id=54 zone=PLAY zonePos=0 \
+             cardId=HERO_11 player=1] zone from  -> FRIENDLY PLAY (Hero)",
+            "D 19:05:18.6 GameState.DebugPrintPower() - TAG_CHANGE Entity=100 tag=ATK value=3",
+            "D 19:05:18.6 GameState.DebugPrintPower() - TAG_CHANGE Entity=100 tag=HEALTH value=2",
+            "[Zone] [entityName=Accelerated Whelp id=100 zone=PLAY zonePos=0 \
+             cardId=CATA_210t player=1] zone from  -> FRIENDLY PLAY",
+            "D 19:06:04.3 GameState.DebugPrintPower() - TAG_CHANGE Entity=\
+             [entityName=Accelerated Whelp id=100 zone=PLAY zonePos=1 \
+             cardId=CATA_210t player=1] tag=DAMAGE value=1",
+        ]);
+        assert_eq!(t.board[0].len(), 1, "the Whelp is on the board");
+        assert_eq!(
+            t.board[0][0].stats(),
+            (3, 1),
+            "sized 3/2, then one damage -- not the printed 2/1 minus one"
+        );
+        assert!(
+            t.board[0][0].stats().1 > 0,
+            "one damage on a 3/2 is not a corpse"
+        );
     }
 
     #[test]

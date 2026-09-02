@@ -1661,6 +1661,39 @@ mod position_tests {
         assert_eq!(raptor.atk, 4, "printed 3 and the Raid Leader's +1");
     }
 
+    /// A token sized in SETASIDE is that size once it lands, so one damage
+    /// is not a corpse.
+    ///
+    /// Twilight Egg's Whelp is created at printed 2/1, then tagged 3/2
+    /// before Zone.log moves it into PLAY. The plan used to drop those
+    /// tags, read 2/1 minus one as zero health, and say there was nothing
+    /// to do on a turn the Whelp could still attack.
+    #[test]
+    fn a_token_sized_before_it_lands_is_not_a_corpse_after_one_damage() {
+        let mut lines = HEROES.to_vec();
+        lines.push("D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=4");
+        lines.push("D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=100 tag=ATK value=3");
+        lines.push("D 09:00:01.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=100 tag=HEALTH value=2");
+        lines.push("D 09:00:01.2 [Zone] ZoneChangeList.ProcessChanges() - id=7 local=False [entityName=Accelerated Whelp id=100 zone=PLAY zonePos=0 cardId=CATA_210t player=1] zone from  -> FRIENDLY PLAY");
+        lines.push("D 09:00:02.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7");
+        lines.push("D 09:00:02.1 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=[entityName=Accelerated Whelp id=100 zone=PLAY zonePos=1 cardId=CATA_210t player=1] tag=DAMAGE value=1");
+        let tr = tracked(&lines);
+        assert_eq!(
+            tr.board[0][0].stats(),
+            (3, 1),
+            "the tracker's own reading, before the plan"
+        );
+        let (g, _) = position(&tr, "").expect("a position");
+        let whelp = g.players[0]
+            .board
+            .iter()
+            .find(|m| m.card.name() == "Accelerated Whelp")
+            .expect("the Whelp is on the rebuilt board, not filtered as a corpse");
+        assert_eq!(whelp.atk, 3);
+        assert_eq!(whelp.health(), 1);
+        assert!(whelp.can_attack(), "it landed on an earlier turn");
+    }
+
     /// A discounted card in hand is discounted in the plan.
     ///
     /// The log writes what a card costs now, taxes and discounts folded in.
