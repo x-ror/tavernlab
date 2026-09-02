@@ -245,6 +245,8 @@ fn print_snapshot(remote: &Remote, pid: u32, resolved: &[(String, u64, u64)], bo
         return;
     }
 
+    let confidence = topology_confidence(&live);
+
     let mut out = Out::new();
     out.obj(|o| {
         o.field("game", |v| {
@@ -257,6 +259,7 @@ fn print_snapshot(remote: &Remote, pid: u32, resolved: &[(String, u64, u64)], bo
                 o.int_field("idCap", game.id_cap as i64);
             })
         });
+        o.str_field("confidence", confidence);
         o.field("entities", |v| {
             v.arr(|a| {
                 for e in &live {
@@ -272,7 +275,7 @@ fn print_snapshot(remote: &Remote, pid: u32, resolved: &[(String, u64, u64)], bo
                             o.field("addr", |v| v.str(&format!("0x{:x}", p.addr)));
                             o.field("name", |v| v.opt(p.name.as_deref(), |o, s| o.str(s)));
                             o.int_field("playerId", p.player_id as i64);
-                            o.int_field("entityId", p.entity_id as i64);
+                            o.field("entityId", |v| v.opt(p.entity_id, |o, n| o.int(n as i64)));
                             o.field("rawTags", |v| emit_tags(v, &p.tags));
                         })
                     });
@@ -292,11 +295,12 @@ fn print_snapshot(remote: &Remote, pid: u32, resolved: &[(String, u64, u64)], bo
 
 fn print_board(game: &GameState, sides: &[Side], live: &[EntityHit]) {
     eprintln!(
-        "хід {}  крок {}  ходить гравець {}  idCap {}",
+        "хід {}  крок {}  ходить гравець {}  idCap {}  довіра {}",
         game.turn.map(|n| n.to_string()).unwrap_or("?".into()),
         game.step.map(|n| n.to_string()).unwrap_or("?".into()),
         game.current_player.map(|n| n.to_string()).unwrap_or("?".into()),
-        game.id_cap
+        game.id_cap,
+        topology_confidence(live)
     );
     for id in [1, 2, 3] {
         if let Some(e) = live.iter().find(|e| e.id == id) {
@@ -399,7 +403,25 @@ struct PlayerHit {
     addr: u64,
     name: Option<String>,
     player_id: i32,
-    entity_id: i32,
+    /// Always `None` today. `mono_layout::ENTITY_ID` (+0x38) is confirmed
+    /// live on `Entity` only -- `Player.name` sits at a completely
+    /// different offset (+0x120) than `Entity.cardId` (+0x30), so there is
+    /// no reason to expect the two classes share a layout past their
+    /// common `MonoObject` header, and a live dump confirmed it: reading
+    /// +0x38 off a real, correctly-matched `Player` gave ~1e9 (nonsense
+    /// for an EntityID), and off a stale, wrong-match `Player` gave a
+    /// negative garbage word. Neither is usable, so `collect_player_hits`
+    /// no longer reads it. The obvious alternative -- GameTag 53
+    /// (`ENTITY_ID`) from this object's own `List<Tag>`, the way `Entity`'s
+    /// tags already are -- isn't available either yet: `read_entity_tags`'s
+    /// `List<Tag>` offset was confirmed live against `Entity` objects only,
+    /// and pointed at a live `Player` address it read back *empty* (i.e.
+    /// wherever `Player`'s own tag list actually lives, it isn't at that
+    /// offset). Do not restore the +0x38 read as a "fix" -- it was never
+    /// reading the right field, on either class. Leave this `None` until a
+    /// real `Player` tag-list or `ENTITY_ID` offset is confirmed live the
+    /// same way `PLAYER_NAME`/`PLAYER_PLAYER_ID` were.
+    entity_id: Option<i32>,
     tags: Vec<(i32, i32)>,
 }
 
@@ -612,31 +634,145 @@ fn current_game_entities(hits: &[EntityHit]) -> Vec<EntityHit> {
     deduped.into_iter().filter(|e| e.id <= cap).collect()
 }
 
-fn game_entity(hits: &[EntityHit]) -> Option<&EntityHit> {
-    // A leftover GameEntity from a finished match is still `id == 1` and
-    // can easily have *more* Player-adjacent entities nearby than a game
-    // that just started (a fuller board from a match that ran its course,
-    // against a mulligan-fresh one) -- ranking by nearby-player-count alone
-    // picked exactly that stale island over the real live game, reported
-    // live: `/api/memory` showed a finished match's board while the log
-    // watcher correctly tracked a brand-new mulligan. A GameEntity actually
-    // being tracked live carries TURN/STEP tags; one whose match ended and
-    // whose tag list has since gone stale in memory often does not -- so
-    // that's checked first, and the nearby-player heuristic only breaks
-    // ties among genuinely live candidates (or is the fallback if none
-    // carry those tags, rather than nothing being returned at all).
-    let live_tagged = hits
+/// Per-candidate topology score for `game_entity`: `(topology, tag_bonus,
+/// neighbour_count)`, compared lexicographically by `max_by_key` (Rust
+/// tuples are `Ord` in field order) so later fields can only ever break a
+/// *tie* in an earlier one -- they can never outvote it.
+///
+/// `topology` (real board-legality facts, report A.6 item 2: a hero in
+/// PLAY for each controller) is the primary key and the only one that can
+/// disqualify a candidate outright (`i32::MIN`, more than 7 PLAY minions
+/// for one controller). It was not always the primary key: an earlier cut
+/// of this function *added* a flat +5/+5 TURN/STEP bonus straight into the
+/// same score as the ±4-per-controller hero signal, so a stale, finished
+/// match's leftover TURN/STEP tags (Boehm/bdwgc does not collect a
+/// finished match's objects, so they persist with their last known tag
+/// values) could add up to more than a live, topologically-equal-or-better
+/// candidate that simply had not been tagged -- reproducing the exact
+/// swapped-sides bug this rewrite exists to fix, just via TURN/STEP
+/// instead of the original raw-neighbour-count heuristic. Lexicographic
+/// comparison makes that structurally impossible: `topology` alone decides
+/// whenever it differs at all.
+///
+/// `tag_bonus` (TURN/STEP presence) only matters when `topology` is tied.
+/// Kept small and merely present/absent (not weighted 5/5 any more)
+/// because, per the point above, presence is *not* reliable evidence of
+/// liveness by itself -- a live dump found a real case where the correct,
+/// live-Player-holding `id==1` candidate carried neither tag. It is kept
+/// as a tie-break, not dropped outright, because with no distinguishing
+/// topology at all (neither candidate shows any hero) it is still the
+/// best signal available *in this file* -- true liveness proof needs the
+/// singleton-walk root (report A.6 item 1 / A.7 PR3) or a temporal lock
+/// across polls (PR4), neither of which exists yet. Note this does still
+/// leave one case genuinely unresolved by topology alone: two candidates
+/// with *identical* legal topology (e.g. both mulligan-fresh, heroes only,
+/// no minions -- indistinguishable from "one finished with the loser's
+/// hero still standing at buffer-time and the other genuinely live")
+/// where only one carries a tag. That is an inherent limit of a
+/// topology-only heuristic, not a weighting bug; PR3/PR4 are what actually
+/// close it, not further tuning here.
+///
+/// `neighbour_count` (nearby `id`-2/3 entities) is the last-resort
+/// tie-break, below both of the above, restoring the original pre-PR2
+/// heuristic (report A.2 point 2) to its proper place as a final
+/// determinism device rather than the accidental "last element in scan
+/// order wins" that `Iterator::max_by_key` silently falls back to when
+/// nothing distinguishes two candidates at all. It carries the same
+/// "prefers a fuller stale board" risk the original heuristic had, so it
+/// only ever fires once `topology` and `tag_bonus` have both already
+/// tied -- i.e. when there is no more-trustworthy signal left to use.
+fn game_entity_score(candidate: &EntityHit, hits: &[EntityHit]) -> (i32, i32, usize) {
+    let nearby: Vec<&EntityHit> = hits
         .iter()
-        .filter(|e| e.id == 1 && (e.tag(TAG_TURN).is_some() || e.tag(TAG_STEP).is_some()));
-    let mut pool: Vec<&EntityHit> = live_tagged.collect();
-    if pool.is_empty() {
-        pool = hits.iter().filter(|e| e.id == 1).collect();
+        .filter(|e| e.addr.abs_diff(candidate.addr) < SAME_GAME_WINDOW)
+        .collect();
+
+    let mut topology = 0i32;
+    for controller in [1, 2] {
+        let has_hero = nearby.iter().any(|e| {
+            e.tag(TAG_CONTROLLER) == Some(controller)
+                && e.tag(TAG_CARDTYPE) == Some(CARDTYPE_HERO)
+                && e.tag(TAG_ZONE) == Some(ZONE_PLAY)
+        });
+        topology += if has_hero { 4 } else { -4 };
+
+        let minions = nearby
+            .iter()
+            .filter(|e| {
+                e.tag(TAG_CONTROLLER) == Some(controller)
+                    && e.tag(TAG_CARDTYPE) == Some(CARDTYPE_MINION)
+                    && e.tag(TAG_ZONE) == Some(ZONE_PLAY)
+            })
+            .count();
+        if minions > 7 {
+            // Never a legal board -- disqualified outright, not just
+            // docked, and the disqualification cannot be bought back by
+            // tag_bonus or neighbour_count since it sorts below every
+            // non-disqualified topology value.
+            return (i32::MIN, i32::MIN, 0);
+        }
     }
-    pool.into_iter().max_by_key(|g| {
-        hits.iter()
-            .filter(|e| (e.id == 2 || e.id == 3) && e.addr.abs_diff(g.addr) < 0x10_0000)
-            .count()
-    })
+
+    let mut tag_bonus = 0i32;
+    if candidate.tag(TAG_TURN).is_some() {
+        tag_bonus += 1;
+    }
+    if candidate.tag(TAG_STEP).is_some() {
+        tag_bonus += 1;
+    }
+
+    let neighbour_count = nearby.iter().filter(|e| e.id == 2 || e.id == 3).count();
+
+    (topology, tag_bonus, neighbour_count)
+}
+
+fn game_entity(hits: &[EntityHit]) -> Option<&EntityHit> {
+    let candidates: Vec<&EntityHit> = hits.iter().filter(|e| e.id == 1).collect();
+    if candidates.len() <= 1 {
+        // Nothing to score against -- return the only candidate (or none)
+        // exactly as before scoring existed.
+        return candidates.into_iter().next();
+    }
+    // A leftover GameEntity from a finished match is still `id == 1`, can
+    // still carry a stale TURN/STEP tag pair from before its match ended,
+    // and can easily sit near *more* other entities than a game that just
+    // started (a fuller board from a match that ran its course, against a
+    // mulligan-fresh one) -- ranking by nearby-player-count alone picked
+    // exactly that stale island over the real live game, reported live:
+    // `/api/memory` showed a finished match's board while the log watcher
+    // correctly tracked a brand-new mulligan. `game_entity_score` scores
+    // real board-legality topology instead of raw proximity or presence of
+    // a single tag pair.
+    candidates
+        .into_iter()
+        .max_by_key(|g| game_entity_score(g, hits))
+}
+
+/// Coarse, honest confidence label for the board `game_entity` picked --
+/// report A.7 PR1's "add confidence... when topology fails", the half of
+/// that line item that doesn't need a live-confirmed offset to build (see
+/// `PlayerHit::entity_id`'s doc comment for the half that does). Not the
+/// raw `game_entity_score` tuple itself: its weights are this file's own
+/// tuning knobs, not a calibrated probability, so handing them out
+/// directly would claim more precision than the heuristic has. `sides`
+/// and `entities` still populate unconditionally either way -- the
+/// report phrases this as confidence *or* skip, and skipping is the wrong
+/// half to take here: `cli`'s `/api/memory` test
+/// (`the_memory_endpoint_answers_even_with_no_game_running`) already
+/// requires `sides` to always be present, and the board fields (`play`/
+/// `hand`/...) are resolved from CONTROLLER/ZONE independently of this
+/// score, so they are not wrong just because this label is "low". This is
+/// only a hint to a caller about whether to trust the *identity* of the
+/// island it got back.
+fn topology_confidence(live: &[EntityHit]) -> &'static str {
+    match game_entity(live) {
+        None => "none",
+        Some(g) => match game_entity_score(g, live) {
+            (i32::MIN, ..) => "none", // shouldn't happen -- a disqualified island shouldn't have become `live`'s anchor -- but never claim confidence in one if it does
+            (topology, ..) if topology >= 8 => "high", // both controllers' hero confirmed in PLAY nearby
+            _ => "low", // an id==1 candidate exists, but at least one side's hero was not found nearby
+        },
+    }
 }
 
 fn read_game_state(live: &[EntityHit]) -> GameState {
@@ -676,18 +812,21 @@ fn build_sides(live: &[EntityHit], players: &[PlayerHit], current_player: Option
         // different, stale island (a real past opponent's name attached to
         // the live game, hand cards swapped to the wrong side) whenever
         // that stale one happened to sit closer in raw address terms than
-        // the actual current one. Only falls back to nearest-overall when
-        // nothing for this `pid` exists within the window at all.
-        let candidates: Vec<&PlayerHit> = players
+        // the actual current one. Deliberately no nearest-overall fallback
+        // when nothing for this `pid` is in the window: that fallback *was*
+        // the bug -- it is exactly how a stranger's battletag/hand from a
+        // long-finished match got attached to a live game (same mechanism
+        // this window exists to reject, just applied without the window's
+        // protection). Better to leave `name` as `None` (nullable in the
+        // JSON) than to hand back a name we have no reason to believe
+        // belongs to this match. The board itself (`of`, below) is
+        // resolved from `CONTROLLER`/`ZONE` independently of this lookup,
+        // so it is unaffected by a missing name.
+        let player = players
             .iter()
             .filter(|p| p.player_id == pid && p.name.is_some())
-            .collect();
-        let player = candidates
-            .iter()
-            .copied()
             .filter(|p| p.addr.abs_diff(anchor) < SAME_GAME_WINDOW)
-            .min_by_key(|p| p.addr.abs_diff(anchor))
-            .or_else(|| candidates.into_iter().min_by_key(|p| p.addr.abs_diff(anchor)));
+            .min_by_key(|p| p.addr.abs_diff(anchor));
         let name = player.and_then(|p| p.name.clone());
         let of: Vec<&EntityHit> = live
             .iter()
@@ -1688,11 +1827,16 @@ fn collect_player_hits(remote: &Remote, hits: &[u64]) -> Vec<PlayerHit> {
         let Some(bytes) = remote.read(addr, WINDOW) else { continue };
         let name_off = mono_layout::PLAYER_NAME as usize;
         let id_off = mono_layout::PLAYER_PLAYER_ID as usize;
-        let eid_off = mono_layout::ENTITY_ID as usize;
         let name_ptr = u64::from_le_bytes(bytes[name_off..name_off + 8].try_into().unwrap());
         let name = try_mono_string(remote, name_ptr);
         let player_id = i32::from_le_bytes(bytes[id_off..id_off + 4].try_into().unwrap());
-        let entity_id = i32::from_le_bytes(bytes[eid_off..eid_off + 4].try_into().unwrap());
+        // No confirmed offset for a Player's own EntityID -- see the
+        // field's doc comment on `PlayerHit`. `mono_layout::ENTITY_ID`
+        // (+0x38) is an `Entity` offset, not `Player`'s, and reading it
+        // here was reading nonsense (~1e9 on a real pair, negative garbage
+        // on a stale one). Left `None` rather than emitting a number that
+        // looks like data but isn't.
+        let entity_id: Option<i32> = None;
         let tags = read_entity_tags(remote, addr);
         rows.push(PlayerHit {
             addr,
@@ -1717,7 +1861,7 @@ fn dump_player_table(remote: &Remote, hits: &[u64]) -> Vec<PlayerHit> {
             p.addr,
             p.name.as_deref().unwrap_or("?"),
             p.player_id,
-            p.entity_id
+            p.entity_id.map(|n| n.to_string()).unwrap_or("?".into())
         );
     }
     rows
@@ -1868,12 +2012,15 @@ mod tests {
         }
     }
 
-    fn player(name: &str, player_id: i32, entity_id: i32, addr: u64) -> PlayerHit {
+    fn player(name: &str, player_id: i32, addr: u64) -> PlayerHit {
+        // No test constructs a Player with a real entity_id any more --
+        // nothing reads it (see `PlayerHit::entity_id`'s doc comment), so
+        // the fixture doesn't take one either.
         PlayerHit {
             addr,
             name: Some(name.to_string()),
             player_id,
-            entity_id,
+            entity_id: None,
             tags: Vec::new(),
         }
     }
@@ -1903,8 +2050,16 @@ mod tests {
     #[test]
     fn game_entity_falls_back_to_nearby_player_count_when_nothing_is_tagged() {
         // Neither candidate carries TURN/STEP (the common case -- see
-        // README's note that this doesn't always help), so the original
-        // heuristic still has to do its job as a fallback.
+        // README's note that this doesn't always help) and neither shows
+        // any hero topology either (so `game_entity_score`'s first two
+        // tuple fields tie at (-8, 0) for both), so the third field --
+        // nearby id==2/3 count, the original pre-PR2 heuristic, now
+        // demoted to a documented last-resort tie-break -- has to do the
+        // deciding. This is a deliberate third priority now (see
+        // `game_entity_score`'s doc comment), not the accidental
+        // "whichever the scan happened to list last" that `max_by_key`
+        // would otherwise silently fall back to with no third field at
+        // all.
         let sparse = entity(1, 0x1000_0000, &[]);
         let sparse_p2 = entity(2, 0x1000_1000, &[]);
 
@@ -1915,6 +2070,264 @@ mod tests {
         let hits = vec![sparse, sparse_p2, crowded, crowded_p2, crowded_p3];
         let picked = game_entity(&hits).expect("a candidate");
         assert_eq!(picked.addr, 0x2000_0000, "two nearby players beats one");
+    }
+
+    #[test]
+    fn game_entity_prefers_legal_topology_over_a_fuller_tagged_stale_board() {
+        // A2/A3 of the report: raw neighbour count (and even a stale
+        // TURN/STEP tag pair left over in memory) is not proof of "this
+        // is the live game". A fuller island -- more entities nearby, and
+        // still tagged TURN/STEP from before its match ended -- but with
+        // an illegal board (no hero for either controller, and one
+        // controller over the 7-minion legal maximum) must lose to a
+        // smaller, thinner island that is topologically a real legal
+        // board (a hero in PLAY for both controllers), even though that
+        // one carries no TURN/STEP at all.
+        let stale_game = entity(1, 0x1000_0000, &[(TAG_TURN, 9), (TAG_STEP, 10)]);
+        let mut stale_hits = vec![stale_game];
+        // No hero for either controller anywhere nearby -- and controller
+        // 1 has 8 PLAY-zone minions, one past the legal maximum.
+        for i in 0..8 {
+            stale_hits.push(entity(
+                10 + i,
+                0x1000_0000 + 0x1000 * (i as u64 + 1),
+                &[(TAG_CONTROLLER, 1), (TAG_ZONE, ZONE_PLAY), (TAG_CARDTYPE, CARDTYPE_MINION)],
+            ));
+        }
+
+        let live_game = entity(1, 0x9000_0000, &[]);
+        let live_hero_p1 = entity(
+            2,
+            0x9000_1000,
+            &[(TAG_CONTROLLER, 1), (TAG_ZONE, ZONE_PLAY), (TAG_CARDTYPE, CARDTYPE_HERO)],
+        );
+        let live_hero_p2 = entity(
+            3,
+            0x9000_2000,
+            &[(TAG_CONTROLLER, 2), (TAG_ZONE, ZONE_PLAY), (TAG_CARDTYPE, CARDTYPE_HERO)],
+        );
+
+        let mut hits = stale_hits;
+        hits.push(live_game);
+        hits.push(live_hero_p1);
+        hits.push(live_hero_p2);
+
+        let picked = game_entity(&hits).expect("a candidate");
+        assert_eq!(
+            picked.addr, 0x9000_0000,
+            "smaller, untagged but topologically legal board beats a fuller, tagged, illegal one"
+        );
+    }
+
+    #[test]
+    fn game_entity_prefers_legal_topology_when_neither_candidate_is_tagged() {
+        // The exact live shape from the report: neither `id==1` candidate
+        // carries TURN/STEP at all, including the one that actually held
+        // the correct live Players -- so topology has to be the whole
+        // signal, not just a tiebreaker among tagged candidates.
+        //
+        // This also has to be a *real* regression check against the old,
+        // pre-topology-scoring algorithm (raw count of nearby id==2/3
+        // within 0x10_0000, gated only by TURN/STEP presence), not an
+        // accidental pass: with only `bad_hero_p1`/`bad_p2` and
+        // `good_hero_p1`/`good_hero_p2` as the sole id==2/3 entities, both
+        // islands would tie at a nearby-count of 2 under the old
+        // algorithm, and `Iterator::max_by_key` breaks ties by keeping the
+        // *last* equally-maximal element -- which happens to be `good`
+        // simply because it is pushed later into `hits`, so the old code
+        // would "pass" this fixture too, for a reason that has nothing to
+        // do with topology. The extra untagged `bad_noise_*` entities
+        // below give the *old* algorithm's nearby-id-2/3 count a clear,
+        // non-tied edge for `bad` (5 vs 2) -- reproducing the report's
+        // literal "ranking by nearby-player-count alone picked the stale
+        // island" failure -- while contributing nothing to the *new*
+        // algorithm's topology score (no CONTROLLER/CARDTYPE/ZONE tags),
+        // so `good` still has to win on topology alone, not by a leftover
+        // tie-break coincidence.
+        let bad_game = entity(1, 0x1000_0000, &[]);
+        // Controller 1 has a hero; controller 2 has none anywhere nearby --
+        // not a legal Hearthstone board past mulligan.
+        let bad_hero_p1 = entity(
+            2,
+            0x1000_1000,
+            &[(TAG_CONTROLLER, 1), (TAG_ZONE, ZONE_PLAY), (TAG_CARDTYPE, CARDTYPE_HERO)],
+        );
+        let bad_p2 = entity(3, 0x1000_2000, &[(TAG_CONTROLLER, 2)]);
+        let bad_noise_1 = entity(2, 0x1000_3000, &[]);
+        let bad_noise_2 = entity(3, 0x1000_4000, &[]);
+        let bad_noise_3 = entity(2, 0x1000_5000, &[]);
+
+        let good_game = entity(1, 0x9000_0000, &[]);
+        let good_hero_p1 = entity(
+            2,
+            0x9000_1000,
+            &[(TAG_CONTROLLER, 1), (TAG_ZONE, ZONE_PLAY), (TAG_CARDTYPE, CARDTYPE_HERO)],
+        );
+        let good_hero_p2 = entity(
+            3,
+            0x9000_2000,
+            &[(TAG_CONTROLLER, 2), (TAG_ZONE, ZONE_PLAY), (TAG_CARDTYPE, CARDTYPE_HERO)],
+        );
+        let good_minion = entity(
+            4,
+            0x9000_3000,
+            &[(TAG_CONTROLLER, 1), (TAG_ZONE, ZONE_PLAY), (TAG_CARDTYPE, CARDTYPE_MINION)],
+        );
+
+        let hits = vec![
+            bad_game, bad_hero_p1, bad_p2, bad_noise_1, bad_noise_2, bad_noise_3, good_game,
+            good_hero_p1, good_hero_p2, good_minion,
+        ];
+        let picked = game_entity(&hits).expect("a candidate");
+        assert_eq!(
+            picked.addr, 0x9000_0000,
+            "the legal two-hero board wins even with no TURN/STEP anywhere, and even though \
+             the old raw-neighbour-count heuristic would have picked the other one outright"
+        );
+    }
+
+    #[test]
+    fn game_entity_never_lets_tag_presence_override_a_real_topology_difference() {
+        // The core of the report's finding on this function: an earlier
+        // cut scored TURN/STEP as a flat +5/+5 added directly into the
+        // same total as the ±4-per-controller hero signal, so 10 points of
+        // (unreliable -- Boehm/bdwgc leaves a finished match's tags
+        // exactly as they were) tag presence could outvote an 8-point
+        // topology difference -- here, a stale island missing a hero for
+        // one controller (score 0) beats a live island with a confirmed
+        // hero for *both* controllers (score 8) purely because the stale
+        // one happens to still carry TURN/STEP. `game_entity_score`'s
+        // tuple ordering makes that structurally impossible: topology is
+        // compared first, and 0 < 8 regardless of what either candidate's
+        // tag_bonus is.
+        let stale_game = entity(1, 0x1000_0000, &[(TAG_TURN, 9), (TAG_STEP, 10)]);
+        let stale_hero_p1 = entity(
+            2,
+            0x1000_1000,
+            &[(TAG_CONTROLLER, 1), (TAG_ZONE, ZONE_PLAY), (TAG_CARDTYPE, CARDTYPE_HERO)],
+        );
+        // Controller 2's hero is missing from this island entirely.
+        let stale_p2_no_hero = entity(3, 0x1000_2000, &[(TAG_CONTROLLER, 2)]);
+
+        let live_game = entity(1, 0x9000_0000, &[]);
+        let live_hero_p1 = entity(
+            2,
+            0x9000_1000,
+            &[(TAG_CONTROLLER, 1), (TAG_ZONE, ZONE_PLAY), (TAG_CARDTYPE, CARDTYPE_HERO)],
+        );
+        let live_hero_p2 = entity(
+            3,
+            0x9000_2000,
+            &[(TAG_CONTROLLER, 2), (TAG_ZONE, ZONE_PLAY), (TAG_CARDTYPE, CARDTYPE_HERO)],
+        );
+
+        let hits = vec![
+            stale_game, stale_hero_p1, stale_p2_no_hero, live_game, live_hero_p1, live_hero_p2,
+        ];
+        let picked = game_entity(&hits).expect("a candidate");
+        assert_eq!(
+            picked.addr, 0x9000_0000,
+            "a real topology gap (one controller's hero missing) must win over TURN/STEP tags, \
+             not lose to them"
+        );
+    }
+
+    #[test]
+    fn topology_confidence_is_high_when_both_heroes_are_confirmed() {
+        let game = entity(1, 0x1000_0000, &[]);
+        let hero_p1 = entity(
+            2,
+            0x1000_1000,
+            &[(TAG_CONTROLLER, 1), (TAG_ZONE, ZONE_PLAY), (TAG_CARDTYPE, CARDTYPE_HERO)],
+        );
+        let hero_p2 = entity(
+            3,
+            0x1000_2000,
+            &[(TAG_CONTROLLER, 2), (TAG_ZONE, ZONE_PLAY), (TAG_CARDTYPE, CARDTYPE_HERO)],
+        );
+        let live = vec![game, hero_p1, hero_p2];
+        assert_eq!(topology_confidence(&live), "high");
+    }
+
+    #[test]
+    fn topology_confidence_is_low_when_a_hero_is_missing() {
+        // Only controller 1's hero shows up nearby -- not a legal board,
+        // but not disqualified outright (no >7-minion violation) either,
+        // so `game_entity` still returns *a* candidate. The confidence
+        // label is what tells a caller not to trust it fully, per report
+        // A.7 PR1's "add confidence... when topology fails".
+        let game = entity(1, 0x1000_0000, &[]);
+        let hero_p1 = entity(
+            2,
+            0x1000_1000,
+            &[(TAG_CONTROLLER, 1), (TAG_ZONE, ZONE_PLAY), (TAG_CARDTYPE, CARDTYPE_HERO)],
+        );
+        let live = vec![game, hero_p1];
+        assert_eq!(topology_confidence(&live), "low");
+    }
+
+    #[test]
+    fn topology_confidence_is_none_when_there_is_no_id_one_candidate_at_all() {
+        let stray_minion = entity(
+            10,
+            0x1000_0000,
+            &[(TAG_CONTROLLER, 1), (TAG_ZONE, ZONE_PLAY), (TAG_CARDTYPE, CARDTYPE_MINION)],
+        );
+        let live = vec![stray_minion];
+        assert_eq!(topology_confidence(&live), "none");
+    }
+
+    #[test]
+    fn game_entity_beats_the_old_raw_neighbour_count_heuristic_when_untagged() {
+        // Report A.2 point 2's literal failure mode, reproduced directly:
+        // "take every id==1 and pick the one with the most nearby id 2/3" --
+        // no tags anywhere, no board-legality signal checked at all, purely
+        // a count of nearby Player-shaped entities. A stale, finished
+        // match's heap island can carry more leftover Player-adjacent
+        // garbage than a mulligan-fresh live game, so the raw-count
+        // heuristic picks the *stale* island. Topology scoring must not:
+        // the stale island here shows no hero for either controller (an
+        // illegal/incomplete board), while the live one shows both.
+        let stale_game = entity(1, 0x1000_0000, &[]);
+        // Five untagged id==2/3 "leftover Player object" entities nearby --
+        // plenty to win on raw count alone (old heuristic: whoever has the
+        // most nearby id==2/3 within 0x10_0000), but none of them carry a
+        // CONTROLLER/CARDTYPE/ZONE triple, so they contribute nothing to
+        // the new topology score.
+        let stale_noise: Vec<EntityHit> = (0..5)
+            .map(|i| {
+                entity(
+                    if i % 2 == 0 { 2 } else { 3 },
+                    0x1000_0000 + 0x1000 * (i as u64 + 1),
+                    &[],
+                )
+            })
+            .collect();
+
+        let live_game = entity(1, 0x9000_0000, &[]);
+        let live_hero_p1 = entity(
+            2,
+            0x9000_1000,
+            &[(TAG_CONTROLLER, 1), (TAG_ZONE, ZONE_PLAY), (TAG_CARDTYPE, CARDTYPE_HERO)],
+        );
+        let live_hero_p2 = entity(
+            3,
+            0x9000_2000,
+            &[(TAG_CONTROLLER, 2), (TAG_ZONE, ZONE_PLAY), (TAG_CARDTYPE, CARDTYPE_HERO)],
+        );
+
+        let mut hits = vec![stale_game];
+        hits.extend(stale_noise);
+        hits.push(live_game);
+        hits.push(live_hero_p1);
+        hits.push(live_hero_p2);
+
+        let picked = game_entity(&hits).expect("a candidate");
+        assert_eq!(
+            picked.addr, 0x9000_0000,
+            "topologically legal live island beats a stale one that only wins on raw \
+             neighbour count"
+        );
     }
 
     #[test]
@@ -1982,14 +2395,14 @@ mod tests {
         let live_p2 = entity(2, anchor + 0x1000, &[(TAG_CONTROLLER, 1)]);
         let live = vec![game, live_p2];
 
-        let real = player("Seizan", 1, 1_008_624_192, anchor + 0x3000); // within window
+        let real = player("Seizan", 1, anchor + 0x3000); // within window
         // Outside the window, but still nearer in raw address terms than
         // `real` would be to a *different* anchor -- the fix has to reject
         // it for being out of window, not merely for being farther away
         // than some other candidate, or a case with only one in-window
         // candidate wouldn't be distinguishable from "no window match at
         // all". 64 MiB puts it solidly past `SAME_GAME_WINDOW` (32 MiB).
-        let stale = player("Jafgaf", 1, -386_974_768, anchor.wrapping_sub(0x0400_0000));
+        let stale = player("Jafgaf", 1, anchor.wrapping_sub(0x0400_0000));
 
         let sides = build_sides(&live, &[stale, real], None);
         let side1 = sides.iter().find(|s| s.player_id == 1).expect("a side for pid 1");
@@ -1997,20 +2410,32 @@ mod tests {
     }
 
     #[test]
-    fn build_sides_falls_back_to_nearest_when_nothing_is_in_the_window() {
-        // No live-window candidate exists at all -- the old "nearest
-        // overall" behaviour is the only thing left to try, and must still
-        // produce an answer rather than silently dropping the side.
+    fn build_sides_refuses_to_name_a_side_from_outside_the_window() {
+        // No live-window candidate exists at all for pid 1. The old
+        // behaviour fell back to "nearest Player anywhere", which is
+        // exactly the bug this report describes: a same-`player_id`,
+        // correctly-named Player from a long-finished, unrelated match is
+        // not "this match's player" just because nothing closer exists.
+        // The fix: `name` stays `None` rather than borrowing a stranger's
+        // battletag. The board itself (`play`/`hand`/... via CONTROLLER)
+        // still must populate normally -- only the name is affected.
         let anchor = 0x1ef7_0000u64;
         let game = entity(1, anchor, &[(TAG_TURN, 9)]);
         let live_p2 = entity(2, anchor + 0x1000, &[(TAG_CONTROLLER, 1)]);
-        let live = vec![game, live_p2];
+        let minion = EntityHit {
+            addr: anchor + 0x2000,
+            card_id: Some("CS2_182".into()), // `take()` requires a cardId for non-hero PLAY entities
+            id: 10,
+            tags: vec![(TAG_CONTROLLER, 1), (TAG_ZONE, ZONE_PLAY), (TAG_CARDTYPE, CARDTYPE_MINION)],
+        };
+        let live = vec![game, live_p2, minion];
 
-        let far_a = player("Far1", 1, 1, anchor + 0x1000_0000);
-        let far_b = player("Far2", 1, 2, anchor + 0x2000_0000);
+        let far_a = player("Far1", 1, anchor + 0x1000_0000);
+        let far_b = player("Far2", 1, anchor + 0x2000_0000);
         let sides = build_sides(&live, &[far_a, far_b], None);
-        let side1 = sides.iter().find(|s| s.player_id == 1).expect("still answers");
-        assert_eq!(side1.name.as_deref(), Some("Far1"), "the nearer of the two, as a last resort");
+        let side1 = sides.iter().find(|s| s.player_id == 1).expect("board entities keep the side alive");
+        assert_eq!(side1.name, None, "no in-window Player -- must not borrow one from outside it");
+        assert_eq!(side1.play.len(), 1, "board entities (via CONTROLLER/ZONE) are unaffected by the missing name");
     }
 
     #[test]
