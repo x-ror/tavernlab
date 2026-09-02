@@ -152,6 +152,71 @@ A.7 PR3 -- STILL NOT done, but a real first attempt was made 2026-09-02
   else) documents which of these -- or a different mechanism entirely
   -- the current build actually uses, before sinking more effort into
   guessing between them blind.
+
+  **BREAKTHROUGH, 2026-09-02, later the same session.** The web
+  research (below) turned up two independent, actively-maintained
+  (commits within the last month) public projects both still using
+  `GameState`/`s_instance` against the current build:
+  `BattlegroundsHelp/bgtracker` (`native/msync`, a clean-room rewrite,
+  commits 2026-08-11/12) and `Zero-to-Heroes/unity-spy-.net4.5`
+  (Firestone's own tracker library, commit 2026-08-22). Both resolve
+  `GameState` via a proper class-table lookup scoped to the
+  `Assembly-CSharp` image, not a heap scan -- which is exactly what
+  this file's own `dump_class_names` already does (walks
+  `MonoImage.class_cache` on the resolved `Assembly-CSharp` image).
+  So the "doesn't exist" conclusion above deserved a second look
+  before being trusted, and it was wrong -- not about the build, about
+  this file's own reading of it:
+
+  `MonoImage.class_cache` is a `MonoInternalHashTable`
+  (`mono/utils/mono-internal-hash.h`, confirmed against real Mono
+  source): it does not allocate its own chain nodes for collisions --
+  each bucket slot holds only the *first* class that hashed there, and
+  every subsequent collision chains through a pointer embedded in the
+  class itself. `struct _MonoClassDef`
+  (`mono/metadata/class-private-definition.h`) names that field
+  `next_class_cache`, "next element in the class_cache hash list (in
+  MonoImage)". `dump_class_names` (main.rs) read one `MonoClass*`
+  straight out of each bucket slot and stopped there -- silently
+  dropping every class chained behind the first one in a bucket that
+  already held something else. `GameState` was one of them.
+
+  Fixed: `dump_class_names` now follows `next_class_cache` for every
+  bucket (new constant `mono_layout::MONO_CLASS_NEXT_CLASS_CACHE =
+  0x108`, confirmed live -- walking every bucket's chain at this
+  offset raised total distinct classes found from 20795 (flat) to
+  29171 (+8376, +40%) against the real running match, average chain
+  length 1.22 [consistent with a healthy hash-table load factor, not
+  the wildly-varying depth an unrelated-but-plausible field like
+  inheritance-chain `parent` would produce], and `GameState` was only
+  reachable this way; independently cross-checked by hand-computing
+  forward from `class-private-definition.h`'s field list, landing
+  within one plausible struct-padding choice of the same offset).
+  `GameState` (and `GameMgr`) now resolve reliably via
+  `find_singletons` -- `MonoClass*`/`MonoVTable*` both found, stable
+  across repeated runs.
+
+  **Not yet closed**: `GameState.s_instance` itself still doesn't turn
+  up via `find_self_typed_static`'s scan window
+  (`vtable+0x48..+0x3000`), and widening that to `+0x8000` by hand
+  found nothing either. Given the *class* lookup was the actual bug
+  (not a wrong assumption about where instance-of-self statics live --
+  that worked fine for `Player`'s one real hit, found the same way,
+  earlier this session), the likely next explanation is that
+  `MonoVTable`'s static data for a class with GC-tracked static
+  fields (`GameState.s_instance` is a reference type, so GC-tracked)
+  is NOT stored inline after the vtable's method table at all, but in
+  a separately-allocated block reached through a different `MonoVTable`
+  field this file hasn't located -- a different, narrower unknown than
+  "which class" now that this one is resolved correctly.
+
+  Also: every earlier session artifact built on the un-fixed
+  `dump_class_names` (`--find-all-singletons`'s PowerSpellController
+  lead, `--find-refs-to`'s all-zero result) was run against the
+  *undercounting* class list and should be treated as provisional --
+  re-running them now that chaining is fixed may turn up what they
+  missed, PowerSpellController's own indirect reference chain
+  included.
 A.7 PR4 -- NOT done, deferred for scope/risk, not blocked on a live
   client. Needs new cross-invocation state (memreader is a one-shot
   process; a temporal lock means remembering the last-good anchor
@@ -585,10 +650,46 @@ External (deep-research, partial coverage)
        Mirror.cs, Reflection.cs (GetMatchInfoInternal, GameMgr)
        https://github.com/Bright1992/HearthMirror
   [S2] hackf5/unityspy TypeDefinition.cs (GetStaticValue /
-       domain_vtables)
+       domain_vtables) -- stale (last commit 2024-09-17), superseded
+       for Hearthstone specifically by [S6] below
   [S5] HearthSim/Hearthstone-Deck-Tracker Watchers.cs
        (Reflection.Client vs Power.log as separate watchers)
   [S21] process_vm_readv(2)
+
+  2026-09-02 web-research pass (current, cross-checked):
+  [S6] Zero-to-Heroes/unity-spy-.net4.5, GameStateReader.cs
+       (commit 2026-08-22) -- Firestone's own tracker library, a
+       Hearthstone-specific fork of hackf5/unityspy [S2].
+       `image["GameState"]?["s_instance"]?["m_gameEntity"]?[...]`
+       https://github.com/Zero-to-Heroes/unity-spy-.net4.5
+  [S7] BattlegroundsHelp/bgtracker, native/msync/Program.cs +
+       Offsets.cs (commits 2026-08-11/12) -- independent clean-room
+       Mono reader. `image.FindClass("", "GameState")` ->
+       `.StaticFieldPtr("s_instance")`, reads `m_playerMap`/
+       `m_entityMap` off it. "verified against the Unity 2022.3 /
+       6000.3 Mono fork Hearthstone uses in 2026."
+       https://github.com/BattlegroundsHelp/bgtracker
+  [S8] mono/mono mono/utils/mono-internal-hash.h -- MonoInternalHashTable
+       struct + doc comment (class_cache's collision-chaining
+       mechanism; the source of the 2026-09-02 dump_class_names fix)
+       https://github.com/mono/mono/blob/main/mono/utils/mono-internal-hash.h
+  [S9] mono/mono mono/metadata/class-private-definition.h --
+       struct _MonoClass and _MonoClassDef (next_class_cache field)
+       https://github.com/mono/mono/blob/main/mono/metadata/class-private-definition.h
+  [S10] HearthSim/HearthMirror -- the actual library HDT/HSTracker
+       build against today; confirmed private (404 via `gh api`,
+       multiple developer access complaints in HearthSim issues).
+       The Bright1992 snapshot [S1] is the newest *public* copy, from
+       before it went private.
+  [S11] iceshoesss/HearthMirror_Decompiled, Src/Mirror.cs +
+       Reflection.cs (created 2026-05-17, single commit, unverified
+       authorship) -- a third-party decompile of the current private
+       HearthMirror.dll. `Mirror.Root?["GameState"]?["s_instance"]`,
+       root resolved via the image containing
+       `Blizzard.T5.ServiceLocator`. Cross-validated indirectly: its
+       RPC method names match a live HDT 1.57.2.8223 error log filed
+       2026-08-29 (HearthSim/Hearthstone-Deck-Tracker#4779).
+       https://github.com/iceshoesss/HearthMirror_Decompiled
 
 Uncertainty called out by the research pass
   Closed-source HearthMirror field names after 2017 not inspectable.

@@ -125,6 +125,42 @@ pub const MONO_CLASS_RUNTIME_INFO_DOMAIN_VTABLES: u64 = 8;
 pub const MONO_VTABLE_KLASS: u64 = 0; // field #1, sanity/validation check
 pub const MONO_VTABLE_VTABLE_ARRAY: u64 = 0x48;
 
+/// `MonoClassDef.next_class_cache` — **confirmed live, 2026-09-02**. Not
+/// part of `struct _MonoClass` at all (the base struct every offset above
+/// this one is within): `mono/utils/mono-internal-hash.h` documents
+/// `MonoImage.class_cache` as a `MonoInternalHashTable`, which does not
+/// allocate its own chain nodes -- "the value data structure must ...
+/// contain a pointer, used by the internal hash table to chain values in
+/// the same bucket", and `mono/metadata/class-private-definition.h`'s
+/// `struct _MonoClassDef` (the base `MonoClass klass` plus five more
+/// fields) names that pointer `next_class_cache`, explicitly commented
+/// "next element in the class_cache hash list (in MonoImage)".
+///
+/// This is *why* an earlier version of `dump_class_names` (main.rs) —
+/// which read one `MonoClass*` straight out of each bucket slot and
+/// stopped -- silently dropped every class chained behind the first one
+/// in its bucket, `GameState` among them (confirmed live missing that
+/// way). Public, currently-maintained Hearthstone memory-reading tools
+/// (`BattlegroundsHelp/bgtracker`, `Zero-to-Heroes/unity-spy-.net4.5`,
+/// both with commits from within the last month) independently agree
+/// `GameState`/`s_instance` is real and current -- the prior session's
+/// "it doesn't exist in this build" conclusion was this bug, not a fact
+/// about the build.
+///
+/// Live confirmation: walking every bucket's chain at this offset raised
+/// the total distinct classes found from 20795 (flat, one per bucket) to
+/// 29171 (+8376, +40%) against a real running match, average chain
+/// length 1.22 (consistent with a healthily load-factored hash table --
+/// not the wildly varying depth a coincidentally-plausible unrelated
+/// pointer field, like inheritance-chain `parent`, would produce), and
+/// `GameState` was among the classes only reachable through it.
+/// Independently, computing forward from `class-private-definition.h`'s
+/// field list (`MonoClass klass` ending at `MONO_VTABLE_VTABLE_ARRAY`'s
+/// evidence for where `runtime_info`+`vtable` sit, plus `MonoClassDef`'s
+/// own five trailing fields, 8-byte aligned) lands within one plausible
+/// `MonoPropertyBag` sizing choice of 0x108 too.
+pub const MONO_CLASS_NEXT_CLASS_CACHE: u64 = 0x108;
+
 // ---- Hearthstone's own `Entity`/`Player` instance fields (not Mono's own
 // structs) -- found 2026-08-31 against a real, active ranked game by
 // cross-checking heap-scan hits against ground truth read straight from

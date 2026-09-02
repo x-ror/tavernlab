@@ -1443,18 +1443,48 @@ fn dump_class_names(remote: &Remote, image: u64) -> Vec<(String, u64)> {
         return Vec::new();
     }
 
+    // `class_cache` is a `MonoInternalHashTable`: it does not allocate its
+    // own chain nodes, each bucket slot is only the *first* class hashed
+    // there, and collisions chain through `MONO_CLASS_NEXT_CLASS_CACHE` on
+    // the class itself (see that constant's doc comment for the evidence).
+    // Reading only the bucket slot -- what an earlier version of this
+    // function did -- silently drops every class chained behind the
+    // first, `GameState` among them; that bug, not an absent class, is
+    // why an earlier session concluded it didn't exist in this build.
     let mut classes: Vec<(String, u64)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for &bucket in buckets.iter().filter(|&&b| plausible_ptr(b)) {
-        let Some(np) = remote.read(bucket + mono_layout::MONO_CLASS_NAME, 8) else { continue };
-        let name_ptr = u64::from_le_bytes(np.try_into().unwrap());
-        let Some(name) = read_cstring(remote, name_ptr, 96) else { continue };
-        if name.is_empty() {
-            continue;
+        let mut class_ptr = bucket;
+        let mut hops = 0;
+        loop {
+            if !seen.insert(class_ptr) || hops > 40 {
+                // Already visited (two buckets should never chain into
+                // each other, but this is remote memory, not a trusted
+                // in-process structure) or an implausibly long chain --
+                // either way, stop rather than loop forever.
+                break;
+            }
+            hops += 1;
+            if let Some(np) = remote.read(class_ptr + mono_layout::MONO_CLASS_NAME, 8) {
+                let name_ptr = u64::from_le_bytes(np.try_into().unwrap());
+                if let Some(name) = read_cstring(remote, name_ptr, 96) {
+                    if !name.is_empty() {
+                        classes.push((name, class_ptr));
+                    }
+                }
+            }
+            let Some(nb) = remote.read(class_ptr + mono_layout::MONO_CLASS_NEXT_CLASS_CACHE, 8) else {
+                break;
+            };
+            let next = u64::from_le_bytes(nb.try_into().unwrap());
+            if !plausible_ptr(next) {
+                break;
+            }
+            class_ptr = next;
         }
-        classes.push((name, bucket));
     }
     eprintln!(
-        "  {} непорожніх бакетів, {} з них дали назву класу",
+        "  {} непорожніх бакетів, {} класів з них дали назву (з урахуванням ланцюжків колізій)",
         buckets.iter().filter(|&&b| plausible_ptr(b)).count(),
         classes.len()
     );
