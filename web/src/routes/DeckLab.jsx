@@ -323,7 +323,7 @@ function Improve() {
 }
 
 function Swap({ swap, muted }) {
-  const { out, inn, delta, code } = readSwap(swap)
+  const { out, inn, delta, code } = swap
   return (
     <Flex
       direction="row"
@@ -339,14 +339,6 @@ function Swap({ swap, muted }) {
       <CopyButton text={code} />
     </Flex>
   )
-}
-
-/** Optimize used to ship swaps as `[out, inn, delta]`. The code is a
- *  fourth field on an object now, but a leftover in-memory result from
- *  before the rebuild still has to render. */
-function readSwap(s) {
-  if (Array.isArray(s)) return { out: s[0], inn: s[1], delta: s[2], code: s[3] }
-  return { out: s.out, inn: s.inn, delta: s.delta, code: s.code }
 }
 
 function Mulligan() {

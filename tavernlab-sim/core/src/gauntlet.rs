@@ -197,18 +197,8 @@ pub fn evaluate(
     }
 }
 
-/// One matchup, for callers that want the record rather than the rate.
-pub fn matchup(
-    a: Contender,
-    b: Contender,
-    per_pair: usize,
-    threads: usize,
-    seed_base: u64,
-) -> Record {
-    matchup_with(a, b, [crate::batch::Policy::Greedy; 2], per_pair, threads, seed_base)
-}
-
-/// [`matchup`] played by a named policy rather than the engine's greedy one.
+/// One matchup, played by a named policy per side rather than the engine's
+/// default greedy one. Returns the record rather than the rate.
 pub fn matchup_with(
     a: Contender,
     b: Contender,

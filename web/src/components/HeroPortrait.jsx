@@ -47,17 +47,3 @@ export default function HeroPortrait({
     </div>
   )
 }
-
-/** Two portraits facing each other — the header of every game. */
-export function Versus({ us, them, size = 64, children }) {
-  return (
-    <div className="tl-versus">
-      <HeroPortrait cls={us} size={size} title={us} />
-      <span className="tl-versus-mark" aria-hidden="true">
-        VS
-      </span>
-      <HeroPortrait cls={them} size={size} title={them} flip />
-      {children}
-    </div>
-  )
-}

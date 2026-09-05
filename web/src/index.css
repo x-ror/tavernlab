@@ -208,20 +208,6 @@ body {
   box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.75);
 }
 
-.tl-versus {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.tl-versus-mark {
-  font-family: var(--tl-display);
-  font-size: 0.78rem;
-  letter-spacing: 0.14em;
-  color: var(--tl-gold);
-  opacity: 0.85;
-}
-
 /* ------------------------------------------------------------- card tiles */
 .tl-tile {
   position: relative;
@@ -585,13 +571,6 @@ body {
 .tl-board-side {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-
-.tl-board-head {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
   gap: 8px;
 }
 

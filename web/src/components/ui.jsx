@@ -30,9 +30,9 @@ export function CopyButton({ text, children }) {
 
 /** A titled panel. The page rhythm comes from these and the spacing
  *  between them, not from rules and boxes inside them. */
-export function Panel({ title, action, children, className = '', style }) {
+export function Panel({ title, action, children, style }) {
   return (
-    <section className={`tl-panel ${className}`} style={{ padding: '18px 20px', ...style }}>
+    <section className="tl-panel" style={{ padding: '18px 20px', ...style }}>
       {(title || action) && (
         <Flex
           direction="row"

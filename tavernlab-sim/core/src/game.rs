@@ -14,7 +14,6 @@ use crate::agent::position_value;
 use crate::cards::{CardId, Class, Ctx, Keywords, Kind, Races, TargetSpec, behaviour_of, by_name};
 use crate::events::Event;
 use crate::inline::Inline;
-use crate::rng::Rand;
 use crate::state::{
     DeckCard, Flags, Game, HandCard, MAX_BOARD, MAX_DECK, MAX_HAND, Marks, Outcome,
     Pending, PendingKind, Permanent, Player, Side, TURN_LIMIT, Target, Weapon,
@@ -3117,17 +3116,3 @@ pub fn hero_power_for(class: Class) -> Result<CardId, &'static str> {
     by_name(name).ok_or("hero power missing from the card table")
 }
 
-/// Shuffle a deck list in place with a caller-supplied generator. Exposed so a
-/// batch runner can build decks reproducibly outside a game.
-pub fn shuffle_deck(rng: &mut Rand, deck: &mut [CardId]) {
-    rng.shuffle(deck);
-}
-
-/// True when `card` may legally sit in a `class` deck.
-pub fn deck_legal(card: CardId, class: Class) -> bool {
-    let d = card.def();
-    d.collectible && d.deckable() && d.playable_by(class)
-}
-
-/// The most a board can hold, re-exported for callers building fixtures.
-pub const BOARD_LIMIT: usize = MAX_BOARD;

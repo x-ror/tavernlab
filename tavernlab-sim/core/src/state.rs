@@ -1274,18 +1274,8 @@ impl Game {
     }
 
     #[inline]
-    pub fn me_mut(&mut self) -> &mut Player {
-        &mut self.players[self.current.index()]
-    }
-
-    #[inline]
     pub fn them(&self) -> &Player {
         &self.players[self.current.other().index()]
-    }
-
-    #[inline]
-    pub fn them_mut(&mut self) -> &mut Player {
-        &mut self.players[self.current.other().index()]
     }
 
     #[inline]

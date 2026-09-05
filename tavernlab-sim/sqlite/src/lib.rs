@@ -51,14 +51,6 @@ impl Value {
         }
     }
 
-    pub fn as_f64(&self) -> Option<f64> {
-        match self {
-            Value::Int(n) => Some(*n as f64),
-            Value::Real(f) => Some(*f),
-            _ => None,
-        }
-    }
-
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Value::Text(s) => Some(s),
