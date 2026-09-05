@@ -605,16 +605,40 @@ fn plan(format: &str, tr: &Tracker, deck: &str) -> Vec<Line> {
         tavernlab_core::inline::Inline::new();
     // Walk the turn the way the engine would play it, stopping when the
     // agent decides it is done or nothing legal is left.
+    //
+    // A minion attacking past its own `max_attacks()` (1, or 2 with
+    // Windfury) or the hero attacking twice is not a real Hearthstone turn,
+    // so this can never suppress a legitimate line -- it only catches the
+    // search re-offering an attack that should already be spent. That
+    // contradiction has been observed in recorded advice with no
+    // reproduction found in the engine itself; stopping the walk here is
+    // safer than printing a plan the game could never actually play.
+    let mut attacks_this_turn = [0u8; tavernlab_core::state::MAX_BOARD];
+    let mut hero_attacked = false;
     for _ in 0..16 {
         g.legal_actions(&mut legal);
         if legal.is_empty() {
             break;
         }
         let action = agent.choose(&g, legal.as_slice());
+        match action {
+            Action::Attack { from, .. }
+                if attacks_this_turn[from as usize] >= g.players[0].board[from as usize].max_attacks() =>
+            {
+                break;
+            }
+            Action::HeroAttack { .. } if hero_attacked => break,
+            _ => {}
+        }
         let Some(line) = describe(&g, action) else {
             break;
         };
         out.push(line);
+        match action {
+            Action::Attack { from, .. } => attacks_this_turn[from as usize] += 1,
+            Action::HeroAttack { .. } => hero_attacked = true,
+            _ => {}
+        }
         if !g.apply(action) {
             break;
         }
@@ -1771,6 +1795,29 @@ mod position_tests {
         let tr = tracked(&lines);
         let (g, _) = position(&tr, "").expect("a position");
         assert_eq!(g.players[0].corpses, 3);
+    }
+
+    /// `plan`'s attack-once guard (added after recorded advice was seen
+    /// recommending the same non-Windfury minion attacking twice in one
+    /// turn) must not cap a real Windfury minion at a single swing.
+    #[test]
+    fn a_windfury_minion_is_still_planned_to_attack_twice() {
+        let mut lines = HEROES.to_vec();
+        // Landed before `TURN` advances to 7, so summoning sickness is gone.
+        lines.push("D 09:00:00.2 [Zone] ZoneChangeList.ProcessChanges() - id=7 local=False [entityName=Windfury Harpy id=100 zone=PLAY zonePos=0 cardId=EX1_033 player=1] zone from  -> FRIENDLY PLAY");
+        lines.push("D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7");
+        let tr = tracked(&lines);
+        let out = plan("standard", &tr, "");
+        let harpy_attacks = out
+            .iter()
+            .filter(|l| {
+                l.key == "live.plan.attack"
+                    && l.args.iter().any(|(n, v)| {
+                        *n == "card" && matches!(v, Arg::Text(t) if t == "Windfury Harpy")
+                    })
+            })
+            .count();
+        assert_eq!(harpy_attacks, 2, "a Windfury minion may attack twice");
     }
 }
 

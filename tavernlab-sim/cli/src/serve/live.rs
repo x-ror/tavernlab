@@ -280,8 +280,62 @@ fn save_advice(deck: &str, tracker: &watch::tracker::Tracker, advice: &Advice) {
         sections,
     };
     let path = crate::history::default_path();
+    // `rebuild` (see `run`) fires on tracker-state change, which is not the
+    // same thing as advice-text change -- a Session tick or a Read{changed}
+    // whose diff didn't touch the rendered advice would otherwise duplicate
+    // the previous row. Compare against it and skip an identical repeat.
+    let unchanged = crate::history::read_advice(&path)
+        .ok()
+        .and_then(|rows| rows.into_iter().next_back())
+        .is_some_and(|last| advice_unchanged(&last, &entry));
+    if unchanged {
+        return;
+    }
     if let Err(e) = crate::history::append_advice(&path, &[entry]) {
         eprintln!("live: не вдалося записати пораду: {e}");
+    }
+}
+
+/// Same advice moment, ignoring `at`: everything a reader would actually see
+/// (class pair, turn, mulligan phase, rendered title/sections) is equal.
+fn advice_unchanged(last: &crate::history::AdviceEntry, entry: &crate::history::AdviceEntry) -> bool {
+    last.my_class == entry.my_class
+        && last.opponent_class == entry.opponent_class
+        && last.turn == entry.turn
+        && last.mulligan == entry.mulligan
+        && last.title == entry.title
+        && last.sections == entry.sections
+}
+
+#[cfg(test)]
+mod tests {
+    use super::advice_unchanged;
+    use crate::history::AdviceEntry;
+
+    fn entry(turn: i64, title: &str) -> AdviceEntry {
+        AdviceEntry {
+            at: 0,
+            my_class: "MAGE".into(),
+            opponent_class: "WARRIOR".into(),
+            turn,
+            mulligan: false,
+            deck_code: "deck".into(),
+            title: title.into(),
+            sections: "[]".into(),
+        }
+    }
+
+    #[test]
+    fn identical_content_is_unchanged_even_with_a_different_timestamp() {
+        let mut later = entry(3, "same");
+        later.at = 999;
+        assert!(advice_unchanged(&entry(3, "same"), &later));
+    }
+
+    #[test]
+    fn a_real_change_is_not_unchanged() {
+        assert!(!advice_unchanged(&entry(3, "same"), &entry(4, "same")));
+        assert!(!advice_unchanged(&entry(3, "same"), &entry(3, "different")));
     }
 }
 
