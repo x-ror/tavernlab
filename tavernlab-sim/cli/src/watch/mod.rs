@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 
 use tavernlab_core::agent::Style;
 use tavernlab_core::cards::{CardId, Class, Keywords};
-use tavernlab_core::game::{Action, Agent, hero_power_for};
+use tavernlab_core::game::{Action, hero_power_for};
 use tavernlab_core::planner::Planner;
 use tavernlab_core::state::{Game, HandCard, Permanent};
 
@@ -620,7 +620,7 @@ fn plan(format: &str, tr: &Tracker, deck: &str) -> Vec<Line> {
         if legal.is_empty() {
             break;
         }
-        let action = agent.choose(&g, legal.as_slice());
+        let (action, runner_up) = agent.choose_ranked(&g, legal.as_slice());
         match action {
             Action::Attack { from, .. }
                 if attacks_this_turn[from as usize] >= g.players[0].board[from as usize].max_attacks() =>
@@ -634,6 +634,18 @@ fn plan(format: &str, tr: &Tracker, deck: &str) -> Vec<Line> {
             break;
         };
         out.push(line);
+        // Named from the search's own numbers -- the runner-up action and
+        // how far behind it scored -- so a reader can see *why* this beat
+        // the alternative rather than take the plan on faith.
+        if let Some((alt, margin)) = runner_up
+            && let Some(alt_line) = describe(&g, alt)
+        {
+            out.push(
+                Line::new("live.plan.alt")
+                    .with("alt", alt_line)
+                    .with("margin", format!("{margin:.1}")),
+            );
+        }
         match action {
             Action::Attack { from, .. } => attacks_this_turn[from as usize] += 1,
             Action::HeroAttack { .. } => hero_attacked = true,
@@ -1818,6 +1830,36 @@ mod position_tests {
             })
             .count();
         assert_eq!(harpy_attacks, 2, "a Windfury minion may attack twice");
+    }
+
+    /// A plan step with a real alternative names it and how far behind it
+    /// scored, from the search's own numbers -- so a reader can see why the
+    /// engine picked one action over another instead of taking it on faith.
+    #[test]
+    fn a_plan_step_with_an_alternative_names_it_and_the_margin() {
+        let mut lines = HEROES.to_vec();
+        lines.push("D 09:00:00.2 [Zone] ZoneChangeList.ProcessChanges() - id=7 local=False [entityName=Windfury Harpy id=100 zone=PLAY zonePos=0 cardId=EX1_033 player=1] zone from  -> FRIENDLY PLAY");
+        lines.push("D 09:00:01.0 [Power] GameState.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=7");
+        let tr = tracked(&lines);
+        let out = plan("standard", &tr, "");
+        let alts: Vec<&Line> = out.iter().filter(|l| l.key == "live.plan.alt").collect();
+        assert!(!alts.is_empty(), "a position with more than one legal action should name a runner-up");
+        for l in alts {
+            assert!(
+                l.args.iter().any(|(n, _)| *n == "alt"),
+                "the runner-up line must name the alternative action"
+            );
+            let margin: f32 = l
+                .args
+                .iter()
+                .find_map(|(n, v)| (*n == "margin").then_some(v))
+                .and_then(|v| match v {
+                    Arg::Text(s) => s.parse().ok(),
+                    _ => None,
+                })
+                .expect("the runner-up line must carry a parseable margin");
+            assert!(margin >= 0.0, "the chosen action must score at least as well as the runner-up");
+        }
     }
 }
 

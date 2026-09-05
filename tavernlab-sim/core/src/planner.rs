@@ -359,17 +359,14 @@ impl Planner {
     }
 }
 
-impl Agent for Planner {
-    fn choose(&mut self, game: &Game, legal: &[Action]) -> Action {
+impl Planner {
+    /// Score every root action, summed across determinizations. Every
+    /// action is seen by every sample, so the divisor is shared and
+    /// averaging would not change the ranking. `None` when no sample
+    /// finished even one level -- there is nothing to rank.
+    fn score_all(&mut self, game: &Game, legal: &[Action]) -> Option<[f32; MAX_ACTIONS]> {
         let me = game.current;
-        if legal.len() <= 1 {
-            return legal.first().copied().unwrap_or(Action::EndTurn);
-        }
         self.nonce = self.nonce.wrapping_add(1);
-
-        // Score per root action, summed across determinizations. Every
-        // action is seen by every sample, so the divisor is shared and
-        // averaging would not change the ranking.
         let mut totals = [0.0f32; MAX_ACTIONS];
         let mut any = false;
         let per_sample = (self.budget / self.samples as u32).max(1);
@@ -404,21 +401,53 @@ impl Agent for Planner {
                 }
             }
         }
+        any.then_some(totals)
+    }
 
-        if !any {
-            return Action::EndTurn;
-        }
-        // Strictly greater, so ties fall to enumeration order and the policy
-        // stays deterministic -- the same rule greedy follows.
-        let mut best = Action::EndTurn;
+    /// Strictly greater, so ties fall to enumeration order and the policy
+    /// stays deterministic -- the same rule greedy follows.
+    fn best_of(legal: &[Action], totals: &[f32; MAX_ACTIONS]) -> (usize, f32) {
+        let mut best_i = 0;
         let mut best_score = f32::MIN;
-        for (i, &a) in legal.iter().enumerate() {
+        for i in 0..legal.len() {
             if totals[i] > best_score {
                 best_score = totals[i];
-                best = a;
+                best_i = i;
             }
         }
-        best
+        (best_i, best_score)
+    }
+
+    /// Like [`Agent::choose`], but also names the runner-up and how far
+    /// behind it scored -- so a caller can show *why* the search picked one
+    /// action over another from its own numbers, not a guess about it.
+    /// `None` when there was nothing to compare against: one legal action,
+    /// or no sample finished a level.
+    pub fn choose_ranked(&mut self, game: &Game, legal: &[Action]) -> (Action, Option<(Action, f32)>) {
+        if legal.len() <= 1 {
+            return (legal.first().copied().unwrap_or(Action::EndTurn), None);
+        }
+        let Some(totals) = self.score_all(game, legal) else {
+            return (Action::EndTurn, None);
+        };
+        let (best_i, best_score) = Self::best_of(legal, &totals);
+        let runner_up = (0..legal.len())
+            .filter(|&i| i != best_i)
+            .max_by(|&a, &b| totals[a].total_cmp(&totals[b]))
+            .map(|i| (legal[i], best_score - totals[i]));
+        (legal[best_i], runner_up)
+    }
+}
+
+impl Agent for Planner {
+    fn choose(&mut self, game: &Game, legal: &[Action]) -> Action {
+        if legal.len() <= 1 {
+            return legal.first().copied().unwrap_or(Action::EndTurn);
+        }
+        let Some(totals) = self.score_all(game, legal) else {
+            return Action::EndTurn;
+        };
+        legal[Self::best_of(legal, &totals).0]
     }
 
     fn mulligan(&mut self, game: &Game, drawn: &[crate::cards::CardId], aggressive: bool) -> u32 {

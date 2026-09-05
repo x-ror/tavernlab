@@ -63,6 +63,7 @@
  "live.opp.no_decks": "{class}: the gauntlet holds no deck of this class",
  "live.opp.no_match": "{class}: no gauntlet deck explains what was played (cards seen: {seen})",
  "live.opp.nothing_played": "{class}: nothing played yet, nothing to read",
+ "live.plan.alt": "(runner-up: {alt}, behind by {margin})",
  "live.plan.attack": "attack: {card} → {target}",
  "live.plan.broken": "could not assemble the position: {why}",
  "live.plan.hero_attack": "swing with the hero → {target}",

@@ -63,6 +63,7 @@
  "live.opp.no_decks": "{class}: у гаунтлеті немає колод цього класу",
  "live.opp.no_match": "{class}: жодна колода гаунтлета не пояснює зіграного (карт побачено: {seen})",
  "live.opp.nothing_played": "{class}: ще нічого не зіграно, читати нема чого",
+ "live.plan.alt": "(друге місце: {alt}, відстає на {margin})",
  "live.plan.attack": "атакувати: {card} → {target}",
  "live.plan.broken": "не вдалося зібрати позицію: {why}",
  "live.plan.hero_attack": "бити героєм → {target}",
